@@ -73,25 +73,31 @@ does not block the others.
 using `FirebaseMessaging.getInstance().token` — covers a runner added AFTER the token was already
 issued, without waiting for a token refresh to fire `onNewToken`.
 
-Both paths are genuinely blocked from being exercised until a real Firebase project +
-`google-services.json` exist (see Technology Notes) — `FirebaseMessaging.getInstance()` throws
-`IllegalStateException` without one; `MainActivity` catches that and logs rather than crashing.
-Once resolved this registration code needs no changes — only `app/build.gradle.kts` (apply the
-`com.google.gms.google-services` plugin) and adding the JSON file.
+A real Firebase project (`relay-sizonenko`) now exists — `google-services.json` is present
+(gitignored, generated via `firebase apps:sdkconfig`) and `app/build.gradle.kts` applies the
+`com.google.gms.google-services` plugin conditionally on that file existing, so a checkout
+without it (any fresh clone) still builds, just without live FCM. The try/catch in
+`MainActivity.registerCurrentFcmTokenWithAllRunners()` stays as a safety net for that case.
 
-To change: `fcm/RegisterDeviceWorker.kt`, `MainActivity.registerCurrentFcmTokenWithAllRunners()`.
+`onMessageReceived` in `RelayFirebaseMessagingService` now posts a real Android notification
+(not just a log line) — tapping it opens `MainActivity`. Requires POST_NOTIFICATIONS granted at
+runtime on API 33+ (requested once at startup in `MainActivity.requestNotificationPermissionIfNeeded()`);
+if denied, pushes still arrive and register but no banner shows (Android silently drops it, not
+something this code can detect or force).
+
+To change: `fcm/RegisterDeviceWorker.kt`, `MainActivity.registerCurrentFcmTokenWithAllRunners()`,
+`fcm/RelayFirebaseMessagingService.onMessageReceived()` (notification content/channel).
 
 ## Technology notes
 
 - **No build/run verification via emulator** — none available in this environment. Compile
   verified via a one-off Dockerized `./gradlew assembleDebug` (mingc/android-build-box image);
-  no instrumented/UI tests have ever run.
-- **FCM sending is still stubbed** — `com.google.gms.google-services` plugin is deliberately NOT
-  applied (no `google-services.json` exists), so `FirebaseMessaging.getInstance()` throws at
-  runtime and both registration paths above no-op via a caught exception/log. Token
-  *registration* code (this app → runner) is fully wired; only "app actually has a live
-  FirebaseApp to read a token from" and "runner actually sends a push" remain blocked on the
-  user creating a Firebase project (see ARCHITECTURE.md, shared/API.md's `/v1/devices` notes).
+  no instrumented/UI tests have ever run, so the notification/permission flow above is
+  compile-checked only, never actually seen on a device.
+- **FCM is live end-to-end in code**, gated only on the runner side having
+  `RELAY_FCM_CREDENTIALS` pointed at a real service-account key (see runner/FLOWS.md) — without
+  that the runner still registers devices but silently skips sending. The Android side has no
+  remaining Firebase-project blocker.
 - **Wake-on-LAN app-side is fully wired** — WakeRunnerWorker calls a real `/v1/wake` on a
   configured "via" runner. What's still not automatic: *which* runner is on the same LAN as a
   given wake target is entered manually per runner (`wakeViaRunnerId`), and no physical relay
