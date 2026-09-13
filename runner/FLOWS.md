@@ -93,7 +93,15 @@ session.Manager.notifyFinished (async, via `Manager.OnFinished` hook set in main
 To change the notifier: env `RELAY_FCM_CREDENTIALS` → path to a Google service-account JSON key.
 Unset/missing/unreadable/malformed → `notify.NewNotifier` returns a no-op that logs "FCM not
 configured, skipping notification" and returns nil — this is the only notify path exercised by
-tests; real FCM delivery is `[NOT IMPLEMENTED IN TESTS]` (requires a real Firebase project).
+tests; real FCM delivery is `[NOT IMPLEMENTED IN TESTS]` (no way to test it without live
+credentials in CI).
+
+A real Firebase project (`relay-sizonenko`) and service-account key now exist
+(`runner/install/fcm-service-account.json`, gitignored, generated via `gcloud iam
+service-accounts keys create` with role `roles/firebasecloudmessaging.admin`) — copy it to
+wherever the runner actually runs and set `RELAY_FCM_CREDENTIALS` to its path to turn on real
+sending. This has not yet been exercised against a real deployed runner + real session finish +
+real phone.
 
 ## Technology notes
 
