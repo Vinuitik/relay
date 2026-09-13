@@ -1,6 +1,6 @@
 # Runner flows
 
-Files: main.go, config.go, project.go, session.go, history.go, compose.go, api.go, wol.go, registry.go, notifier.go, fcm.go
+Files: main.go, config.go, project.go, session.go, history.go, compose.go, api.go, wol.go, registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go
 
 ## Startup
 
@@ -43,6 +43,41 @@ POST /v1/wake → api.handleWake → wol.BuildMagicPacket(mac) (6×0xFF + MAC×1
 To change the sender: `api.Server.Sender` (`wol.PacketSender` interface) — real impl is
 `wol.DefaultSender`, tests inject a fake, same pattern as `compose.Runner`.
 To change target port/broadcast address: `wol.go` constants `discardPort`/`broadcastAddr`.
+
+## Idle-suspend (S5) - the other half of the sleep path
+
+**This is the missing half of ARCHITECTURE.md's "Sleep path" line** - WoL (`internal/wol`)
+wakes a machine back up; `internal/idle` is what puts it to sleep (S5, full poweroff) in the
+first place. The two only make sense together: once a runner powers itself off via this
+package, the *only* way back is a WoL magic packet sent from another LAN-local peer's
+`/v1/wake` (see the Wake-on-LAN section above and ARCHITECTURE.md "Relay device") - there is
+no self-wake. Cross-reference both sections if you're touching either.
+
+main() → `idle.LoadConfig()` (env `RELAY_IDLE_SUSPEND_ENABLED`, `RELAY_IDLE_TIMEOUT`,
+`RELAY_IDLE_CHECK_INTERVAL`) → only if `Enabled` → goroutine: `idle.NewMonitor(sessions,
+idle.DefaultShutdowner, cfg).Run()` (ticker at `cfg.CheckInterval`, same wiring style as the
+history-purge ticker above, just conditionally started)
+
+Each tick → `session.Manager.IdleStatus()` (busy bool, idleSince time.Time - computed from
+existing session state, not separately tracked; see its doc comment in session.go for why the
+max `FinishedAt` across sessions is equivalent to "when did busy-count last hit zero") → if
+busy, skip → if `time.Since(idleSince) < cfg.Timeout`, skip → else `idle.Shutdowner.Shutdown()`
+
+Shutdowner is build-tagged like `wol.PacketSender`: `shutdown_unix.go` (`systemctl poweroff`,
+falling back to `shutdown -h now` if systemctl isn't on PATH) / `shutdown_windows.go`
+(`shutdown /s /t 0`). Real impl is `idle.DefaultShutdowner`; tests inject a fake that just
+counts calls - **a test must never invoke a real Shutdowner**.
+
+Once `Shutdown()` succeeds, the Monitor sets an internal `triggered` flag and never calls it
+again for that process's lifetime (a poweroff should end the process anyway). If `Shutdown()`
+itself errors (command failed to run), `triggered` stays false and the next tick retries -
+see `Monitor.tick`'s doc comment in idle.go.
+
+To change the idle threshold: env `RELAY_IDLE_TIMEOUT` (Go duration string, e.g. "45m";
+default `idle.DefaultTimeout` = 30m)
+To change the poll interval: env `RELAY_IDLE_CHECK_INTERVAL` (default `idle.DefaultCheckInterval` = 1m)
+To enable this feature at all: env `RELAY_IDLE_SUSPEND_ENABLED=true` - **disabled by default,
+see Technology notes below before ever setting this locally.**
 
 ## Device registration + notify-on-finish
 
@@ -103,6 +138,25 @@ tests; real FCM delivery is `[NOT IMPLEMENTED IN TESTS]` (requires a real Fireba
 - **Real FCM sending is untested** — there is no way to test an actual Google service-account
   token exchange or FCM delivery without a real Firebase project's credentials. Only the no-op
   path (env unset / file missing / malformed) is covered by `internal/notify`'s tests.
+- **Idle-suspend is disabled by default and MUST stay that way unless a deployment explicitly
+  wants it.** Setting `RELAY_IDLE_SUSPEND_ENABLED=true` on a dev machine, in CI, or in any
+  Docker container running `runnerd` will genuinely try to run `systemctl poweroff` /
+  `shutdown -h now` / `shutdown /s /t 0` against whatever host/container can reach that
+  command — there is no sandboxing inside `internal/idle` itself, the env-var gate in
+  `cmd/runnerd/main.go` is the only thing standing between "idle" and "machine off." Never
+  enable it outside a real, intentional bare-metal-or-VM runner deployment.
+- **S5 means fully powered off, not sleep/hibernate (S3).** ARCHITECTURE.md's "Open questions"
+  section explicitly resolved this: true near-zero power was the motivating pain, at the cost
+  of a ~30-60s boot to come back — and per that doc, containers on the box need
+  `restart: always` so they come back up automatically after boot. `internal/idle` has no way
+  to bring the machine back itself once it's off; that's `internal/wol`'s job, triggered
+  externally via `/v1/wake` from another LAN-local runner. The two features are two halves of
+  one loop and are meaningless without each other.
+- **The idle check interval and threshold are both plain durations, not adaptive.** No
+  backoff, no jitter, no "only check when otherwise idle anyway" optimization — a 1-minute
+  ticker forever once enabled. Fine given how cheap `session.Manager.IdleStatus()` is (just
+  iterating in-memory session state), but worth knowing if `internal/session` ever grows
+  expensive per-call state.
 
 ## Change Index
 
@@ -123,3 +177,8 @@ tests; real FCM delivery is `[NOT IMPLEMENTED IN TESTS]` (requires a real Fireba
 | FCM credential path | env `RELAY_FCM_CREDENTIALS` → `internal/notify/notifier.go` (`NewNotifier`) |
 | FCM JWT/OAuth2 exchange | `internal/notify/fcm.go` (`exchangeJWT`, `accessTokenFor`) |
 | Session-finish → notify wiring | `cmd/runnerd/main.go` (`sessions.OnFinished`), `internal/session/session.go` (`notifyFinished`) |
+| Idle-suspend enable flag | env `RELAY_IDLE_SUSPEND_ENABLED` → `internal/idle/idle.go` (`LoadConfig`) — disabled unless exactly `"true"` |
+| Idle timeout / check interval | env `RELAY_IDLE_TIMEOUT`, `RELAY_IDLE_CHECK_INTERVAL` → `internal/idle/idle.go` (`LoadConfig`, `DefaultTimeout`, `DefaultCheckInterval`) |
+| Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
+| Shutdown command (S5) | `internal/idle/shutdown_unix.go` (`systemctl poweroff` / `shutdown -h now` fallback), `internal/idle/shutdown_windows.go` (`shutdown /s /t 0`) |
+| Idle-suspend ticker wiring | `cmd/runnerd/main.go` (`idle.NewMonitor(...).Run()`, gated on `idleCfg.Enabled`) |

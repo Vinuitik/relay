@@ -12,6 +12,7 @@ import (
 	"relay/runner/internal/compose"
 	"relay/runner/internal/config"
 	"relay/runner/internal/history"
+	"relay/runner/internal/idle"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
@@ -52,6 +53,17 @@ func main() {
 	}
 
 	go runHistoryPurge(sessions)
+
+	// Idle-suspend (S5) is opt-in only - see internal/idle's package doc.
+	// Never starts unless RELAY_IDLE_SUSPEND_ENABLED=true is explicitly set,
+	// so a plain local run (or a container running runnerd without that env
+	// var) never tries to power its host off.
+	idleCfg := idle.LoadConfig()
+	if idleCfg.Enabled {
+		log.Printf("idle: suspend-to-S5 enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)
+		mon := idle.NewMonitor(sessions, idle.DefaultShutdowner, idleCfg)
+		go mon.Run()
+	}
 
 	srv := api.NewServer(cfg.Key, projects, sessions, api.ComposeFuncs{
 		Start: compose.Start,
