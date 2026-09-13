@@ -5,12 +5,12 @@ own machines from your phone — see [ARCHITECTURE.md](ARCHITECTURE.md) for the 
 
 ## Layout
 
-- `node/` — the background service that runs on each machine (laptop, server, ...). Lists
+- `runner/` — the background service that runs on each machine (laptop, server, ...). Lists
   projects, starts/stops per-project sessions with a configured CLI agent, tracks busy/idle
   state, exposes an HTTP API over Tailscale. One instance per machine, not containerized.
-- `android/` — the native Android app: known-nodes list, project/session browser, wake /
+- `android/` — the native Android app: known-runners list, project/session browser, wake /
   stop-containers controls, job-done notifications.
-- `shared/` — the HTTP API contract between `node` and `android`.
+- `shared/` — the HTTP API contract between `runner` and `android`.
 
 ## Status
 
