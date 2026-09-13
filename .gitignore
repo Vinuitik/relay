@@ -9,7 +9,14 @@ bin/
 
 # android
 *.iml
-.gradle/
+**/.gradle/
 local.properties
-android/build/
+**/build/
 android/.idea/
+*.apk
+
+# go
+runner/**/*.test
+
+# agent worktree scaffolding (never commit these)
+.claude/
