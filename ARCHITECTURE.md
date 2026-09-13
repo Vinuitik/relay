@@ -65,6 +65,14 @@ wanting to keep a laptop on all day to bridge the gap.
 - **Android app:** native (not PWA) — chosen specifically for Doze-proof background job-done
   notifications and a home-screen widget for wake/stop-containers without opening the app.
   Not targeting Play Store, so no store review constraints on what it can do.
+- **Notifications: Firebase Cloud Messaging (FCM).** Free, unlimited, and piggybacks on the
+  single OS-level push connection every Android phone with Google Play Services already
+  maintains — no extra battery cost, no persistent per-runner connection to build/maintain.
+  Each runner needs normal outbound internet (already required anyway) to call Google's API
+  when a session finishes; only the fact "session X in project Y finished" transits Google's
+  servers, nothing else. Considered and rejected: an app-held persistent connection per
+  runner — real ongoing battery cost (keep-alive pings, foreground service, no Doze
+  exemption) and reinventing reconnect/reliability handling FCM already solved.
 
 ## Data model
 
