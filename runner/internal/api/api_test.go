@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
 )
@@ -23,10 +24,23 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 	sessions := session.NewManager(projects.Dir)
+	devices := notify.NewRegistry()
 	return NewServer(testKey, projects, sessions, ComposeFuncs{
 		Start: func(string) error { return nil },
 		Stop:  func(string) error { return nil },
-	})
+	}, devices, &fakeSender{})
+}
+
+// fakeSender is a no-op wol.PacketSender for tests that don't care about
+// wake behavior specifically (see wake_test.go for dedicated wake tests).
+type fakeSender struct {
+	sent [][]byte
+	err  error
+}
+
+func (f *fakeSender) SendBroadcast(payload []byte) error {
+	f.sent = append(f.sent, payload)
+	return f.err
 }
 
 func doRequest(t *testing.T, h http.Handler, method, path, key string, body any) *httptest.ResponseRecorder {
