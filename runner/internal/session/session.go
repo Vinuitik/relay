@@ -90,6 +90,15 @@ type Manager struct {
 	resolveDir ResolveProjectDir
 	providers  map[string]ProviderCommand
 	nextID     uint64
+
+	// OnFinished, if set, is called (in its own goroutine, so it never
+	// blocks or can fail the state transition itself) whenever a session
+	// transitions to StateFinished - either because its subprocess exited
+	// cleanly (awaitExit) or because it was stopped via Stop. This is how
+	// runner/internal/notify gets wired in to notify registered devices;
+	// session deliberately doesn't import notify to avoid a dependency
+	// cycle/coupling - it just reports the fact via this hook.
+	OnFinished func(Session)
 }
 
 // NewManager creates a session Manager. resolveDir looks up a project's
@@ -206,8 +215,8 @@ func (m *Manager) awaitExit(rec *record) {
 	err := rec.cmd.Wait()
 
 	rec.mu.Lock()
-	defer rec.mu.Unlock()
 	if rec.stopped {
+		rec.mu.Unlock()
 		return
 	}
 	ts := now()
@@ -218,6 +227,22 @@ func (m *Manager) awaitExit(rec *record) {
 		rec.data.State = StateFinished
 	}
 	rec.stdin = nil
+	finished := cloneSession(rec.data)
+	rec.mu.Unlock()
+
+	if finished.State == StateFinished {
+		m.notifyFinished(finished)
+	}
+}
+
+// notifyFinished invokes OnFinished (if set) in its own goroutine, so a
+// slow or failing notification path can never block session lifecycle
+// transitions.
+func (m *Manager) notifyFinished(sess Session) {
+	if m.OnFinished == nil {
+		return
+	}
+	go m.OnFinished(sess)
 }
 
 // Get returns the current transcript/state of a session.
@@ -296,6 +321,7 @@ func (m *Manager) Stop(sessionID string) (Session, error) {
 	if proc != nil {
 		_ = proc.Kill()
 	}
+	m.notifyFinished(snapshot)
 	return snapshot, nil
 }
 
