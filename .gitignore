@@ -21,3 +21,8 @@ runner/install/relay-runner-*
 
 # agent worktree scaffolding (never commit these)
 .claude/
+
+# secrets - never commit these
+android/app/google-services.json
+runner/install/fcm-service-account.json
+*-service-account.json
