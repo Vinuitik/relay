@@ -40,8 +40,23 @@ data class KnownRunner(
     val hostname: String,
     val port: Int = DEFAULT_PORT,
     val key: String,
+    // Wake-on-LAN config for waking THIS runner's machine when it's fully off (see
+    // ARCHITECTURE.md "Relay device"). Both null until set via the edit affordance on
+    // RunnerListScreen. There's no separate "id" concept in this skeleton — `hostname` is
+    // already the unique key (see KnownRunnersRepository), so `wakeViaRunnerId` stores another
+    // known runner's `hostname`. Nullable fields decode fine via Moshi for entries persisted
+    // before this migration (absent JSON keys default to null).
+    val wakeMac: String? = null,
+    val wakeViaRunnerId: String? = null,
 ) {
     companion object {
         const val DEFAULT_PORT = 8080
     }
 }
+
+/** Mirrors shared/API.md's `Device` type — response body of `POST /v1/devices`. */
+data class Device(
+    val id: String,
+    val fcmToken: String,
+    val registeredAt: String,
+)
