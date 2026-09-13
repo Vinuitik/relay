@@ -1,4 +1,4 @@
-# node
+# runner
 
 Background service, one instance per machine. Not containerized (needs host-level power/process
 control — see ARCHITECTURE.md's "Registration / connection" section for why).
