@@ -41,6 +41,12 @@ RunnerInfo {
   busy: boolean         // true if any session across any project is busy
   version: string
 }
+
+Device {
+  id: string           // stable id for this phone install, generated client-side
+  fcmToken: string
+  registeredAt: string // RFC3339
+}
 ```
 
 ## Endpoints
@@ -58,13 +64,19 @@ RunnerInfo {
 | POST | `/v1/sessions/{sessionId}/stop` | - | `200 Session` | kills the subprocess, marks session `finished` |
 | POST | `/v1/projects/{projectId}/containers/start` | - | `200 {}` | runs `docker compose up -d` in the project dir |
 | POST | `/v1/projects/{projectId}/containers/stop` | - | `200 {}` | runs `docker compose down` in the project dir |
+| POST | `/v1/wake` | `{mac: string}` | `202 {}` | sends a Wake-on-LAN magic packet as a UDP broadcast on **this runner's own local network**. Call this on whichever known runner is on the same LAN as the machine you want to wake — never on the target itself, since if it's off it can't be reached. See ARCHITECTURE.md "Relay device". |
+| POST | `/v1/devices` | `{fcmToken: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner, so the runner can notify it on session-finish. Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
 
 Errors: `4xx/5xx` bodies are `{"error": string}`.
 
 ## Not covered by this contract (see ARCHITECTURE.md)
 
-- Wake-on-LAN: not an HTTP call to the target runner (it's off) — the phone sends the WoL
-  packet itself, or asks the relay-device runner to. `[NOT IMPLEMENTED]` in this pass.
-- Job-done push notifications: delivered via FCM, not this API — the runner calls Google's FCM
-  API directly when a session transitions to `finished`. `[NOT IMPLEMENTED]` in this pass
-  (needs a Firebase project + credentials from the user).
+- Wake-on-LAN: `/v1/wake` above covers "make some runner broadcast a magic packet." What's
+  still open: how the phone app decides *which* known runner is on the same LAN as a given
+  wake target (today: the user configures this manually per target — see android/FLOWS.md).
+  No physical relay device exists yet; any already-running runner instance can serve this role
+  since it's the same binary everywhere.
+- Job-done push notifications: `/v1/devices` above covers token registration. Actually sending
+  a push still needs a real Firebase project + service-account credential from the user
+  (`RELAY_FCM_CREDENTIALS` env var pointing at the downloaded JSON key) — without it the runner
+  logs and skips instead of sending. `[NOT IMPLEMENTED]` until that credential exists.
