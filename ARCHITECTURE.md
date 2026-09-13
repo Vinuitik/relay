@@ -41,6 +41,9 @@ wanting to keep a laptop on all day to bridge the gap.
   no router config.
 - **Same runner binary/script on every machine.** Not hardcoded to "the server." Each
   instance knows its own local projects and exposes them identically.
+- **Language: Go.** Cross-compiles to a single static binary for both Linux and Windows from
+  one codebase, no runtime/interpreter needed on the target machine, no cgo (keeps it truly
+  static) — fits "same binary on every machine" directly.
 - **Runner responsibilities** (per machine):
   - list known projects (directories it's been told about)
   - start/stop that project's `docker compose`
@@ -52,10 +55,11 @@ wanting to keep a laptop on all day to bridge the gap.
   - file read/write scoped to that project's directory only, never the whole filesystem
   - create-new-project endpoint (scaffolds a dir, registers it)
 - **Wake path:** Android app sends WoL magic packet over the tailnet to the target machine's
-  always-reachable Tailscale peer (or a relay peer, if the target machine is the one that's
-  fully off and thus off the tailnet too — needs a second always-on-ish device, e.g. the home
-  router if it can run Tailscale, or a $5/mo VPS, to actually deliver the LAN broadcast).
-  Open question, see below.
+  always-reachable Tailscale peer — or, if the target machine is fully off (and thus off the
+  tailnet too), to a second always-on-ish device physically on that machine's LAN, which then
+  broadcasts the magic packet locally. A WoL broadcast cannot cross a router or be delivered
+  by a remote VPS — it only reaches devices on the same LAN segment, so this relay device must
+  be local. See "Relay device" below.
 - **Sleep path:** cron/timer on each runner checks its own busy/idle state; suspends to S5
   only when idle past a threshold AND no active agent task.
 - **Android app:** native (not PWA) — chosen specifically for Doze-proof background job-done
@@ -120,16 +124,38 @@ would only get in the way of.
   HTTPS request to `https://<runner>.<tailnet>.ts.net:<port>/...` with the stored key in a
   header — Tailscale's tunnel is the entire transport, the key is the entire auth.
 
+## Relay device (WoL for a fully-off machine)
+
+A WoL magic packet is a broadcast — it cannot cross a router or be delivered by a remote VPS,
+only by something physically on the same LAN as the sleeping machine. So waking a fully-off
+machine needs a second always-on device, on that LAN, running Tailscale, that receives the wake
+request over the tailnet and fires the local broadcast.
+
+- **Router ruled out:** it's a Netgear D-series (DSL modem-router). Stock firmware has no
+  Tailscale/package support, and the D-series isn't practically flashable to OpenWrt (closed
+  modem chipset). Not usable as the relay.
+- **Phone ruled out:** it's only on the home LAN when you're already home on WiFi — exactly
+  the situation this project doesn't need solving. On commute/4G, the phone can't deliver a
+  LAN broadcast to a network it isn't on.
+- **Chosen device: Raspberry Pi Zero 2 W (~£14–16 new).** Cheapest option that satisfies
+  "just runs Tailscale, nothing else" — ~1W idle draw, no wasted capability (GL.iNet-style
+  travel routers were considered and rejected: £25–70, and they're routers under the hood,
+  more capability than needed). Solar/battery power for this device was considered and
+  rejected — its own electricity cost is only ~£2.30/year, so no kit's payback period would
+  ever close, and a small battery risks under-power during UK winter, which would break the
+  one hard requirement (always-on).
+- **Rollout order:** build the app and runner first, install Tailscale + the runner directly
+  on the laptop/server (already-owned hardware) and prove the whole flow — registration, wake,
+  sessions — end to end. Only buy the Pi Zero 2 W afterward, once the design is confirmed
+  working, and move the relay role onto it last.
+
 ## Open questions / not yet decided
 
-- WoL relay when the *target* machine is fully off (and thus unreachable on the tailnet
-  itself, since Tailscale needs the OS running): needs some always-on-ish device on the LAN to
-  receive the tailnet message and broadcast the magic packet locally. Candidate: router, if
-  it can run Tailscale/a relay client; otherwise a cheap always-on device.
-- S5 vs S3 per machine — leaning S5 (true near-zero power) but eats a ~30-60s boot; containers
-  need `restart: always` to come back without manual intervention.
-- Auto-register a machine's runner on first Tailscale-up, vs manual add-to-known-list — leaning
-  manual for now (avoids accidentally trusting a rogue machine on the tailnet).
+- S5 vs S3 per machine — **resolved: S5.** True near-zero power was the actual motivating pain;
+  eats a ~30-60s boot, containers need `restart: always` to come back without manual
+  intervention. Idle-timeout-before-suspend is a config value, not hardcoded.
+- Auto-register a machine's runner on first Tailscale-up, vs manual add-to-known-list —
+  **resolved: manual** (avoids accidentally trusting a rogue machine on the tailnet).
 - ~~Exact runner transport~~ **Resolved:** HTTP API only. SSH+tmux was considered as a
   raw-terminal fallback but dropped — the phone app is a chat interface (like VS Code's chat
   panel), not a terminal emulator, and there's no intent to ever SSH in directly. The runner
