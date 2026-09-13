@@ -17,6 +17,7 @@ android/.idea/
 
 # go
 runner/**/*.test
+runner/install/relay-runner-*
 
 # agent worktree scaffolding (never commit these)
 .claude/
