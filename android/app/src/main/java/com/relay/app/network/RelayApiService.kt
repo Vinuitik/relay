@@ -1,5 +1,6 @@
 package com.relay.app.network
 
+import com.relay.app.model.Device
 import com.relay.app.model.Project
 import com.relay.app.model.RunnerInfo
 import com.relay.app.model.Session
@@ -14,6 +15,8 @@ data class HealthResponse(val ok: Boolean)
 data class NewProjectRequest(val name: String)
 data class NewSessionRequest(val provider: String)
 data class MessageRequest(val text: String)
+data class WakeRequest(val mac: String)
+data class DeviceRegistrationRequest(val fcmToken: String)
 
 /**
  * Retrofit mirror of shared/API.md's v1 endpoint table. Endpoints whose response body carries no
@@ -62,4 +65,17 @@ interface RelayApiService {
 
     @POST("v1/projects/{projectId}/containers/stop")
     suspend fun stopContainers(@Path("projectId") projectId: String): Response<ResponseBody>
+
+    /**
+     * Broadcasts a WoL magic packet on THIS runner's local network. Only meaningful when called
+     * on a runner that is on the same LAN as the (possibly fully-off) wake target — see
+     * ARCHITECTURE.md "Relay device" and [com.relay.app.widget.WakeRunnerWorker].
+     */
+    @POST("v1/wake")
+    suspend fun wake(@Body request: WakeRequest): Response<ResponseBody>
+
+    /** Registers/updates this phone's FCM push token with this runner. Response body carries a
+     * typed [Device] per shared/API.md, but no current caller needs it beyond success/failure. */
+    @POST("v1/devices")
+    suspend fun registerDevice(@Body request: DeviceRegistrationRequest): Device
 }
