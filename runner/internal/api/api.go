@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"os"
 
+	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
+	"relay/runner/internal/wol"
 )
 
 // Version is reported by GET /v1/runner/info.
@@ -28,11 +30,13 @@ type Server struct {
 	Projects *project.Registry
 	Sessions *session.Manager
 	Compose  ComposeFuncs
+	Devices  *notify.Registry
+	Sender   wol.PacketSender
 }
 
 // NewServer builds a Server.
-func NewServer(key string, projects *project.Registry, sessions *session.Manager, compose ComposeFuncs) *Server {
-	return &Server{Key: key, Projects: projects, Sessions: sessions, Compose: compose}
+func NewServer(key string, projects *project.Registry, sessions *session.Manager, compose ComposeFuncs, devices *notify.Registry, sender wol.PacketSender) *Server {
+	return &Server{Key: key, Projects: projects, Sessions: sessions, Compose: compose, Devices: devices, Sender: sender}
 }
 
 // Routes builds the HTTP handler for the v1 API, using Go 1.22's
@@ -51,6 +55,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/stop", s.auth(s.handleStopSession))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/start", s.auth(s.handleContainersStart))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/stop", s.auth(s.handleContainersStop))
+	mux.HandleFunc("POST /v1/wake", s.auth(s.handleWake))
+	mux.HandleFunc("POST /v1/devices", s.auth(s.handleRegisterDevice))
 
 	return mux
 }
@@ -220,6 +226,65 @@ func (s *Server) runCompose(w http.ResponseWriter, r *http.Request, action func(
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+type wakeRequest struct {
+	MAC string `json:"mac"`
+}
+
+// handleWake broadcasts a Wake-on-LAN magic packet on this runner's own
+// local network, per shared/API.md's /v1/wake entry. It never targets a
+// remote machine directly - the caller is expected to pick whichever known
+// runner is on the same LAN segment as the machine being woken (see
+// ARCHITECTURE.md "Relay device").
+func (s *Server) handleWake(w http.ResponseWriter, r *http.Request) {
+	var req wakeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	packet, err := wol.BuildMagicPacket(req.MAC)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if s.Sender == nil {
+		writeError(w, http.StatusInternalServerError, "wake sender not configured")
+		return
+	}
+	if err := s.Sender.SendBroadcast(packet); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{})
+}
+
+type registerDeviceRequest struct {
+	FCMToken string `json:"fcmToken"`
+}
+
+// handleRegisterDevice registers/updates this phone's FCM push token, per
+// shared/API.md's /v1/devices entry.
+func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
+	var req registerDeviceRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.FCMToken == "" {
+		writeError(w, http.StatusBadRequest, "fcmToken is required")
+		return
+	}
+
+	if s.Devices == nil {
+		writeError(w, http.StatusInternalServerError, "device registry not configured")
+		return
+	}
+	device := s.Devices.Register(req.FCMToken)
+	writeJSON(w, http.StatusOK, device)
 }
 
 func decodeJSON(r *http.Request, v any) error {

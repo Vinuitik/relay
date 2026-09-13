@@ -5,14 +5,17 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"relay/runner/internal/api"
 	"relay/runner/internal/compose"
 	"relay/runner/internal/config"
 	"relay/runner/internal/history"
+	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
+	"relay/runner/internal/wol"
 )
 
 // historyPurgeInterval controls how often the weekly-cleanup ticker fires.
@@ -38,12 +41,22 @@ func main() {
 
 	sessions := session.NewManager(projects.Dir)
 
+	devices := notify.NewRegistry()
+	notifier := notify.NewNotifier(os.Getenv("RELAY_FCM_CREDENTIALS"))
+	sessions.OnFinished = func(sess session.Session) {
+		for _, d := range devices.List() {
+			if err := notifier.NotifySessionFinished(d, notify.Session{ID: sess.ID, ProjectID: sess.ProjectID}); err != nil {
+				log.Printf("notify device %s of session %s finish: %v", d.ID, sess.ID, err)
+			}
+		}
+	}
+
 	go runHistoryPurge(sessions)
 
 	srv := api.NewServer(cfg.Key, projects, sessions, api.ComposeFuncs{
 		Start: compose.Start,
 		Stop:  compose.Stop,
-	})
+	}, devices, wol.DefaultSender)
 
 	// NOTE: cfg.ListenAddr defaults to loopback for local dev/tests. A
 	// production deployment must bind only to the Tailscale interface,
