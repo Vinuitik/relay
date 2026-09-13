@@ -43,6 +43,14 @@ class KnownRunnersRepository(context: Context) {
         }
     }
 
+    /**
+     * Replaces the stored entry for [runner] (matched by `hostname`, the de-facto id — see
+     * [KnownRunner.wakeViaRunnerId]) with [runner] itself. Same upsert-by-hostname semantics as
+     * [addRunner]; named separately because call sites editing wake config read more clearly as
+     * "update" than "add".
+     */
+    suspend fun updateRunner(runner: KnownRunner) = addRunner(runner)
+
     suspend fun removeRunner(hostname: String) {
         appContext.knownRunnersDataStore.edit { prefs ->
             val current = decode(prefs[Keys.RUNNERS_JSON])

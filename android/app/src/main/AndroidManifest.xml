@@ -3,8 +3,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Wake-on-LAN broadcast would need CHANGE_WIFI_MULTICAST_STATE; not requested yet since
-         the actual WoL send is [NOT IMPLEMENTED] (see RelayWidgetProvider). -->
+    <!-- No CHANGE_WIFI_MULTICAST_STATE needed here: the phone never broadcasts the WoL packet
+         itself, it POSTs /v1/wake to another runner's HTTP API, which broadcasts locally on its
+         own LAN — see ARCHITECTURE.md "Relay device" and widget/WakeRunnerWorker.kt. -->
 
     <application
         android:allowBackup="true"

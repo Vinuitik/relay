@@ -1,6 +1,9 @@
 package com.relay.app.fcm
 
 import android.util.Log
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -9,19 +12,25 @@ import com.google.firebase.messaging.RemoteMessage
  * runner calls Google's FCM API directly when a session transitions to "finished", nothing else
  * transits Google's servers.
  *
- * [NOT IMPLEMENTED]: needs a Firebase project + google-services.json from the user before the
- * com.google.gms.google-services Gradle plugin/config can be wired in (see app/build.gradle.kts).
- * Until then this service exists and is manifest-registered, but there is no default FirebaseApp
- * configured, no token registration endpoint on the runner, and no real notification is shown —
- * both callbacks just log.
+ * Token registration ([onNewToken] below) works today: it POSTs `/v1/devices` to every known
+ * runner via [RegisterDeviceWorker], per shared/API.md.
+ *
+ * [NOT IMPLEMENTED]: actually RECEIVING a push still needs a Firebase project + credential from
+ * the user — see shared/API.md's `/v1/devices` notes and runner/FLOWS.md's Technology Notes.
+ * The `com.google.gms.google-services` Gradle plugin is deliberately NOT applied (no
+ * google-services.json exists yet — see app/build.gradle.kts); this service is manifest-
+ * registered and will start receiving callbacks once a real Firebase project exists, but until
+ * then there is no default FirebaseApp configured, so [onMessageReceived] just logs.
  */
 class RelayFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        Log.d(TAG, "FCM token refreshed: $token")
-        // [NOT IMPLEMENTED]: send this token to the runner so it knows where to push
-        // "session finished" events for this device.
+        Log.d(TAG, "FCM token refreshed — registering with all known runners")
+        val request = OneTimeWorkRequestBuilder<RegisterDeviceWorker>()
+            .setInputData(workDataOf(RegisterDeviceWorker.KEY_FCM_TOKEN to token))
+            .build()
+        WorkManager.getInstance(applicationContext).enqueue(request)
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
