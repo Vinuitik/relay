@@ -90,6 +90,9 @@ type Manager struct {
 	resolveDir ResolveProjectDir
 	providers  map[string]ProviderCommand
 	nextID     uint64
+	// createdAt is used by IdleStatus as the idle-since time when no
+	// session has ever been created yet.
+	createdAt time.Time
 
 	// OnFinished, if set, is called (in its own goroutine, so it never
 	// blocks or can fail the state transition itself) whenever a session
@@ -109,6 +112,7 @@ func NewManager(resolveDir ResolveProjectDir) *Manager {
 		sessions:   make(map[string]*record),
 		resolveDir: resolveDir,
 		providers:  defaultProviders(),
+		createdAt:  time.Now(),
 	}
 }
 
@@ -271,6 +275,45 @@ func (m *Manager) ListByProject(projectID string) []Session {
 		}
 	}
 	return out
+}
+
+// IdleStatus reports whether any session is currently busy and, if not, the
+// time since which the runner has had no busy session at all. It's the read
+// only hook runner/internal/idle uses to decide when to suspend to S5 (see
+// ARCHITECTURE.md "Sleep path") - deliberately computed from existing
+// session state rather than tracked as separate counters, so there's only
+// one place session busy/idle/finished state lives.
+//
+// A session's State only ever moves busy -> {finished, error} (never back to
+// busy - see the state constants above), so the moment the whole runner most
+// recently became idle is exactly the latest FinishedAt among all known
+// sessions, or, if no session has ever been created, the time this Manager
+// was constructed.
+func (m *Manager) IdleStatus() (busy bool, idleSince time.Time) {
+	m.mu.Lock()
+	recs := make([]*record, 0, len(m.sessions))
+	for _, rec := range m.sessions {
+		recs = append(recs, rec)
+	}
+	m.mu.Unlock()
+
+	idleSince = m.createdAt
+	for _, rec := range recs {
+		rec.mu.Lock()
+		state := rec.data.State
+		finishedAt := rec.data.FinishedAt
+		rec.mu.Unlock()
+
+		if state == StateBusy {
+			return true, time.Time{}
+		}
+		if finishedAt != nil {
+			if t, err := time.Parse(time.RFC3339, *finishedAt); err == nil && t.After(idleSince) {
+				idleSince = t
+			}
+		}
+	}
+	return false, idleSince
 }
 
 // SendMessage writes text (plus a trailing newline) to the session's
