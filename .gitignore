@@ -1,0 +1,15 @@
+.DS_Store
+Thumbs.db
+*.log
+
+# node (language TBD)
+node_modules/
+dist/
+bin/
+
+# android
+*.iml
+.gradle/
+local.properties
+android/build/
+android/.idea/
