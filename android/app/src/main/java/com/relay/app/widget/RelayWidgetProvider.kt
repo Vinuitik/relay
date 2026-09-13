@@ -33,9 +33,9 @@ class RelayWidgetProvider : AppWidgetProvider() {
         super.onReceive(context, intent)
         when (intent.action) {
             ACTION_WAKE -> {
-                // [NOT IMPLEMENTED]: WoL magic-packet send — needs the relay-device design
-                // finalized (see ARCHITECTURE.md "Relay device"). Just log for now.
-                Log.d(TAG, "Wake tapped — WoL send not implemented yet")
+                Log.d(TAG, "Wake tapped — enqueuing WakeRunnerWorker for the widget's default project's runner")
+                val request = OneTimeWorkRequestBuilder<WakeRunnerWorker>().build()
+                WorkManager.getInstance(context).enqueue(request)
             }
             ACTION_STOP_CONTAINERS -> {
                 Log.d(TAG, "Stop tapped — enqueuing StopContainersWorker")

@@ -1,8 +1,10 @@
 package com.relay.app.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -30,9 +32,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.model.KnownRunner
+import com.relay.app.widget.WakeRunnerWorker
 import kotlinx.coroutines.launch
 
 @Composable
@@ -42,7 +49,9 @@ fun RunnerListScreen(
 ) {
     val runners by repository.runners.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingRunner by remember { mutableStateOf<KnownRunner?>(null) }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Runners") }) },
@@ -65,6 +74,25 @@ fun RunnerListScreen(
                         ListItem(
                             headlineContent = { Text(runner.hostname) },
                             supportingContent = { Text("port ${runner.port}") },
+                            trailingContent = {
+                                Row {
+                                    TextButton(onClick = {
+                                        if (runner.wakeMac.isNullOrBlank() || runner.wakeViaRunnerId.isNullOrBlank()) {
+                                            Toast.makeText(
+                                                context,
+                                                "Wake not configured for ${runner.hostname} — tap Edit to set MAC + via-runner",
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                        } else {
+                                            val request = OneTimeWorkRequestBuilder<WakeRunnerWorker>()
+                                                .setInputData(workDataOf(WakeRunnerWorker.KEY_TARGET_HOSTNAME to runner.hostname))
+                                                .build()
+                                            WorkManager.getInstance(context).enqueue(request)
+                                        }
+                                    }) { Text("Wake") }
+                                    TextButton(onClick = { editingRunner = runner }) { Text("Edit") }
+                                }
+                            },
                             modifier = Modifier.clickable { onRunnerSelected(runner) },
                         )
                         HorizontalDivider()
@@ -83,6 +111,66 @@ fun RunnerListScreen(
             },
         )
     }
+
+    editingRunner?.let { runner ->
+        EditWakeConfigDialog(
+            runner = runner,
+            onDismiss = { editingRunner = null },
+            onSave = { wakeMac, wakeViaRunnerId ->
+                scope.launch {
+                    repository.updateRunner(
+                        runner.copy(
+                            wakeMac = wakeMac.ifBlank { null },
+                            wakeViaRunnerId = wakeViaRunnerId.ifBlank { null },
+                        ),
+                    )
+                }
+                editingRunner = null
+            },
+        )
+    }
+}
+
+/**
+ * Small edit affordance for the two Wake-on-LAN fields on a known runner (see
+ * [com.relay.app.model.KnownRunner]). `wakeViaRunnerId` is entered as plain text (another known
+ * runner's hostname) rather than a picker — keeps this a "skeleton small edit" per scope, not a
+ * full relationship UI.
+ */
+@Composable
+private fun EditWakeConfigDialog(
+    runner: KnownRunner,
+    onDismiss: () -> Unit,
+    onSave: (wakeMac: String, wakeViaRunnerId: String) -> Unit,
+) {
+    var wakeMac by remember { mutableStateOf(runner.wakeMac.orEmpty()) }
+    var wakeViaRunnerId by remember { mutableStateOf(runner.wakeViaRunnerId.orEmpty()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Wake config: ${runner.hostname}") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = wakeMac,
+                    onValueChange = { wakeMac = it },
+                    label = { Text("MAC address to wake") },
+                    singleLine = true,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = wakeViaRunnerId,
+                    onValueChange = { wakeViaRunnerId = it },
+                    label = { Text("Wake via runner (hostname)") },
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(wakeMac.trim(), wakeViaRunnerId.trim()) }) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
