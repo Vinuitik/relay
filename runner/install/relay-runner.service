@@ -1,0 +1,21 @@
+[Unit]
+Description=Relay runner
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/usr/local/bin/relay-runner
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=-/etc/relay/runner.env
+
+# Idle-suspend (RELAY_IDLE_SUSPEND_ENABLED=true, set in /etc/relay/runner.env)
+# calls `systemctl poweroff` as this unit's own user. Give that user passwordless
+# sudo for poweroff/shutdown specifically (see install.sh) rather than running
+# this whole service as root.
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
