@@ -11,7 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.outlined.Star as StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
@@ -113,7 +113,7 @@ fun ProjectListScreen(
                                     }
                                 }) {
                                     Icon(
-                                        imageVector = if (isWidgetDefault) Icons.Default.Star else Icons.Default.StarBorder,
+                                        imageVector = if (isWidgetDefault) Icons.Default.Star else Icons.Outlined.StarBorder,
                                         contentDescription = "Set as widget default project",
                                     )
                                 }
