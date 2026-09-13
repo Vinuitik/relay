@@ -80,6 +80,23 @@ Runner (one per machine)
   scoped to this project dir." Swapping providers is a config change on new sessions, not a
   runner rebuild — existing sessions keep whatever provider they started with.
 
+## Navigation model (phone app)
+
+```
+Device menu (icons, one per registered runner)
+ └─ Project list (for that runner)
+     └─ Chat interface (one per session — like VS Code's chat panel, not a terminal)
+         + History (past finished sessions for that project)
+```
+
+- Chat, not terminal — the app renders each session as a conversation, mirroring how you'd
+  already interact with Claude Code / Codex in an editor. No raw shell view (see resolved
+  transport question above).
+- **History is cleaned weekly** — finished sessions older than a week are purged rather than
+  kept indefinitely. Keeps the per-project history list short and avoids unbounded storage
+  growth on the runner. (Exact cutoff/retention length is a config value, not hardcoded —
+  same "plug in/plug out" principle as the S5 idle threshold.)
+
 ## Registration / connection (no Docker for Relay itself)
 
 Relay's own runner + phone app are **not containerized** — Docker only shows up as something a
@@ -113,9 +130,11 @@ would only get in the way of.
   need `restart: always` to come back without manual intervention.
 - Auto-register a machine's runner on first Tailscale-up, vs manual add-to-known-list — leaning
   manual for now (avoids accidentally trusting a rogue machine on the tailnet).
-- Exact runner transport: plain SSH+tmux (simpler, smaller attack surface) vs an HTTP API
-  (needed for the native app's buttons/notifications either way) — HTTP API is required for
-  the phone app regardless, SSH+tmux may still be the fallback path for direct terminal use.
+- ~~Exact runner transport~~ **Resolved:** HTTP API only. SSH+tmux was considered as a
+  raw-terminal fallback but dropped — the phone app is a chat interface (like VS Code's chat
+  panel), not a terminal emulator, and there's no intent to ever SSH in directly. The runner
+  still spawns each session as a plain subprocess and captures stdout/stderr itself; no tmux
+  needed for that.
 
 ## Non-goals
 
