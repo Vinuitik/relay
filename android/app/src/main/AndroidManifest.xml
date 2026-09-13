@@ -3,6 +3,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Required at runtime on API 33+ to actually show the job-done notification posted by
+         RelayFirebaseMessagingService - requested in MainActivity. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- No CHANGE_WIFI_MULTICAST_STATE needed here: the phone never broadcasts the WoL packet
          itself, it POSTs /v1/wake to another runner's HTTP API, which broadcasts locally on its
          own LAN — see ARCHITECTURE.md "Relay device" and widget/WakeRunnerWorker.kt. -->

@@ -1,9 +1,13 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    // [NOT IMPLEMENTED]: apply "com.google.gms.google-services" once a Firebase project +
-    // google-services.json exist (see FirebaseMessagingService below). Applying it now with no
-    // google-services.json present would fail the build.
+}
+
+// Applied only if google-services.json exists (gitignored - see runner/README.md for how to
+// generate it). A checkout without it must still build; the plugin fails the build if applied
+// with no config file present, so we can't apply it unconditionally.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 android {

@@ -1,13 +1,18 @@
 package com.relay.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -20,6 +25,13 @@ import com.relay.app.ui.theme.RelayTheme
 
 class MainActivity : ComponentActivity() {
 
+    private val requestNotificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (!granted) {
+                Log.w(TAG, "Notification permission denied — job-done pushes won't show a banner")
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -27,6 +39,7 @@ class MainActivity : ComponentActivity() {
         val widgetConfigRepository = WidgetConfigRepository(applicationContext)
 
         registerCurrentFcmTokenWithAllRunners()
+        requestNotificationPermissionIfNeeded()
 
         setContent {
             RelayTheme {
@@ -46,12 +59,11 @@ class MainActivity : ComponentActivity() {
      * the token was already issued still gets registered without waiting for
      * [com.relay.app.fcm.RelayFirebaseMessagingService.onNewToken] to fire on refresh.
      *
-     * [NOT IMPLEMENTED] beyond this point: `FirebaseMessaging.getInstance()` throws
-     * `IllegalStateException` until a real Firebase project exists — the
-     * `com.google.gms.google-services` plugin is deliberately NOT applied (no
-     * google-services.json yet, see app/build.gradle.kts). This is genuinely blocked on the user
-     * creating a Firebase project; the try/catch below just keeps that from crashing app startup
-     * in the meantime.
+     * A Firebase project now exists and `google-services.json` is present (see
+     * app/build.gradle.kts — the `com.google.gms.google-services` plugin applies automatically
+     * when that file is there). The try/catch below stays as a safety net: a checkout without
+     * that gitignored file (e.g. a fresh clone before it's regenerated) would otherwise crash
+     * app startup instead of just skipping registration.
      */
     private fun registerCurrentFcmTokenWithAllRunners() {
         try {
@@ -68,6 +80,22 @@ class MainActivity : ComponentActivity() {
             }
         } catch (e: IllegalStateException) {
             Log.w(TAG, "Firebase not configured yet (no google-services.json) — skipping startup FCM registration", e)
+        }
+    }
+
+    /**
+     * Android 13+ (API 33) requires explicit runtime consent to show any notification,
+     * including the job-done push in [com.relay.app.fcm.RelayFirebaseMessagingService]. Below
+     * API 33 this permission doesn't exist and notifications just work.
+     */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val alreadyGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!alreadyGranted) {
+            requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
