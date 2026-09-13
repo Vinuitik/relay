@@ -14,4 +14,8 @@ own machines from your phone — see [ARCHITECTURE.md](ARCHITECTURE.md) for the 
 
 ## Status
 
-Early scaffolding — see ARCHITECTURE.md's "Open questions" section for what's still undecided.
+M1 (API contract) + M2 (runner service, Android app skeleton) built. Runner: full v1 API,
+Go, tested via `docker run --rm -v $(pwd):/app -w /app/runner golang:1.22 go test ./...`.
+Android: Compose UI skeleton, compiles (Docker-verified `./gradlew assembleDebug`), FCM/WoL
+stubbed — see `runner/FLOWS.md` and `android/FLOWS.md` for details and `[NOT IMPLEMENTED]`
+items. See ARCHITECTURE.md's "Open questions" section for what's still undecided.
