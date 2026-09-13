@@ -1,0 +1,5 @@
+<resources>
+    <!-- Content is rendered entirely by Jetpack Compose (see ui/theme); this only needs to
+         supply a base platform theme/window background before Compose takes over. -->
+    <style name="Theme.Relay" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
