@@ -110,11 +110,33 @@ systemctl daemon-reload
 echo "6/6 enabling + starting relay-runner@$RUN_USER"
 systemctl enable --now "relay-runner@$RUN_USER"
 
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+KEY_FILE="$RUN_HOME/.relay/key.txt"
+KEY=""
+for i in 1 2 3 4 5; do
+    [ -f "$KEY_FILE" ] && KEY="$(cat "$KEY_FILE")" && break
+    sleep 1
+done
+
 echo
-echo "done. check status with:"
-echo "  systemctl status relay-runner@$RUN_USER"
-echo "  journalctl -u relay-runner@$RUN_USER -f"
+echo "================================================================"
+echo " RELAY INSTALL COMPLETE"
+echo "================================================================"
+if [ -n "$KEY" ]; then
+    echo " Runner key  : $KEY"
+else
+    echo " Runner key  : not found yet at $KEY_FILE - check:"
+    echo "               journalctl -u relay-runner@$RUN_USER | grep 'RELAY KEY'"
+fi
+if [ -n "$TS_IP" ]; then
+    echo " Runner addr : $TS_IP:7777"
+else
+    echo " Runner addr : NOT SET - Tailscale wasn't logged in during install."
+    echo "               Run 'tailscale up', then set RELAY_LISTEN_ADDR in"
+    echo "               /etc/relay/runner.env and: systemctl restart relay-runner@$RUN_USER"
+fi
+echo " Add to phone app: known-runners list, using the key + addr above."
+echo "================================================================"
 echo
-echo "the key it generated on first run is in the journal output above (search"
-echo "for 'RELAY KEY') and in \$RELAY_HOME/key.txt (default: ~$RUN_USER/.relay/key.txt)"
-echo "- copy it into the phone app's known-runners list."
+echo "status: systemctl status relay-runner@$RUN_USER"
+echo "logs:   journalctl -u relay-runner@$RUN_USER -f"
