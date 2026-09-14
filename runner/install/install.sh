@@ -124,7 +124,6 @@ elif [ -n "$TS_IP" ] && grep -q "^#RELAY_LISTEN_ADDR=" /etc/relay/runner.env; th
     # have a real IP, instead of leaving the runner stuck on loopback forever.
     sed -i "s/^#RELAY_LISTEN_ADDR=.*/RELAY_LISTEN_ADDR=$TS_IP:7777/" /etc/relay/runner.env
     echo "    /etc/relay/runner.env existed but had no RELAY_LISTEN_ADDR set - filled in $TS_IP:7777"
-    NEEDS_RESTART=1
 else
     echo "    /etc/relay/runner.env already exists, leaving it alone"
 fi
@@ -133,12 +132,16 @@ echo "5/6 installing systemd unit"
 cp "$SCRIPT_DIR/relay-runner.service" "/etc/systemd/system/relay-runner@.service"
 systemctl daemon-reload
 
-echo "6/6 enabling + starting relay-runner@$RUN_USER"
-systemctl enable --now "relay-runner@$RUN_USER"
-if [ "$NEEDS_RESTART" = "1" ]; then
-    echo "    runner.env changed since the service last started - restarting to pick it up"
-    systemctl restart "relay-runner@$RUN_USER"
-fi
+echo "6/6 enabling + restarting relay-runner@$RUN_USER"
+# Always restart, not just enable --now: on an already-running service,
+# enable --now is a no-op that does NOT pick up a binary that step 3 just
+# updated - it keeps executing the OLD binary from its already-open (and by
+# now possibly deleted-on-disk, e.g. old /usr/local/bin/relay-runner)
+# inode. A rerun of this script must always end up actually running what it
+# just installed - found this the hard way when self-update's own binary
+# swap never took effect because of exactly this.
+systemctl enable "relay-runner@$RUN_USER"
+systemctl restart "relay-runner@$RUN_USER"
 
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 KEY_FILE="$RUN_HOME/.relay/key.txt"
