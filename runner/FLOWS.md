@@ -103,6 +103,28 @@ wherever the runner actually runs and set `RELAY_FCM_CREDENTIALS` to its path to
 sending. This has not yet been exercised against a real deployed runner + real session finish +
 real phone.
 
+## Install bootstrap (install.sh)
+
+Files: install.sh
+
+`install.sh` → checks `tailscale` → if missing, installs via official
+`curl https://tailscale.com/install.sh | sh` (always latest, not pinned - see
+Technology notes) → if not logged in, tells you to run `tailscale up`
+yourself and re-run → checks `claude`/`codex` CLIs → npm-installs any
+missing (`@anthropic-ai/claude-code`, `@openai/codex`) → installs the
+`relay-runner` binary + systemd unit, auto-filling `RELAY_LISTEN_ADDR` in
+`/etc/relay/runner.env` from the Tailscale IP if one was found.
+
+**Login is NOT automated.** `tailscale up` and `claude auth login` /
+`codex login` both need a human to open a URL somewhere - install.sh does
+not attempt this. `[NOT IMPLEMENTED]`: relaying that login URL to the phone
+app so auth can be completed without physical access to the server. Design
+depends on what `claude auth login` actually prints/does when run headless
+(no local browser) - untested as of 2026-09-14, verify on the real server
+before building the relay.
+
+To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
+
 ## Technology notes
 
 - **Sessions are in-memory only** (a `sync.Mutex`-guarded map in session.Manager). A runner
@@ -165,6 +187,16 @@ real phone.
   ticker forever once enabled. Fine given how cheap `session.Manager.IdleStatus()` is (just
   iterating in-memory session state), but worth knowing if `internal/session` ever grows
   expensive per-call state.
+- **Tailscale is installed via their own official script, deliberately not pinned to a
+  version.** Tailscale controls both the client and the coordination server, and
+  guarantees backward compat for older clients — pinning would only make our install.sh
+  stale, not safer. If Tailscale ever ships a breaking client change this assumption needs
+  revisiting, but as of 2026-09-14 "always latest" is the right default for a single-user
+  deployment like this one.
+- **`claude`/`codex` CLI auto-install requires Node.js/npm already present** — install.sh
+  does not install Node itself (out of scope: too platform-specific to script reliably).
+  If npm is missing, the CLI-install step is skipped with a message, everything else in
+  install.sh still runs.
 
 ## Change Index
 

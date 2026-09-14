@@ -6,16 +6,22 @@
 #
 # What it does (see the numbered steps below to review before running with
 # sudo - this touches /usr/local/bin, /etc/relay, and systemd unit files):
-#   1. Copies the binary to /usr/local/bin/relay-runner
-#   2. Creates /etc/relay/ and drops in runner.env.example (won't overwrite
-#      an existing /etc/relay/runner.env)
-#   3. Installs the systemd unit as relay-runner@.service (templated on the
+#   1. Installs Tailscale (official install.sh, always latest - see
+#      runner/FLOWS.md "Tailscale" for why we don't pin a version) if not
+#      already present, and brings up `tailscale up` if not already logged in
+#      (this needs you to open the printed login URL yourself - can't be
+#      automated headlessly)
+#   2. Installs the claude / codex CLIs via npm if not already present
+#      (requires Node.js/npm - installed separately, not by this script)
+#   3. Copies the binary to /usr/local/bin/relay-runner
+#   4. Creates /etc/relay/ and drops in runner.env.example (won't overwrite
+#      an existing /etc/relay/runner.env), and auto-fills RELAY_LISTEN_ADDR
+#      with the Tailscale IP from step 1
+#   5. Installs the systemd unit as relay-runner@.service (templated on the
 #      user to run as, so it never runs as root)
-#   4. Enables + starts relay-runner@<user>.service
+#   6. Enables + starts relay-runner@<user>.service
 #
-# It does NOT touch Tailscale, docker, or any project directories - install
-# and configure Tailscale yourself first (tailscale.com/download), and set
-# RELAY_LISTEN_ADDR in /etc/relay/runner.env to your Tailscale IP afterward.
+# It does NOT touch docker or any project directories.
 
 set -e
 
@@ -37,24 +43,64 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "1/4 installing binary to /usr/local/bin/relay-runner"
+echo "1/6 checking Tailscale"
+if ! command -v tailscale >/dev/null 2>&1; then
+    echo "    not found - installing via the official script (curl | sh, always latest)"
+    curl -fsSL https://tailscale.com/install.sh | sh
+else
+    echo "    already installed ($(tailscale version | head -n1))"
+fi
+if ! tailscale ip -4 >/dev/null 2>&1; then
+    echo "    not logged in - run 'tailscale up' yourself, open the printed URL on any"
+    echo "    device to authenticate, then re-run this script to pick up the IP"
+    TS_IP=""
+else
+    TS_IP="$(tailscale ip -4)"
+    echo "    tailnet IP: $TS_IP"
+fi
+
+echo "2/6 checking claude / codex CLIs"
+if ! command -v npm >/dev/null 2>&1; then
+    echo "    npm not found - skipping CLI install, install Node.js/npm yourself then"
+    echo "    re-run this script (or install manually: npm install -g @anthropic-ai/claude-code @openai/codex)"
+else
+    if ! command -v claude >/dev/null 2>&1; then
+        echo "    installing claude CLI (npm install -g @anthropic-ai/claude-code)"
+        npm install -g @anthropic-ai/claude-code
+    else
+        echo "    claude CLI already installed"
+    fi
+    if ! command -v codex >/dev/null 2>&1; then
+        echo "    installing codex CLI (npm install -g @openai/codex)"
+        npm install -g @openai/codex
+    else
+        echo "    codex CLI already installed"
+    fi
+fi
+
+echo "3/6 installing binary to /usr/local/bin/relay-runner"
 install -m 0755 "$BINARY" /usr/local/bin/relay-runner
 
-echo "2/4 setting up /etc/relay/"
+echo "4/6 setting up /etc/relay/"
 mkdir -p /etc/relay
 if [ ! -f /etc/relay/runner.env ]; then
     cp "$SCRIPT_DIR/runner.env.example" /etc/relay/runner.env
-    echo "    wrote /etc/relay/runner.env from the example - edit it before relying on this,"
-    echo "    it does nothing by default (loopback-only, no providers configured)"
+    if [ -n "$TS_IP" ]; then
+        sed -i "s/^#RELAY_LISTEN_ADDR=.*/RELAY_LISTEN_ADDR=$TS_IP:7777/" /etc/relay/runner.env
+        echo "    wrote /etc/relay/runner.env, RELAY_LISTEN_ADDR set to $TS_IP:7777"
+    else
+        echo "    wrote /etc/relay/runner.env from the example - RELAY_LISTEN_ADDR not set"
+        echo "    (Tailscale wasn't logged in yet) - edit it in by hand once you run 'tailscale up'"
+    fi
 else
     echo "    /etc/relay/runner.env already exists, leaving it alone"
 fi
 
-echo "3/4 installing systemd unit"
+echo "5/6 installing systemd unit"
 cp "$SCRIPT_DIR/relay-runner.service" "/etc/systemd/system/relay-runner@.service"
 systemctl daemon-reload
 
-echo "4/4 enabling + starting relay-runner@$RUN_USER"
+echo "6/6 enabling + starting relay-runner@$RUN_USER"
 systemctl enable --now "relay-runner@$RUN_USER"
 
 echo
