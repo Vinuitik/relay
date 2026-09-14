@@ -8,9 +8,10 @@
 # sudo - this touches /usr/local/bin, /etc/relay, and systemd unit files):
 #   1. Installs Tailscale (official install.sh, always latest - see
 #      runner/FLOWS.md "Tailscale" for why we don't pin a version) if not
-#      already present, and brings up `tailscale up` if not already logged in
-#      (this needs you to open the printed login URL yourself - can't be
-#      automated headlessly)
+#      already present, and runs `tailscale up` if not already logged in -
+#      it will print a login URL right here in this terminal and wait; open
+#      that URL on any device to authenticate (a browser click can't be
+#      scripted, that's the one manual step left)
 #   2. Installs Node.js/npm via apt if not already present (apt-based systems
 #      only), then installs the claude / codex CLIs via npm if not present
 #   3. Copies the binary to /usr/local/bin/relay-runner
@@ -51,8 +52,13 @@ else
     echo "    already installed ($(tailscale version | head -n1))"
 fi
 if ! tailscale ip -4 >/dev/null 2>&1; then
-    echo "    not logged in - run 'tailscale up' yourself, open the printed URL on any"
-    echo "    device to authenticate, then re-run this script to pick up the IP"
+    echo "    not logged in - running 'tailscale up' now. It will print a login URL below:"
+    echo "    open it on ANY device (phone, this laptop, doesn't matter) to authenticate."
+    echo "    This script will wait for you."
+    tailscale up || echo "    'tailscale up' didn't complete - you can run it again by hand later"
+fi
+if ! tailscale ip -4 >/dev/null 2>&1; then
+    echo "    still not logged in - RELAY_LISTEN_ADDR will be left unset"
     TS_IP=""
 else
     TS_IP="$(tailscale ip -4)"
