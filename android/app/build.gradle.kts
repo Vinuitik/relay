@@ -89,9 +89,24 @@ dependencies {
     // Background work for the widget's stop-containers action.
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
+    // Firebase BoM: keeps every com.google.firebase:* artifact below on mutually-compatible
+    // versions instead of hand-pinning each one separately.
+    implementation(platform("com.google.firebase:firebase-bom:34.19.0"))
+
     // Push notifications (job-done). No google-services.json yet — see [NOT IMPLEMENTED] above
     // and in RelayFirebaseMessagingService. The dependency alone does not require the plugin.
-    implementation("com.google.firebase:firebase-messaging:24.0.1")
+    implementation("com.google.firebase:firebase-messaging")
+
+    // In-app "update available" prompt (MainActivity.checkForUpdate) - same Firebase project as
+    // distribution itself, no new infra. Fine to ship since this app was never headed for the
+    // Play Store anyway (see ARCHITECTURE.md) - that's the only reason this SDK is normally
+    // discouraged in a production build.
+    //
+    // Not managed by the BoM above (App Distribution isn't part of its version set), so pinned
+    // directly to the latest version actually published to Google's Maven repo (checked via
+    // dl.google.com's maven-metadata.xml, not the SDK source repo - that had an unreleased
+    // beta21 ahead of what's actually published).
+    implementation("com.google.firebase:firebase-appdistribution:16.0.0-beta20")
 
     // In-app QR scanning for pairing a runner (see ui/screens/QrScanScreen.kt) — CameraX for the
     // preview/frame pipeline, ML Kit for on-device barcode decoding (no network call, no
