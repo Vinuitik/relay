@@ -36,10 +36,17 @@ jobs:
           ./gradlew assembleDebug --console=plain
 
       - name: Distribute to Firebase App Distribution
+        env:
+          # Passed via env, not interpolated straight into the run: string below - a commit
+          # message containing a literal " breaks out of an inline "${{ ... }}" quote and gets
+          # parsed as extra shell arguments (this bit us once already - see FLOWS.md
+          # "Distribution"). $VAR expansion doesn't re-parse the value as shell syntax, so it's
+          # safe regardless of what characters the message contains.
+          RELEASE_NOTES: ${{ github.event.head_commit.message }}
         run: |
           npx firebase-tools appdistribution:distribute \
             app/build/outputs/apk/debug/app-debug.apk \
             --app 1:960396843466:android:fd2974c630731375591733 \
             --testers sizonenkodima6@gmail.com \
-            --release-notes "${{ github.event.head_commit.message }}" \
+            --release-notes "$RELEASE_NOTES" \
             --token "${{ secrets.FIREBASE_TOKEN }}"
