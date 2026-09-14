@@ -116,7 +116,10 @@ needed) → npm-installs any missing (`@anthropic-ai/claude-code`,
 `@openai/codex`) → installs the `relay-runner` binary + systemd unit,
 auto-filling `RELAY_LISTEN_ADDR` in `/etc/relay/runner.env` from the
 Tailscale IP → prints a boxed summary with the real runner key + address
-read straight from `key.txt`.
+read straight from `key.txt`, then (if both a key and a Tailscale IP exist)
+runs `relay-runner -qr` to print a terminal QR code encoding
+`relay://host:port?key=...` — scan it in the app instead of typing 64 hex
+chars by hand.
 
 **Login is NOT automated, by necessity, not oversight.** `tailscale up`
 still needs a human to open a URL in a browser somewhere - no amount of
@@ -199,6 +202,12 @@ To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
   stale, not safer. If Tailscale ever ships a breaking client change this assumption needs
   revisiting, but as of 2026-09-14 "always latest" is the right default for a single-user
   deployment like this one.
+- **The runner has one external dependency: `github.com/mdp/qrterminal/v3`**, added
+  specifically for `-qr` (terminal QR code rendering for pairing - see "Install
+  bootstrap"). Everything else stayed stdlib-only by design (see below); this was a
+  deliberate, small exception because hand-rolling QR encoding (Reed-Solomon error
+  correction etc.) isn't something to redo reliably. Pure Go, no cgo - doesn't affect
+  the single-static-binary cross-compile property.
 - **`claude`/`codex` CLI auto-install also bootstraps Node.js/npm itself** via `apt-get
   install nodejs npm` if missing — true zero-prerequisite single-command deploy on
   apt-based systems (Debian/Ubuntu, which is what's actually targeted). On a non-apt
@@ -226,6 +235,8 @@ To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
 | Session-finish → notify wiring | `cmd/runnerd/main.go` (`sessions.OnFinished`), `internal/session/session.go` (`notifyFinished`) |
 | Idle-suspend enable flag | env `RELAY_IDLE_SUSPEND_ENABLED` → `internal/idle/idle.go` (`LoadConfig`) — disabled unless exactly `"true"` |
 | Idle timeout / check interval | env `RELAY_IDLE_TIMEOUT`, `RELAY_IDLE_CHECK_INTERVAL` → `internal/idle/idle.go` (`LoadConfig`, `DefaultTimeout`, `DefaultCheckInterval`) |
+| Pairing QR content/rendering | `cmd/runnerd/main.go` (`printPairingQR`, flag `-qr`) |
+| Tailscale / Node / CLI bootstrap | `runner/install/install.sh` steps 1-2 |
 | Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
 | Shutdown command (S5) | `internal/idle/shutdown_unix.go` (`systemctl poweroff` / `shutdown -h now` fallback), `internal/idle/shutdown_windows.go` (`shutdown /s /t 0`) |
 | Idle-suspend ticker wiring | `cmd/runnerd/main.go` (`idle.NewMonitor(...).Run()`, gated on `idleCfg.Enabled`) |
