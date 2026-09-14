@@ -3,8 +3,20 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Placeholder glyph — swap for a real mark later. -->
+    <!-- Three relayed nodes on a diagonal (phone -> runner -> runner), matching what the app
+         actually does - not a generic glyph. Replaces the placeholder triangle. -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,20 L82,80 L26,80 Z" />
+        android:strokeColor="#5EEAD4"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:pathData="M30,78 L78,30" />
+    <path
+        android:fillColor="#134E4A"
+        android:pathData="M19,78 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0" />
+    <path
+        android:fillColor="#5EEAD4"
+        android:pathData="M43,54 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0" />
+    <path
+        android:fillColor="#134E4A"
+        android:pathData="M67,30 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0" />
 </vector>

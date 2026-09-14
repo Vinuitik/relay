@@ -51,12 +51,33 @@ fun RunnerListScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var showAddDialog by remember { mutableStateOf(false) }
+    var showQrScan by remember { mutableStateOf(false) }
     var editingRunner by remember { mutableStateOf<KnownRunner?>(null) }
+
+    if (showQrScan) {
+        QrScanScreen(
+            onScanned = { scanned ->
+                scope.launch {
+                    repository.addRunner(
+                        KnownRunner(hostname = scanned.hostname, port = scanned.port, key = scanned.key),
+                    )
+                }
+                showQrScan = false
+                Toast.makeText(context, "Added runner ${scanned.hostname}", Toast.LENGTH_SHORT).show()
+            },
+            onManualEntry = {
+                showQrScan = false
+                showAddDialog = true
+            },
+            onClose = { showQrScan = false },
+        )
+        return
+    }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Runners") }) },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showAddDialog = true }) {
+            FloatingActionButton(onClick = { showQrScan = true }) {
                 Icon(Icons.Default.Add, contentDescription = "Add runner")
             }
         },

@@ -93,6 +93,16 @@ dependencies {
     // and in RelayFirebaseMessagingService. The dependency alone does not require the plugin.
     implementation("com.google.firebase:firebase-messaging:24.0.1")
 
+    // In-app QR scanning for pairing a runner (see ui/screens/QrScanScreen.kt) — CameraX for the
+    // preview/frame pipeline, ML Kit for on-device barcode decoding (no network call, no
+    // Firebase project dependency despite the com.google.mlkit group id).
+    val cameraxVersion = "1.3.4"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
