@@ -243,6 +243,12 @@ To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
   file) - self-update's `install()` will likely just fail-and-retry-next-interval there.
   Not a blocker: Windows was always the dev/laptop-testing target, not a deployed
   self-updating runner (see ARCHITECTURE.md - the actual deployment target is Linux).
+- **The binary lives at `/opt/relay/bin/relay-runner`, owned by the run user, not
+  `/usr/local/bin`.** Caught during testing: the service runs as a non-root user
+  (`User=%i`), and self-update replaces its own binary from that same user - a
+  root-owned `/usr/local/bin` would make self-update permanently, silently unable to
+  write there. install.sh removes any stale binary left at the old `/usr/local/bin`
+  location from before this fix.
 - **A GitHub release with a corrupted/malicious binary is the entire trust boundary**
   for self-update. `checksums.txt` only proves the downloaded bytes match what the CI
   workflow published - it does NOT protect against a compromised GitHub account/token
