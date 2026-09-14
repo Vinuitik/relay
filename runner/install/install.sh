@@ -141,8 +141,16 @@ else
     echo "               Run 'tailscale up', then set RELAY_LISTEN_ADDR in"
     echo "               /etc/relay/runner.env and: systemctl restart relay-runner@$RUN_USER"
 fi
-echo " Add to phone app: known-runners list, using the key + addr above."
 echo "================================================================"
+echo
+if [ -n "$KEY" ] && [ -n "$TS_IP" ]; then
+    echo "Scan this in the Relay app (Add Runner -> Scan QR) instead of typing the key:"
+    echo
+    RELAY_HOME="$RUN_HOME/.relay" RELAY_LISTEN_ADDR="$TS_IP:7777" /usr/local/bin/relay-runner -qr
+else
+    echo "Add to phone app manually: known-runners list, using the key + addr above."
+    echo "(QR skipped - need both a generated key and a Tailscale IP to encode)"
+fi
 echo
 echo "status: systemctl status relay-runner@$RUN_USER"
 echo "logs:   journalctl -u relay-runner@$RUN_USER -f"

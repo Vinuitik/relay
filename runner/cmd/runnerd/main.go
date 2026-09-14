@@ -3,10 +3,13 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/mdp/qrterminal/v3"
 
 	"relay/runner/internal/api"
 	"relay/runner/internal/compose"
@@ -30,6 +33,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+
+	// -qr: print the pairing QR code (address + key) to the terminal and
+	// exit, instead of starting the server. Lets a headless/CLI-only
+	// server (see runner/FLOWS.md "Install bootstrap") hand its key to the
+	// phone app via camera scan instead of copy-pasting 64 hex chars.
+	if len(os.Args) > 1 && os.Args[1] == "-qr" {
+		printPairingQR(cfg)
+		return
+	}
+
 	if cfg.FirstRun {
 		log.Printf("first run: generated new key, printed once below - copy it into the phone app")
 		log.Printf("RELAY KEY: %s", cfg.Key)
@@ -79,6 +92,23 @@ func main() {
 	if err := http.ListenAndServe(cfg.ListenAddr, srv.Routes()); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
+}
+
+// printPairingQR renders a relay://host:port?key=... QR code to stdout as
+// terminal Unicode blocks - no image, no display server, just the SSH
+// session's own terminal. cfg.ListenAddr is whatever RELAY_LISTEN_ADDR
+// resolved to (install.sh sets it to the Tailscale IP once logged in); if
+// Tailscale isn't up yet this still prints, just with the useless loopback
+// default - the caller (install.sh) only invokes -qr after Tailscale login
+// succeeds, so that's a manual `relay-runner -qr` misuse case, not a normal
+// path.
+func printPairingQR(cfg *config.Config) {
+	uri := fmt.Sprintf("relay://%s?key=%s", cfg.ListenAddr, cfg.Key)
+	fmt.Println("Scan this in the Relay Android app (Add Runner -> Scan QR):")
+	fmt.Println()
+	qrterminal.GenerateHalfBlock(uri, qrterminal.L, os.Stdout)
+	fmt.Println()
+	fmt.Printf("(runner address: %s)\n", cfg.ListenAddr)
 }
 
 // runHistoryPurge periodically drops finished/error sessions older than
