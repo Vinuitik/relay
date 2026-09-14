@@ -18,6 +18,7 @@ import (
 	"relay/runner/internal/idle"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
+	"relay/runner/internal/selfupdate"
 	"relay/runner/internal/session"
 	"relay/runner/internal/wol"
 )
@@ -27,6 +28,18 @@ import (
 // interval is enough; the retention window itself (history.DefaultMaxAge)
 // is the value ARCHITECTURE.md actually calls out as configurable.
 const historyPurgeInterval = 1 * time.Hour
+
+// version is overwritten at build time via -ldflags "-X main.version=..."
+// (see .github/workflows/runner-release.yml, which sets it to
+// "runner-<short-sha>"). A plain `go build` leaves it "dev", which
+// internal/selfupdate treats as "never self-update" - see that package's
+// doc comment.
+var version = "dev"
+
+// defaultUpdateCheckInterval matches the "every ~10 min" default the
+// project settled on - frequent enough that a fix lands same-session,
+// rare enough not to hammer the GitHub API from every deployed runner.
+const defaultUpdateCheckInterval = 10 * time.Minute
 
 func main() {
 	cfg, err := config.Load()
@@ -41,6 +54,30 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-qr" {
 		printPairingQR(cfg)
 		return
+	}
+
+	// Self-update: check once at startup (so a stale runner catches up the
+	// moment it's restarted for any reason, not just at the next tick),
+	// then keep checking periodically. RELAY_AUTO_UPDATE_ENABLED=false
+	// turns this off entirely - see internal/selfupdate's doc comment for
+	// why this is pull (server checks GitHub), not push (GitHub reaches
+	// into the server).
+	if os.Getenv("RELAY_AUTO_UPDATE_ENABLED") != "false" {
+		if updated, err := selfupdate.CheckOnce(version); err != nil {
+			log.Printf("selfupdate: startup check failed: %v", err)
+		} else if updated {
+			log.Printf("selfupdate: installed a new version at startup, exiting for systemd to restart into it")
+			return
+		}
+		interval := defaultUpdateCheckInterval
+		if raw := os.Getenv("RELAY_UPDATE_CHECK_INTERVAL"); raw != "" {
+			if d, err := time.ParseDuration(raw); err == nil {
+				interval = d
+			} else {
+				log.Printf("selfupdate: invalid RELAY_UPDATE_CHECK_INTERVAL %q, using default %s", raw, defaultUpdateCheckInterval)
+			}
+		}
+		go selfupdate.RunPeriodically(version, interval, nil, log.Printf)
 	}
 
 	if cfg.FirstRun {

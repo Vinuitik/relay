@@ -134,6 +134,39 @@ the real server before building the relay.
 
 To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
 
+## Self-update
+
+Files: internal/selfupdate/selfupdate.go, cmd/runnerd/main.go,
+install/relay-runner.service, .github/workflows/runner-release.yml
+
+`main()` → `selfupdate.CheckOnce(version)` at startup → if a newer
+`runner-<sha>` release exists on GitHub, downloads the binary for its own
+OS/arch → verifies against `checksums.txt` → atomically renames over its
+own executable → exits 0 → systemd (`Restart=always`) brings the new
+binary up. Then `selfupdate.RunPeriodically` repeats the check every
+`RELAY_UPDATE_CHECK_INTERVAL` (default 10m) in a goroutine for as long as
+the process runs.
+
+**Pull, not push, deliberately.** The server checks GitHub over plain
+HTTPS outbound; nothing reaches in, and no SSH key to this machine is
+stored anywhere in GitHub. See the package doc comment in selfupdate.go for
+the full reasoning (a leaked push-deploy SSH secret would mean remote code
+execution on this box; a compromised GitHub release can only do what the
+runner already does).
+
+`version` is `"dev"` on a plain `go build` - self-update is a hard no-op for
+that (`devVersion` check in `CheckOnce`), so a developer's local build is
+never silently overwritten. Only `.github/workflows/runner-release.yml`
+builds with a real version (`-ldflags -X main.version=runner-<short-sha>`)
+and publishes it as a GitHub Release with `checksums.txt` attached - that's
+what a deployed runner is actually polling for.
+
+To disable on a given machine: `RELAY_AUTO_UPDATE_ENABLED=false` in
+`/etc/relay/runner.env`, then `systemctl restart relay-runner@<user>`.
+
+To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
+(e.g. `1h`), same env file.
+
 ## Technology notes
 
 - **Sessions are in-memory only** (a `sync.Mutex`-guarded map in session.Manager). A runner
@@ -202,6 +235,20 @@ To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
   stale, not safer. If Tailscale ever ships a breaking client change this assumption needs
   revisiting, but as of 2026-09-14 "always latest" is the right default for a single-user
   deployment like this one.
+- **Self-update replaces the binary on-disk while it's still the running process's
+  executable.** Works because Linux keeps a running process's already-open inode alive
+  after the file at that path is renamed out from under it - the old process finishes
+  serving whatever it's doing on the old inode, then exits and systemd starts the new
+  file. This does NOT reliably work on Windows (NTFS commonly locks a running exe's
+  file) - self-update's `install()` will likely just fail-and-retry-next-interval there.
+  Not a blocker: Windows was always the dev/laptop-testing target, not a deployed
+  self-updating runner (see ARCHITECTURE.md - the actual deployment target is Linux).
+- **A GitHub release with a corrupted/malicious binary is the entire trust boundary**
+  for self-update. `checksums.txt` only proves the downloaded bytes match what the CI
+  workflow published - it does NOT protect against a compromised GitHub account/token
+  publishing a bad release in the first place. Same trust level as `curl | sh`-installing
+  any other tool; acceptable for a single-user deployment, worth revisiting (signed
+  releases, a pinned public key) before this is ever multi-tenant.
 - **The runner has one external dependency: `github.com/mdp/qrterminal/v3`**, added
   specifically for `-qr` (terminal QR code rendering for pairing - see "Install
   bootstrap"). Everything else stayed stdlib-only by design (see below); this was a
@@ -237,6 +284,8 @@ To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
 | Idle timeout / check interval | env `RELAY_IDLE_TIMEOUT`, `RELAY_IDLE_CHECK_INTERVAL` → `internal/idle/idle.go` (`LoadConfig`, `DefaultTimeout`, `DefaultCheckInterval`) |
 | Pairing QR content/rendering | `cmd/runnerd/main.go` (`printPairingQR`, flag `-qr`) |
 | Tailscale / Node / CLI bootstrap | `runner/install/install.sh` steps 1-2 |
+| Self-update enable/interval | env `RELAY_AUTO_UPDATE_ENABLED`, `RELAY_UPDATE_CHECK_INTERVAL` → `cmd/runnerd/main.go` |
+| Self-update release source/logic | `internal/selfupdate/selfupdate.go`, `.github/workflows/runner-release.yml` |
 | Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
 | Shutdown command (S5) | `internal/idle/shutdown_unix.go` (`systemctl poweroff` / `shutdown -h now` fallback), `internal/idle/shutdown_windows.go` (`shutdown /s /t 0`) |
 | Idle-suspend ticker wiring | `cmd/runnerd/main.go` (`idle.NewMonitor(...).Run()`, gated on `idleCfg.Enabled`) |
