@@ -11,8 +11,8 @@
 #      already present, and brings up `tailscale up` if not already logged in
 #      (this needs you to open the printed login URL yourself - can't be
 #      automated headlessly)
-#   2. Installs the claude / codex CLIs via npm if not already present
-#      (requires Node.js/npm - installed separately, not by this script)
+#   2. Installs Node.js/npm via apt if not already present (apt-based systems
+#      only), then installs the claude / codex CLIs via npm if not present
 #   3. Copies the binary to /usr/local/bin/relay-runner
 #   4. Creates /etc/relay/ and drops in runner.env.example (won't overwrite
 #      an existing /etc/relay/runner.env), and auto-fills RELAY_LISTEN_ADDR
@@ -61,9 +61,16 @@ fi
 
 echo "2/6 checking claude / codex CLIs"
 if ! command -v npm >/dev/null 2>&1; then
-    echo "    npm not found - skipping CLI install, install Node.js/npm yourself then"
-    echo "    re-run this script (or install manually: npm install -g @anthropic-ai/claude-code @openai/codex)"
-else
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "    npm not found - installing Node.js via apt (nodejs, npm)"
+        apt-get update -qq && apt-get install -y nodejs npm
+    else
+        echo "    npm not found and this isn't an apt-based system - skipping CLI install,"
+        echo "    install Node.js/npm yourself then re-run this script (or install"
+        echo "    manually: npm install -g @anthropic-ai/claude-code @openai/codex)"
+    fi
+fi
+if command -v npm >/dev/null 2>&1; then
     if ! command -v claude >/dev/null 2>&1; then
         echo "    installing claude CLI (npm install -g @anthropic-ai/claude-code)"
         npm install -g @anthropic-ai/claude-code

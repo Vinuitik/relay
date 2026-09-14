@@ -193,10 +193,11 @@ To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
   stale, not safer. If Tailscale ever ships a breaking client change this assumption needs
   revisiting, but as of 2026-09-14 "always latest" is the right default for a single-user
   deployment like this one.
-- **`claude`/`codex` CLI auto-install requires Node.js/npm already present** — install.sh
-  does not install Node itself (out of scope: too platform-specific to script reliably).
-  If npm is missing, the CLI-install step is skipped with a message, everything else in
-  install.sh still runs.
+- **`claude`/`codex` CLI auto-install also bootstraps Node.js/npm itself** via `apt-get
+  install nodejs npm` if missing — true zero-prerequisite single-command deploy on
+  apt-based systems (Debian/Ubuntu, which is what's actually targeted). On a non-apt
+  system the CLI-install step is skipped with a message instead of guessing a package
+  manager; everything else in install.sh still runs.
 
 ## Change Index
 
