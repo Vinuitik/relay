@@ -88,6 +88,26 @@ something this code can detect or force).
 To change: `fcm/RegisterDeviceWorker.kt`, `MainActivity.registerCurrentFcmTokenWithAllRunners()`,
 `fcm/RelayFirebaseMessagingService.onMessageReceived()` (notification content/channel).
 
+## Distribution (Firebase App Distribution)
+
+Files: .firebaserc
+
+Not on the Play Store by design (see ARCHITECTURE.md), so updates ship via
+Firebase App Distribution instead - reuses the same `relay-sizonenko`
+Firebase project already wired for FCM, no new infra.
+
+Ship a build: `npx firebase appdistribution:distribute
+<path-to-apk> --app 1:960396843466:android:fd2974c630731375591733 --testers
+sizonenkodima6@gmail.com` (run from `android/`, project comes from
+`.firebaserc`). Tester gets an email the first time (installs the small
+"Firebase App Tester" companion app once), then a push notification on
+every release after.
+
+To change who gets releases: swap `--testers` for `--groups <name>` once
+more than one person is testing (create the group in the Firebase console
+first). To change the app being targeted: the `--app` id comes from
+`android/app/google-services.json` (`mobilesdk_app_id`).
+
 ## Technology notes
 
 - **No build/run verification via emulator** — none available in this environment. Compile
@@ -118,6 +138,7 @@ To change: `fcm/RegisterDeviceWorker.kt`, `MainActivity.registerCurrentFcmTokenW
 |---|---|
 | Known runners storage (+ wake config fields) | `data/KnownRunnersRepository.kt`, `model/Models.kt` |
 | Widget's default project | `data/WidgetConfigRepository.kt` |
+| Distribution target (Firebase project/app) | `.firebaserc`, `app/google-services.json` |
 | API types (must match shared/API.md) | `model/Models.kt` |
 | HTTP client / auth header | `network/RelayApiClient.kt`, `network/RelayApiService.kt` |
 | Navigation graph | `ui/navigation/RelayNavHost.kt` |
