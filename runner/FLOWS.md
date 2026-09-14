@@ -243,6 +243,15 @@ To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
   file) - self-update's `install()` will likely just fail-and-retry-next-interval there.
   Not a blocker: Windows was always the dev/laptop-testing target, not a deployed
   self-updating runner (see ARCHITECTURE.md - the actual deployment target is Linux).
+- **Rerunning install.sh always ends in `systemctl restart`, never just `enable --now`.**
+  Caught during testing: on an already-active service, `enable --now` is a no-op that does
+  NOT pick up a binary step 3 just overwrote - the process keeps executing its old,
+  already-open inode (even if that file was deleted from disk, e.g. the old
+  `/usr/local/bin/relay-runner`). Self-update updated the real deployed binary correctly,
+  and it sat there completely inert - only found out because the runner's own logs showed
+  zero selfupdate activity. Data over speculation: `journalctl` + `ps -o cmd -C
+  relay-runner` (its cmdline points at a path `ls` says no longer exists) confirmed it
+  before this was "fixed" without evidence.
 - **The binary lives at `/opt/relay/bin/relay-runner`, owned by the run user, not
   `/usr/local/bin`.** Caught during testing: the service runs as a non-root user
   (`User=%i`), and self-update replaces its own binary from that same user - a
