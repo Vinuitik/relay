@@ -90,18 +90,36 @@ To change: `fcm/RegisterDeviceWorker.kt`, `MainActivity.registerCurrentFcmTokenW
 
 ## Distribution (Firebase App Distribution)
 
-Files: .firebaserc
+Files: .firebaserc, .github/workflows/android-deploy.yml, MainActivity.kt
 
 Not on the Play Store by design (see ARCHITECTURE.md), so updates ship via
 Firebase App Distribution instead - reuses the same `relay-sizonenko`
 Firebase project already wired for FCM, no new infra.
 
-Ship a build: `npx firebase appdistribution:distribute
+**Shipping a build is automatic**: a push to `main` touching `android/**`
+triggers `.github/workflows/android-deploy.yml`, which builds and runs the
+same distribute command below. Manual equivalent (e.g. to force a build
+with no code change): `npx firebase appdistribution:distribute
 <path-to-apk> --app 1:960396843466:android:fd2974c630731375591733 --testers
 sizonenkodima6@gmail.com` (run from `android/`, project comes from
-`.firebaserc`). Tester gets an email the first time (installs the small
-"Firebase App Tester" companion app once), then a push notification on
-every release after.
+`.firebaserc`).
+
+**Getting notified of a new build vs. installing it are two different
+things.** Distribution only uploads the release and pings testers - it does
+NOT install anything by itself:
+- Firebase always emails testers on every release - no dev-side toggle
+  exists to suppress this (a firebase-tools feature request for one was
+  filed and closed "not planned"). Only the tester can opt out, from their
+  own Firebase App Distribution web view - not something this repo controls.
+- **In-app prompt** (`MainActivity.checkForUpdate`, `firebase-appdistribution`
+  SDK): on every app launch, calls `checkForNewRelease()`; if newer than
+  what's installed, shows a "Relay X.X is ready to install" dialog -
+  tapping Update calls the SDK's `updateApp()`, which downloads and walks
+  through the install prompt itself (no custom download/install code
+  needed). First launch ever on a device triggers the SDK's own one-time
+  tester sign-in (a Custom Tab). This SDK is normally discouraged in a
+  Play Store production build (its own update flow can read as policy
+  friction) - moot here since this app was never headed for the Store.
 
 To change who gets releases: swap `--testers` for `--groups <name>` once
 more than one person is testing (create the group in the Firebase console
@@ -139,6 +157,8 @@ first). To change the app being targeted: the `--app` id comes from
 | Known runners storage (+ wake config fields) | `data/KnownRunnersRepository.kt`, `model/Models.kt` |
 | Widget's default project | `data/WidgetConfigRepository.kt` |
 | Distribution target (Firebase project/app) | `.firebaserc`, `app/google-services.json` |
+| Auto-distribute on push to main | `.github/workflows/android-deploy.yml` |
+| In-app update check/prompt | `MainActivity.kt` (`checkForUpdate`, `UpdateAvailableDialog`) |
 | API types (must match shared/API.md) | `model/Models.kt` |
 | HTTP client / auth header | `network/RelayApiClient.kt`, `network/RelayApiService.kt` |
 | Navigation graph | `ui/navigation/RelayNavHost.kt` |

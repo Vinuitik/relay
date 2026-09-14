@@ -129,7 +129,6 @@ fun QrScanScreen(
 
 @Composable
 private fun CameraPreviewWithScanner(onScanned: (ScannedRunner) -> Unit) {
-    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     // Guards against firing onScanned multiple times for the same held-up QR code while frames
     // keep streaming in during the (fast, but non-zero) time it takes the caller to unmount this
