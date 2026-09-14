@@ -109,19 +109,25 @@ Files: install.sh
 
 `install.sh` → checks `tailscale` → if missing, installs via official
 `curl https://tailscale.com/install.sh | sh` (always latest, not pinned - see
-Technology notes) → if not logged in, tells you to run `tailscale up`
-yourself and re-run → checks `claude`/`codex` CLIs → npm-installs any
-missing (`@anthropic-ai/claude-code`, `@openai/codex`) → installs the
-`relay-runner` binary + systemd unit, auto-filling `RELAY_LISTEN_ADDR` in
-`/etc/relay/runner.env` from the Tailscale IP if one was found.
+Technology notes) → if not logged in, runs `tailscale up` itself and blocks,
+printing the login URL to the same terminal you're running install.sh from
+→ checks `claude`/`codex` CLIs (bootstrapping Node/npm via apt first if
+needed) → npm-installs any missing (`@anthropic-ai/claude-code`,
+`@openai/codex`) → installs the `relay-runner` binary + systemd unit,
+auto-filling `RELAY_LISTEN_ADDR` in `/etc/relay/runner.env` from the
+Tailscale IP → prints a boxed summary with the real runner key + address
+read straight from `key.txt`.
 
-**Login is NOT automated.** `tailscale up` and `claude auth login` /
-`codex login` both need a human to open a URL somewhere - install.sh does
-not attempt this. `[NOT IMPLEMENTED]`: relaying that login URL to the phone
-app so auth can be completed without physical access to the server. Design
-depends on what `claude auth login` actually prints/does when run headless
-(no local browser) - untested as of 2026-09-14, verify on the real server
-before building the relay.
+**Login is NOT automated, by necessity, not oversight.** `tailscale up`
+still needs a human to open a URL in a browser somewhere - no amount of
+sudo can click a login link. install.sh gets you as close as possible: it
+runs the command and surfaces the URL inline rather than making you run a
+separate step. `claude auth login` / `codex login` are NOT run by
+install.sh at all yet. `[NOT IMPLEMENTED]`: relaying that login URL to the
+phone app so auth can be completed without physical/SSH access to the
+server. Design depends on what `claude auth login` actually prints/does
+when run headless (no local browser) - untested as of 2026-09-14, verify on
+the real server before building the relay.
 
 To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
 
