@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=%i
-ExecStart=/usr/local/bin/relay-runner
+ExecStart=/opt/relay/bin/relay-runner
 Restart=always
 RestartSec=5
 EnvironmentFile=-/etc/relay/runner.env

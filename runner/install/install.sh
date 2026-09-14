@@ -14,7 +14,8 @@
 #      scripted, that's the one manual step left)
 #   2. Installs Node.js/npm via apt if not already present (apt-based systems
 #      only), then installs the claude / codex CLIs via npm if not present
-#   3. Copies the binary to /usr/local/bin/relay-runner
+#   3. Copies the binary to /opt/relay/bin/relay-runner (owned by the run
+#      user, not root - see the comment at that step for why)
 #   4. Creates /etc/relay/ and drops in runner.env.example (won't overwrite
 #      an existing /etc/relay/runner.env), and auto-fills RELAY_LISTEN_ADDR
 #      with the Tailscale IP from step 1
@@ -91,8 +92,20 @@ if command -v npm >/dev/null 2>&1; then
     fi
 fi
 
-echo "3/6 installing binary to /usr/local/bin/relay-runner"
-install -m 0755 "$BINARY" /usr/local/bin/relay-runner
+echo "3/6 installing binary to /opt/relay/bin/relay-runner"
+# NOT /usr/local/bin: the service runs as $RUN_USER, not root (see
+# relay-runner.service), and internal/selfupdate replaces this binary from
+# that same non-root user. /usr/local/bin is root-owned/root-write-only, so
+# self-update would silently and permanently fail there. /opt/relay/bin is
+# owned by $RUN_USER instead - a fixed path (no home-dir specifier
+# uncertainty in the systemd unit) that the runner can actually write to.
+mkdir -p /opt/relay/bin
+install -m 0755 "$BINARY" /opt/relay/bin/relay-runner
+chown -R "$RUN_USER":"$RUN_USER" /opt/relay
+if [ -f /usr/local/bin/relay-runner ]; then
+    echo "    removing stale binary at old location /usr/local/bin/relay-runner"
+    rm -f /usr/local/bin/relay-runner
+fi
 
 echo "4/6 setting up /etc/relay/"
 mkdir -p /etc/relay
@@ -157,7 +170,7 @@ echo
 if [ -n "$KEY" ] && [ -n "$TS_IP" ]; then
     echo "Scan this in the Relay app (Add Runner -> Scan QR) instead of typing the key:"
     echo
-    RELAY_HOME="$RUN_HOME/.relay" RELAY_LISTEN_ADDR="$TS_IP:7777" /usr/local/bin/relay-runner -qr
+    RELAY_HOME="$RUN_HOME/.relay" RELAY_LISTEN_ADDR="$TS_IP:7777" /opt/relay/bin/relay-runner -qr
 else
     echo "Add to phone app manually: known-runners list, using the key + addr above."
     echo "(QR skipped - need both a generated key and a Tailscale IP to encode)"
