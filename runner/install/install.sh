@@ -105,6 +105,13 @@ if [ ! -f /etc/relay/runner.env ]; then
         echo "    wrote /etc/relay/runner.env from the example - RELAY_LISTEN_ADDR not set"
         echo "    (Tailscale wasn't logged in yet) - edit it in by hand once you run 'tailscale up'"
     fi
+elif [ -n "$TS_IP" ] && grep -q "^#RELAY_LISTEN_ADDR=" /etc/relay/runner.env; then
+    # File exists from an earlier run (e.g. before Tailscale was logged in)
+    # and still has the commented-out placeholder - fill it in now that we
+    # have a real IP, instead of leaving the runner stuck on loopback forever.
+    sed -i "s/^#RELAY_LISTEN_ADDR=.*/RELAY_LISTEN_ADDR=$TS_IP:7777/" /etc/relay/runner.env
+    echo "    /etc/relay/runner.env existed but had no RELAY_LISTEN_ADDR set - filled in $TS_IP:7777"
+    NEEDS_RESTART=1
 else
     echo "    /etc/relay/runner.env already exists, leaving it alone"
 fi
@@ -115,6 +122,10 @@ systemctl daemon-reload
 
 echo "6/6 enabling + starting relay-runner@$RUN_USER"
 systemctl enable --now "relay-runner@$RUN_USER"
+if [ "$NEEDS_RESTART" = "1" ]; then
+    echo "    runner.env changed since the service last started - restarting to pick it up"
+    systemctl restart "relay-runner@$RUN_USER"
+fi
 
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 KEY_FILE="$RUN_HOME/.relay/key.txt"
