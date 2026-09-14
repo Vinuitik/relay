@@ -1,0 +1,45 @@
+name: Android build + distribute
+
+# Only runs when something under android/ actually changed - a runner-only or
+# docs-only commit to main shouldn't rebuild and re-notify testers of a build
+# with no app changes in it. See android/FLOWS.md "Distribution" for the
+# manual equivalent of this same command.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+  workflow_dispatch: {}
+
+jobs:
+  build-and-distribute:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # google-services.json is gitignored (contains project config) - restored from a repo
+      # secret rather than committed, same file gh secret set uploaded from app/google-services.json.
+      - name: Restore google-services.json
+        run: echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
+
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --console=plain
+
+      - name: Distribute to Firebase App Distribution
+        run: |
+          npx firebase-tools appdistribution:distribute \
+            app/build/outputs/apk/debug/app-debug.apk \
+            --app 1:960396843466:android:fd2974c630731375591733 \
+            --testers sizonenkodima6@gmail.com \
+            --release-notes "${{ github.event.head_commit.message }}" \
+            --token "${{ secrets.FIREBASE_TOKEN }}"
