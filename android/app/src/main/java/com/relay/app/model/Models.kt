@@ -60,3 +60,10 @@ data class Device(
     val fcmToken: String,
     val registeredAt: String,
 )
+
+/** One project's outcome within `POST /v1/containers/{start,stop}-all` — see shared/API.md. */
+data class ContainerActionResult(
+    val projectId: String,
+    val ok: Boolean,
+    val error: String? = null,
+)

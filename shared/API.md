@@ -64,6 +64,8 @@ Device {
 | POST | `/v1/sessions/{sessionId}/stop` | - | `200 Session` | kills the subprocess, marks session `finished` |
 | POST | `/v1/projects/{projectId}/containers/start` | - | `200 {}` | runs `docker compose up -d` in the project dir |
 | POST | `/v1/projects/{projectId}/containers/stop` | - | `200 {}` | runs `docker compose down` in the project dir |
+| POST | `/v1/containers/start-all` | - | `200 [{projectId, ok, error?}]` | runs `docker compose up -d` across every project known to this runner; best-effort per project, one failure doesn't block the rest |
+| POST | `/v1/containers/stop-all` | - | `200 [{projectId, ok, error?}]` | runs `docker compose down` across every project known to this runner; best-effort per project, one failure doesn't block the rest |
 | POST | `/v1/wake` | `{mac: string}` | `202 {}` | sends a Wake-on-LAN magic packet as a UDP broadcast on **this runner's own local network**. Call this on whichever known runner is on the same LAN as the machine you want to wake — never on the target itself, since if it's off it can't be reached. See ARCHITECTURE.md "Relay device". |
 | POST | `/v1/devices` | `{fcmToken: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner, so the runner can notify it on session-finish. Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
 

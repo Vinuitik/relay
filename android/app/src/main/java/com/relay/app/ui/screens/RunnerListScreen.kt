@@ -13,10 +13,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -39,6 +43,7 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.model.KnownRunner
+import com.relay.app.widget.ContainersAllWorker
 import com.relay.app.widget.WakeRunnerWorker
 import kotlinx.coroutines.launch
 
@@ -102,6 +107,7 @@ fun RunnerListScreen(
             } else {
                 LazyColumn {
                     items(runners, key = { it.hostname }) { runner ->
+                        var showMenu by remember { mutableStateOf(false) }
                         ListItem(
                             headlineContent = { Text(runner.hostname) },
                             supportingContent = { Text("port ${runner.port}") },
@@ -122,6 +128,29 @@ fun RunnerListScreen(
                                         }
                                     }) { Text("Wake") }
                                     TextButton(onClick = { editingRunner = runner }) { Text("Edit") }
+                                    Box {
+                                        IconButton(onClick = { showMenu = true }) {
+                                            Icon(Icons.Default.MoreVert, contentDescription = "More actions for ${runner.hostname}")
+                                        }
+                                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                                            DropdownMenuItem(
+                                                text = { Text("Start all containers") },
+                                                onClick = {
+                                                    showMenu = false
+                                                    enqueueContainersAll(context, runner.hostname, start = true)
+                                                    Toast.makeText(context, "Starting all containers on ${runner.hostname}…", Toast.LENGTH_SHORT).show()
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Stop all containers") },
+                                                onClick = {
+                                                    showMenu = false
+                                                    enqueueContainersAll(context, runner.hostname, start = false)
+                                                    Toast.makeText(context, "Stopping all containers on ${runner.hostname}…", Toast.LENGTH_SHORT).show()
+                                                },
+                                            )
+                                        }
+                                    }
                                 }
                             },
                             modifier = Modifier.clickable { onRunnerSelected(runner) },
@@ -160,6 +189,18 @@ fun RunnerListScreen(
             },
         )
     }
+}
+
+private fun enqueueContainersAll(context: android.content.Context, hostname: String, start: Boolean) {
+    val request = OneTimeWorkRequestBuilder<ContainersAllWorker>()
+        .setInputData(
+            workDataOf(
+                ContainersAllWorker.KEY_TARGET_HOSTNAME to hostname,
+                ContainersAllWorker.KEY_START to start,
+            ),
+        )
+        .build()
+    WorkManager.getInstance(context).enqueue(request)
 }
 
 /**
