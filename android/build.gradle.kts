@@ -7,4 +7,8 @@ plugins {
     // ARCHITECTURE.md for the provisioning steps). Without that file this plugin fails the
     // build, which is why it's NOT applied here unconditionally.
     id("com.google.gms.google-services") version "4.4.2" apply false
+    // Room's annotation processor (DAO/entity codegen) - KSP instead of kapt because kapt is
+    // deprecated upstream and noticeably slower; this Kotlin/AGP pairing (1.9.24) needs the
+    // matching "1.9.24-1.0.20" KSP release, not just any KSP version.
+    id("com.google.devtools.ksp") version "1.9.24-1.0.20" apply false
 }

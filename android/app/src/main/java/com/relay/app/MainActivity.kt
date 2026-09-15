@@ -20,15 +20,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.google.firebase.appdistribution.AppDistributionRelease
 import com.google.firebase.appdistribution.FirebaseAppDistribution
 import com.google.firebase.messaging.FirebaseMessaging
 import com.relay.app.data.KnownRunnersRepository
+import com.relay.app.data.UptimeSyncWorker
 import com.relay.app.data.WidgetConfigRepository
 import com.relay.app.fcm.RegisterDeviceWorker
+import java.util.concurrent.TimeUnit
 import com.relay.app.ui.navigation.RelayNavHost
 import com.relay.app.ui.theme.RelayTheme
 
@@ -55,6 +59,7 @@ class MainActivity : ComponentActivity() {
         registerCurrentFcmTokenWithAllRunners()
         requestNotificationPermissionIfNeeded()
         checkForUpdate()
+        scheduleUptimeSync()
 
         setContent {
             RelayTheme {
@@ -125,6 +130,18 @@ class MainActivity : ComponentActivity() {
         } catch (e: IllegalStateException) {
             Log.w(TAG, "Firebase not configured yet (no google-services.json) — skipping startup FCM registration", e)
         }
+    }
+
+    /**
+     * Schedules [UptimeSyncWorker] every 15 minutes (WorkManager's minimum periodic interval) -
+     * pulls `GET /v1/uptime` from whichever known runners happen to be reachable right now and
+     * merges it into the app's own long-term Room history (see DashboardScreen). Unique work so
+     * repeated `onCreate` calls (rotation, process restart) don't stack up duplicate schedules.
+     */
+    private fun scheduleUptimeSync() {
+        val request = PeriodicWorkRequestBuilder<UptimeSyncWorker>(15, TimeUnit.MINUTES).build()
+        WorkManager.getInstance(applicationContext)
+            .enqueueUniquePeriodicWork("uptime-sync", ExistingPeriodicWorkPolicy.KEEP, request)
     }
 
     /**

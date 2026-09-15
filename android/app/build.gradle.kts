@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.google.devtools.ksp")
 }
 
 // Applied only if google-services.json exists (gitignored - see runner/README.md for how to
@@ -85,6 +86,15 @@ dependencies {
 
     // Persistence for the known-runners list.
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    // On-device cache: mirrors runner-side sessions/messages (so chats are readable offline or
+    // while a runner is asleep) and the phone's own merged uptime history (the runner only keeps
+    // a short-term buffer - see runner/FLOWS.md "Uptime tracking"). Room over raw SQLite for
+    // typed DAOs/Flow queries with compile-time-checked SQL - the natural fit given Retrofit
+    // already gives typed models to store.
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
 
     // Background work for the widget's stop-containers action.
     implementation("androidx.work:work-runtime-ktx:2.9.1")
