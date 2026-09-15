@@ -148,6 +148,16 @@ more than one person is testing (create the group in the Firebase console
 first). To change the app being targeted: the `--app` id comes from
 `android/app/google-services.json` (`mobilesdk_app_id`).
 
+**`--release-notes` is passed via an `env:` var (`$RELEASE_NOTES` in the
+run: script), never `"${{ github.event.head_commit.message }}"`
+interpolated directly into a quoted shell string.** Found this the hard
+way: a commit message containing a literal `"` (e.g. quoting "update
+available" in the message itself) closes that shell string early and the
+rest gets parsed as stray arguments - `appdistribution:distribute` failed
+outright with "Too many arguments." `$VAR` expansion doesn't re-parse its
+value as shell syntax, so it's immune regardless of what the message
+contains. Same fix, same reasoning, in runner-release.yml's `--notes`.
+
 ## Technology notes
 
 - **No build/run verification via emulator** — none available in this environment. Compile
@@ -177,6 +187,7 @@ first). To change the app being targeted: the `--app` id comes from
 | Thing | Where |
 |---|---|
 | Known runners storage (+ wake config fields) | `data/KnownRunnersRepository.kt`, `model/Models.kt` |
+| QR pairing content parsing | `ui/screens/QrScanScreen.kt` (`parseRelayQrContent`) |
 | Widget's default project | `data/WidgetConfigRepository.kt` |
 | Distribution target (Firebase project/app) | `.firebaserc`, `app/google-services.json` |
 | Auto-distribute on push to main | `.github/workflows/android-deploy.yml` |
