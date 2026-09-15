@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mdp/qrterminal/v3"
@@ -20,6 +21,7 @@ import (
 	"relay/runner/internal/project"
 	"relay/runner/internal/selfupdate"
 	"relay/runner/internal/session"
+	"relay/runner/internal/uptime"
 	"relay/runner/internal/wol"
 )
 
@@ -92,6 +94,14 @@ func main() {
 
 	sessions := session.NewManager(projects.Dir)
 
+	// Opens (and closes out any crash-orphaned interval from) the uptime
+	// buffer - see internal/uptime's package doc for why this is a short
+	// local buffer, not the dashboard's system of record.
+	uptimeStore, err := uptime.Open(filepath.Join(cfg.RelayHome, "uptime.json"))
+	if err != nil {
+		log.Fatalf("open uptime store: %v", err)
+	}
+
 	devices := notify.NewRegistry()
 	notifier := notify.NewNotifier(os.Getenv("RELAY_FCM_CREDENTIALS"))
 	sessions.OnFinished = func(sess session.Session) {
@@ -112,13 +122,27 @@ func main() {
 	if idleCfg.Enabled {
 		log.Printf("idle: suspend-to-S5 enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)
 		mon := idle.NewMonitor(sessions, idle.DefaultShutdowner, idleCfg)
+		mon.BeforeShutdown = func() {
+			if err := uptimeStore.Close(); err != nil {
+				log.Printf("uptime: failed to close interval before shutdown: %v", err)
+			}
+			hostname, err := os.Hostname()
+			if err != nil {
+				hostname = "unknown"
+			}
+			for _, d := range devices.List() {
+				if err := notifier.NotifyRunnerSuspending(d, hostname); err != nil {
+					log.Printf("notify device %s of suspend: %v", d.ID, err)
+				}
+			}
+		}
 		go mon.Run()
 	}
 
 	srv := api.NewServer(cfg.Key, projects, sessions, api.ComposeFuncs{
 		Start: compose.Start,
 		Stop:  compose.Stop,
-	}, devices, wol.DefaultSender)
+	}, devices, wol.DefaultSender, uptimeStore)
 
 	// NOTE: cfg.ListenAddr defaults to loopback for local dev/tests. A
 	// production deployment must bind only to the Tailscale interface,

@@ -146,6 +146,52 @@ func (n *fcmNotifier) NotifySessionFinished(device Device, session Session) erro
 	return nil
 }
 
+// NotifyRunnerSuspending sends a data-only FCM message telling device this
+// runner is about to power off. Same best-effort contract as
+// NotifySessionFinished: errors are returned to the caller, which per
+// idle.Monitor's wiring in cmd/runnerd/main.go logs and moves on rather than
+// blocking or retrying the actual shutdown.
+func (n *fcmNotifier) NotifyRunnerSuspending(device Device, hostname string) error {
+	token, err := n.accessTokenFor()
+	if err != nil {
+		return fmt.Errorf("obtain FCM access token: %w", err)
+	}
+
+	msg := map[string]any{
+		"message": map[string]any{
+			"token": device.FCMToken,
+			"data": map[string]string{
+				"type":     "runner_suspending",
+				"hostname": hostname,
+			},
+		},
+	}
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal FCM message: %w", err)
+	}
+
+	sendURL := fmt.Sprintf("https://fcm.googleapis.com/v1/projects/%s/messages:send", n.cred.ProjectID)
+	req, err := http.NewRequest(http.MethodPost, sendURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := n.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send FCM message: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("FCM send failed: %s: %s", resp.Status, string(respBody))
+	}
+	return nil
+}
+
 // accessTokenFor returns a cached OAuth2 access token, refreshing it via
 // the JWT-bearer grant if it's missing or close to expiry.
 func (n *fcmNotifier) accessTokenFor() (string, error) {

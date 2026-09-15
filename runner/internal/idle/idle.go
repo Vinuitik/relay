@@ -97,6 +97,14 @@ type Monitor struct {
 	shutdown Shutdowner
 	cfg      Config
 
+	// BeforeShutdown, if set, is called synchronously right before
+	// Shutdown() - e.g. to close out the uptime buffer and fire a
+	// best-effort "going down" push to registered devices (see
+	// cmd/runnerd/main.go). Deliberately best-effort and fire-and-forget:
+	// nothing here blocks or cancels the shutdown itself, and a failure
+	// inside it should never stop the machine from actually suspending.
+	BeforeShutdown func()
+
 	// triggered is set once Shutdown has been called successfully, so a
 	// live Monitor never calls it a second time. See tick's doc comment for
 	// why, and what happens on a failed Shutdown call.
@@ -147,6 +155,9 @@ func (mon *Monitor) tick() {
 	}
 
 	log.Printf("idle: no active session for >= %s, suspending to S5", mon.cfg.Timeout)
+	if mon.BeforeShutdown != nil {
+		mon.BeforeShutdown()
+	}
 	if err := mon.shutdown.Shutdown(); err != nil {
 		log.Printf("idle: shutdown failed: %v", err)
 		return

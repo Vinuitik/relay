@@ -12,6 +12,7 @@ import (
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
+	"relay/runner/internal/uptime"
 )
 
 const testKey = "test-key-123"
@@ -28,7 +29,17 @@ func newTestServer(t *testing.T) *Server {
 	return NewServer(testKey, projects, sessions, ComposeFuncs{
 		Start: func(string) error { return nil },
 		Stop:  func(string) error { return nil },
-	}, devices, &fakeSender{})
+	}, devices, &fakeSender{}, &fakeUptimeStore{})
+}
+
+// fakeUptimeStore is a no-op UptimeStore for tests that don't care about
+// uptime reporting specifically.
+type fakeUptimeStore struct {
+	intervals []uptime.Interval
+}
+
+func (f *fakeUptimeStore) List() []uptime.Interval {
+	return f.intervals
 }
 
 // fakeSender is a no-op wol.PacketSender for tests that don't care about
