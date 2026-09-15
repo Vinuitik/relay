@@ -40,15 +40,18 @@ import java.util.concurrent.Executors
 
 /**
  * Parsed result of scanning a runner's pairing QR code - see runner/FLOWS.md "Install
- * bootstrap" for where the QR content (`relay://host:port?key=...`) comes from
- * (`relay-runner -qr`, printed by install.sh).
+ * bootstrap" for where the QR content (`relay://host:port?key=...&mac=...`) comes from
+ * (`relay-runner -qr`, printed by install.sh). [mac] is that machine's own NIC hardware
+ * address (`wol.LocalMAC` on the runner side) - null if the runner couldn't detect it, in
+ * which case wake config still needs the manual "Edit" affordance on RunnerListScreen.
  */
-data class ScannedRunner(val hostname: String, val port: Int, val key: String)
+data class ScannedRunner(val hostname: String, val port: Int, val key: String, val mac: String?)
 
 /**
- * Parses the `relay://host:port?key=...` URI printed by `relay-runner -qr`. Returns null for
- * anything else scanned (a random QR code in the wild, an empty/malformed value) rather than
- * throwing - the caller shows a "not a Relay code" message instead of crashing on a bad scan.
+ * Parses the `relay://host:port?key=...&mac=...` URI printed by `relay-runner -qr`. Returns
+ * null for anything else scanned (a random QR code in the wild, an empty/malformed value)
+ * rather than throwing - the caller shows a "not a Relay code" message instead of crashing on
+ * a bad scan.
  */
 fun parseRelayQrContent(raw: String): ScannedRunner? {
     val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return null
@@ -56,7 +59,8 @@ fun parseRelayQrContent(raw: String): ScannedRunner? {
     val hostname = uri.host?.takeIf { it.isNotBlank() } ?: return null
     val port = if (uri.port != -1) uri.port else KnownRunner.DEFAULT_PORT
     val key = uri.getQueryParameter("key")?.takeIf { it.isNotBlank() } ?: return null
-    return ScannedRunner(hostname, port, key)
+    val mac = uri.getQueryParameter("mac")?.takeIf { it.isNotBlank() }
+    return ScannedRunner(hostname, port, key, mac)
 }
 
 /**
