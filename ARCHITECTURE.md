@@ -157,6 +157,51 @@ request over the tailnet and fires the local broadcast.
   sessions — end to end. Only buy the Pi Zero 2 W afterward, once the design is confirmed
   working, and move the relay role onto it last.
 
+## Status as of 2026-09-15 (pick up here next session)
+
+**Built and merged** (runner + app, both compile/test clean - runner via `go test ./...`,
+Android via a Dockerized `./gradlew assembleDebug`, see runner/FLOWS.md and android/FLOWS.md for
+details of each):
+- Idle-suspend default lowered to 3 min after a session finishes (was 30m); never fires while a
+  session is busy, regardless of timeout.
+- Bulk `/v1/containers/start-all` / `/stop-all` per runner (app: overflow menu per runner row).
+- Runner uptime tracking (`internal/uptime`, 14-day local buffer) + `GET /v1/uptime`.
+- `GET /v1/runner/info` now reports `localSubnet`, used by the app's `WakeViaMatcher` to
+  auto-fill `wakeViaRunnerId` on pairing (no more manual Edit step for the common case).
+- Best-effort FCM push (`runner_suspending`) right before an idle-triggered S5 suspend.
+- **Manual suspend**: `POST /v1/suspend` (409 if busy, 503 if `RELAY_IDLE_SUSPEND_ENABLED` isn't
+  set) + a "Suspend now" action in the app, so you don't have to wait out the idle timer.
+- On-device Room cache for sessions/messages (offline/asleep-runner fallback in ChatScreen and
+  SessionListScreen) and a per-app Dashboard screen (this-week/past-weeks uptime, synced from
+  each runner's short-term buffer via `UptimeSyncWorker`).
+- "Remove runner" action added to the app - `KnownRunnersRepository.removeRunner` existed but no
+  screen ever called it, so there was previously no way to un-pair a runner.
+- Gradle build verification now reuses a persistent Docker volume (`relay-gradle-cache`) instead
+  of re-downloading the Gradle distro/deps on every Dockerized build check.
+
+**Not yet done:**
+- **End-to-end test never completed.** A test run was started (fresh binaries cross-compiled to
+  `runner/install/relay-runner-{linux-amd64,windows-amd64.exe}` - gitignored build artifacts,
+  rebuild before reusing since they'll be stale) and briefly run on this laptop bound to its LAN
+  IP for a same-WiFi phone pairing test, but was stopped before actually pairing the phone or
+  exercising anything. **Nothing is running right now** - process was killed, no firewall rule
+  was added (attempted, failed for lack of admin rights in that shell), nothing persisted beyond
+  the isolated test dir `C:\Users\sizon\relay-test-runner` (safe to delete or reuse).
+- Tailscale is **not installed** on this laptop yet - the aborted test used a plain LAN IP
+  instead, which is fine for a same-WiFi smoke test but doesn't exercise the actual
+  over-Tailscale-from-anywhere path the real design depends on.
+- The remote SSH server has **not been touched** - no commands have been run there yet. Doing so
+  needs the freshly-built `relay-runner-linux-amd64` copied over (e.g. `scp`) plus
+  `runner/install/install.sh` and `relay-runner.service`, then `sudo ./install.sh <binary> <user>`
+  on the server (see that script's own header comment for exactly what it does).
+- File viewing (read-only browser scoped to a project dir) - discussed, designed, not started.
+- Pi Zero 2 W has not been purchased - still pre-rollout per "Rollout order" above.
+
+**Next session, in order:** (1) decide whether to install Tailscale on this laptop first or keep
+testing over plain LAN a bit longer, (2) actually run a fresh test runner + pair the phone (QR or
+manual entry) and exercise session/chat/dashboard/suspend end-to-end, (3) hand over the SSH
+commands for the remote server once the laptop path is proven, (4) file viewing.
+
 ## Open questions / not yet decided
 
 - S5 vs S3 per machine — **resolved: S5.** True near-zero power was the actual motivating pain;
