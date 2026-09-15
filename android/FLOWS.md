@@ -57,6 +57,18 @@ POSTs `/v1/projects/{id}/containers/stop` for the project marked default via
 WidgetConfigRepository (set from a star icon on ProjectListScreen rows).
 Wake button → WakeRunnerWorker (WorkManager) → same widget default project's runner, see below.
 
+## Per-runner start-all/stop-all containers
+
+RunnerListScreen row → overflow ("⋮") menu → "Start all containers" / "Stop all containers" →
+`enqueueContainersAll` → `ContainersAllWorker` (WorkManager, mirrors StopContainersWorker/
+WakeRunnerWorker's pattern) → looks the runner up by hostname in KnownRunnersRepository → POSTs
+`/v1/containers/start-all` or `/stop-all` to THAT runner (not the widget's single default
+project — every project the runner knows about). Per-project failures inside the response list
+are logged, not surfaced individually to the user (Toast just says "Starting/Stopping…").
+
+To change: `widget/ContainersAllWorker.kt`, `ui/screens/RunnerListScreen.kt`
+(`enqueueContainersAll`).
+
 ## Wake-on-LAN
 
 `KnownRunner` (model/Models.kt) carries two optional fields per runner: `wakeMac` (the MAC to
@@ -202,4 +214,5 @@ contains. Same fix, same reasoning, in runner-release.yml's `--notes`.
 | FCM token registration (on app startup) | `MainActivity.kt` |
 | FCM registration background call (loops all runners) | `fcm/RegisterDeviceWorker.kt` |
 | Widget provider / Stop + Wake actions | `widget/RelayWidgetProvider.kt`, `widget/StopContainersWorker.kt`, `widget/WakeRunnerWorker.kt` |
+| Per-runner start-all/stop-all containers | `widget/ContainersAllWorker.kt`, `ui/screens/RunnerListScreen.kt` |
 | Gradle/Kotlin/Compose versions | `app/build.gradle.kts`, `build.gradle.kts`, `gradle/wrapper/gradle-wrapper.properties` |

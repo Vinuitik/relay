@@ -19,7 +19,10 @@ import (
 
 // DefaultTimeout is how long the runner must be continuously idle (no busy
 // session) before it suspends to S5, unless overridden by RELAY_IDLE_TIMEOUT.
-const DefaultTimeout = 30 * time.Minute
+// This is a starting heuristic, not a measured value - kept as a named
+// constant (and overridable via env) specifically so it's easy to tune once
+// real usage shows whether 3 minutes is too eager or too lax.
+const DefaultTimeout = 3 * time.Minute
 
 // DefaultCheckInterval is how often the Monitor re-checks idle state.
 const DefaultCheckInterval = 1 * time.Minute
@@ -40,7 +43,7 @@ type Config struct {
 // LoadConfig reads the idle-suspend config from the environment:
 //
 //	RELAY_IDLE_SUSPEND_ENABLED=true   opt in (default: disabled)
-//	RELAY_IDLE_TIMEOUT=30m            idle threshold (default: DefaultTimeout)
+//	RELAY_IDLE_TIMEOUT=3m             idle threshold (default: DefaultTimeout)
 //	RELAY_IDLE_CHECK_INTERVAL=1m      poll interval (default: DefaultCheckInterval)
 //
 // Malformed duration values are logged and ignored (fall back to default)

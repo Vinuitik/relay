@@ -92,10 +92,24 @@ itself errors (command failed to run), `triggered` stays false and the next tick
 see `Monitor.tick`'s doc comment in idle.go.
 
 To change the idle threshold: env `RELAY_IDLE_TIMEOUT` (Go duration string, e.g. "45m";
-default `idle.DefaultTimeout` = 30m)
+default `idle.DefaultTimeout` = 3m — a starting heuristic, tune once real usage data exists)
 To change the poll interval: env `RELAY_IDLE_CHECK_INTERVAL` (default `idle.DefaultCheckInterval` = 1m)
 To enable this feature at all: env `RELAY_IDLE_SUSPEND_ENABLED=true` - **disabled by default,
 see Technology notes below before ever setting this locally.**
+
+## Device registration + notify-on-finish
+
+## Bulk container start/stop (per-runner, all projects)
+
+POST /v1/containers/start-all / POST /v1/containers/stop-all → api.handleContainersStartAll /
+handleContainersStopAll → `runComposeAll` loops `s.Projects.List()`, calling `compose.Start`/
+`compose.Stop` per project dir → returns `[{projectId, ok, error?}]`, one entry per project.
+Best-effort by design: one project without a compose file (or docker not reachable) must not
+block the others - mirrors `runCompose`'s per-project error shape but as a list instead of a
+single error, since there's no single "the request failed" outcome across N independent
+projects.
+
+To change: `internal/api/api.go` (`runComposeAll`).
 
 ## Device registration + notify-on-finish
 
@@ -306,6 +320,7 @@ To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
 | Session purge cutoff | `cmd/runnerd/main.go` ticker + `internal/history/history.go` |
 | Auth header check | `internal/api/api.go` middleware |
 | Docker compose invocation | `internal/compose/compose.go` |
+| Bulk container start/stop across all projects | `internal/api/api.go` (`runComposeAll`) |
 | HTTP endpoint routing | `internal/api/api.go` (must match `shared/API.md`) |
 | WoL magic packet construction | `internal/wol/wol.go` (`BuildMagicPacket`) |
 | WoL broadcast send / SO_BROADCAST | `internal/wol/broadcast_unix.go`, `broadcast_windows.go` |

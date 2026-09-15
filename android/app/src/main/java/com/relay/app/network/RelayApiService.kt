@@ -1,5 +1,6 @@
 package com.relay.app.network
 
+import com.relay.app.model.ContainerActionResult
 import com.relay.app.model.Device
 import com.relay.app.model.Project
 import com.relay.app.model.RunnerInfo
@@ -65,6 +66,14 @@ interface RelayApiService {
 
     @POST("v1/projects/{projectId}/containers/stop")
     suspend fun stopContainers(@Path("projectId") projectId: String): Response<ResponseBody>
+
+    /** Starts/stops docker compose across every project this runner knows about, best-effort
+     * per project — see shared/API.md and [com.relay.app.widget.ContainersAllWorker]. */
+    @POST("v1/containers/start-all")
+    suspend fun startAllContainers(): List<ContainerActionResult>
+
+    @POST("v1/containers/stop-all")
+    suspend fun stopAllContainers(): List<ContainerActionResult>
 
     /**
      * Broadcasts a WoL magic packet on THIS runner's local network. Only meaningful when called

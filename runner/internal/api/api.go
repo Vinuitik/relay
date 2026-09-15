@@ -55,6 +55,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/stop", s.auth(s.handleStopSession))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/start", s.auth(s.handleContainersStart))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/stop", s.auth(s.handleContainersStop))
+	mux.HandleFunc("POST /v1/containers/start-all", s.auth(s.handleContainersStartAll))
+	mux.HandleFunc("POST /v1/containers/stop-all", s.auth(s.handleContainersStopAll))
 	mux.HandleFunc("POST /v1/wake", s.auth(s.handleWake))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleRegisterDevice))
 
@@ -209,6 +211,47 @@ func (s *Server) handleContainersStart(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleContainersStop(w http.ResponseWriter, r *http.Request) {
 	s.runCompose(w, r, s.Compose.Stop)
+}
+
+// containerActionResult reports one project's outcome within a start-all/
+// stop-all bulk call, so a single unreachable/misconfigured project (e.g. no
+// compose.yml) doesn't fail the whole request or hide which ones worked.
+type containerActionResult struct {
+	ProjectID string `json:"projectId"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (s *Server) handleContainersStartAll(w http.ResponseWriter, r *http.Request) {
+	s.runComposeAll(w, s.Compose.Start)
+}
+
+func (s *Server) handleContainersStopAll(w http.ResponseWriter, r *http.Request) {
+	s.runComposeAll(w, s.Compose.Stop)
+}
+
+// runComposeAll runs action across every known project's directory and
+// reports a per-project result list - deliberately best-effort (one
+// project's docker compose failing, e.g. no compose file, must not block the
+// others from starting/stopping), mirroring runCompose's single-project
+// error shape but for the "toggle everything on this runner" case.
+func (s *Server) runComposeAll(w http.ResponseWriter, action func(string) error) {
+	if action == nil {
+		writeError(w, http.StatusInternalServerError, "compose action not configured")
+		return
+	}
+
+	projects := s.Projects.List()
+	results := make([]containerActionResult, 0, len(projects))
+	for _, p := range projects {
+		res := containerActionResult{ProjectID: p.ID, OK: true}
+		if err := action(p.Path); err != nil {
+			res.OK = false
+			res.Error = err.Error()
+		}
+		results = append(results, res)
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 func (s *Server) runCompose(w http.ResponseWriter, r *http.Request, action func(string) error) {
