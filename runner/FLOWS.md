@@ -1,16 +1,24 @@
 # Runner flows
 
-Files: main.go, config.go, project.go, session.go, history.go, compose.go, api.go, wol.go, registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go
+Files: main.go, config.go, project.go, session.go, history.go, compose.go, api.go, wol.go,
+localmac.go, registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go,
+selfupdate.go
 
 ## Startup
 
 main() → config.Load() → generates ~/.relay/key.txt + projects.json if absent, prints key once
-→ api.NewServer(project.Registry, session.Manager) → http.ListenAndServe(config.Addr)
-→ goroutine: time.Ticker(1h) → session.Manager.PurgeFinishedBefore(7d)
+→ **`-qr` flag check**: if present, `printPairingQR` and exit, skipping everything below (see
+"Install bootstrap") → **self-update check** (`selfupdate.CheckOnce`, unless
+`RELAY_AUTO_UPDATE_ENABLED=false` - see "Self-update"); an update found here exits before the
+server ever starts → api.NewServer(project.Registry, session.Manager) →
+http.ListenAndServe(config.ListenAddr) → goroutine: time.Ticker(1h) →
+session.Manager.PurgeFinishedBefore(7d) → goroutine: `idle.NewMonitor(...).Run()` if
+`RELAY_IDLE_SUSPEND_ENABLED=true` (see "Idle-suspend") → goroutine:
+`selfupdate.RunPeriodically` (see "Self-update")
 
 To change key/projects root: config.Load() (env `RELAY_HOME`)
-To change listen address: config.Load() (env `RELAY_ADDR`, default 127.0.0.1:7777 — binds to
-Tailscale interface only in production, not enforced by code)
+To change listen address: config.Load() (env `RELAY_LISTEN_ADDR`, default 127.0.0.1:7777 —
+binds to Tailscale interface only in production, not enforced by code)
 To change purge cutoff: history.PurgeOlderThan() call site in main.go
 
 ## Request path
@@ -293,7 +301,7 @@ To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
 |---|---|
 | Key generation / storage | `internal/config/config.go` |
 | Projects root / registry file location | `internal/config/config.go` (env `RELAY_HOME`) |
-| Listen address | `internal/config/config.go` (env `RELAY_ADDR`) |
+| Listen address | `internal/config/config.go` (env `RELAY_LISTEN_ADDR`) |
 | Provider → command mapping | `internal/session/session.go` (env `RELAY_PROVIDER_<NAME>`) |
 | Session purge cutoff | `cmd/runnerd/main.go` ticker + `internal/history/history.go` |
 | Auth header check | `internal/api/api.go` middleware |
@@ -312,6 +320,7 @@ To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
 | Tailscale / Node / CLI bootstrap | `runner/install/install.sh` steps 1-2 |
 | Self-update enable/interval | env `RELAY_AUTO_UPDATE_ENABLED`, `RELAY_UPDATE_CHECK_INTERVAL` → `cmd/runnerd/main.go` |
 | Self-update release source/logic | `internal/selfupdate/selfupdate.go`, `.github/workflows/runner-release.yml` |
+| Own-MAC detection for pairing QR | `internal/wol/localmac.go` (`LocalMAC`, `virtualIfacePrefixes`) |
 | Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
 | Shutdown command (S5) | `internal/idle/shutdown_unix.go` (`systemctl poweroff` / `shutdown -h now` fallback), `internal/idle/shutdown_windows.go` (`shutdown /s /t 0`) |
 | Idle-suspend ticker wiring | `cmd/runnerd/main.go` (`idle.NewMonitor(...).Run()`, gated on `idleCfg.Enabled`) |
