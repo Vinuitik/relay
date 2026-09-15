@@ -2,7 +2,7 @@
 
 Files: main.go, config.go, project.go, session.go, history.go, compose.go, api.go, wol.go,
 localmac.go, registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go,
-selfupdate.go
+selfupdate.go, uptime.go
 
 ## Startup
 
@@ -62,6 +62,16 @@ chipset doesn't support WoL at all regardless of MAC - the app's manual "Edit" a
 RunnerListScreen is the fallback either way. To change what counts as virtual: `localmac.go`'s
 `virtualIfacePrefixes`.
 
+**Same-LAN detection for wake-via auto-match** (`wol.LocalSubnet`, in `localmac.go`): shares
+`LocalMAC`'s interface-picking heuristic (factored into `pickLANInterface`) but reports the
+interface's IPv4 network in CIDR form instead of its hardware address - e.g. `192.168.1.0/24`.
+Surfaced via `GET /v1/runner/info`'s `localSubnet` field. When a new runner is paired, the app
+fetches this field from every already-known, reachable runner and compares it against the new
+runner's own; exactly one match auto-sets `wakeViaRunnerId` on both runners, replacing the manual
+"Edit" step (see android/FLOWS.md "Wake-on-LAN"). Same fallback as the MAC case: detection
+failure, or zero/multiple matching runners, just skips the auto-fill and leaves manual Edit as
+the fallback - never guesses wrong silently.
+
 ## Idle-suspend (S5) - the other half of the sleep path
 
 **This is the missing half of ARCHITECTURE.md's "Sleep path" line** - WoL (`internal/wol`)
@@ -90,6 +100,37 @@ Once `Shutdown()` succeeds, the Monitor sets an internal `triggered` flag and ne
 again for that process's lifetime (a poweroff should end the process anyway). If `Shutdown()`
 itself errors (command failed to run), `triggered` stays false and the next tick retries -
 see `Monitor.tick`'s doc comment in idle.go.
+
+Right before calling `Shutdown()`, `tick` invokes `Monitor.BeforeShutdown` if set - wired in
+main.go to (1) `uptimeStore.Close()` (see "Uptime tracking" below), and (2) a best-effort
+`notifier.NotifyRunnerSuspending` push to every registered device (data type
+`runner_suspending`, see shared/API.md "FCM message data.type values"). Both are fire-and-forget:
+a failure in either is logged only, never blocks or cancels the actual shutdown - "if lost, then
+lost" is the deliberate choice here (no queue, no retry, no delivery guarantee), since guaranteed
+delivery would mean building real message durability for a notification whose entire value is
+"heads up, right now."
+
+## Uptime tracking
+
+Files: internal/uptime/uptime.go
+
+`main()` → `uptime.Open(~/.relay/uptime.json)` at startup → appends a new open
+`{start: now}` interval; if the last run's interval was left open (crash, power loss - it never
+got to call `Close`), that orphaned interval is closed at load time using the current time as its
+`end` (undercounts that one interval slightly, accepted per package doc - **this is deliberately
+a short-term buffer, not the dashboard's source of truth**, see next paragraph) →
+`idle.Monitor.BeforeShutdown` calls `uptimeStore.Close()` on a clean idle-suspend, sealing that
+interval accurately instead of relying on the crash-recovery fallback.
+
+GET /v1/uptime → `api.handleUptime` → `s.Uptime.List()` → `200 UptimeInterval[]`.
+
+**Why the runner only keeps ~14 days (`uptime.MaxAge`), not forever:** a sleeping runner is
+exactly the runner you can't ask for history, so the *phone* app is the one that persists a
+durable weekly view - it pulls this endpoint whenever a runner happens to be reachable and keeps
+its own merged copy locally (see android/FLOWS.md "Dashboard"). The runner's file is purely a
+catch-up buffer for whatever the phone hasn't synced yet; purged the same way session history is.
+
+To change the buffer window: `internal/uptime/uptime.go` (`MaxAge`).
 
 To change the idle threshold: env `RELAY_IDLE_TIMEOUT` (Go duration string, e.g. "45m";
 default `idle.DefaultTimeout` = 3m — a starting heuristic, tune once real usage data exists)
@@ -336,6 +377,10 @@ To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
 | Self-update enable/interval | env `RELAY_AUTO_UPDATE_ENABLED`, `RELAY_UPDATE_CHECK_INTERVAL` → `cmd/runnerd/main.go` |
 | Self-update release source/logic | `internal/selfupdate/selfupdate.go`, `.github/workflows/runner-release.yml` |
 | Own-MAC detection for pairing QR | `internal/wol/localmac.go` (`LocalMAC`, `virtualIfacePrefixes`) |
+| Same-LAN subnet detection for wake-via auto-match | `internal/wol/localmac.go` (`LocalSubnet`, `pickLANInterface`), `internal/api/api.go` (`runnerInfo.LocalSubnet`) |
+| Uptime interval recording / buffer window | `internal/uptime/uptime.go` (`Open`, `Close`, `MaxAge`) |
+| Uptime endpoint | `internal/api/api.go` (`handleUptime`) |
+| Best-effort "runner suspending" push | `cmd/runnerd/main.go` (`Monitor.BeforeShutdown` wiring), `internal/notify/fcm.go` (`NotifyRunnerSuspending`) |
 | Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
 | Shutdown command (S5) | `internal/idle/shutdown_unix.go` (`systemctl poweroff` / `shutdown -h now` fallback), `internal/idle/shutdown_windows.go` (`shutdown /s /t 0`) |
 | Idle-suspend ticker wiring | `cmd/runnerd/main.go` (`idle.NewMonitor(...).Run()`, gated on `idleCfg.Enabled`) |

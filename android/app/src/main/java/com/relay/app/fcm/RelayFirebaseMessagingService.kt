@@ -17,16 +17,19 @@ import com.relay.app.MainActivity
 import com.relay.app.R
 
 /**
- * Job-done notifications are delivered via FCM (see ARCHITECTURE.md "Notifications: FCM") — the
- * runner calls Google's FCM API directly when a session transitions to "finished", nothing else
- * transits Google's servers.
+ * Job-done and runner-suspending notifications are delivered via FCM (see ARCHITECTURE.md
+ * "Notifications: FCM") — the runner calls Google's FCM API directly on a session transitioning
+ * to "finished", or right before it suspends to S5 (`idle.Monitor.BeforeShutdown`,
+ * `notify.Notifier.NotifyRunnerSuspending` in runner/FLOWS.md), nothing else transits Google's
+ * servers.
  *
  * Token registration ([onNewToken] below) POSTs `/v1/devices` to every known runner via
  * [RegisterDeviceWorker], per shared/API.md. [onMessageReceived] posts an actual Android
- * notification for the finished session — requires a real Firebase project (see
- * app/build.gradle.kts) and the user having granted POST_NOTIFICATIONS at runtime (API 33+,
- * requested in MainActivity) - if that permission was denied, posting silently no-ops (Android's
- * own behavior for an unpermitted notification), so job-done pings just won't show.
+ * notification, its title/body picked from the message's `type` data field (see
+ * [notificationContentFor]) — requires a real Firebase project (see app/build.gradle.kts) and the
+ * user having granted POST_NOTIFICATIONS at runtime (API 33+, requested in MainActivity) - if
+ * that permission was denied, posting silently no-ops (Android's own behavior for an unpermitted
+ * notification), so pings just won't show.
  */
 class RelayFirebaseMessagingService : FirebaseMessagingService() {
 
@@ -44,8 +47,9 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
         Log.d(TAG, "FCM message received: data=${message.data} notification=${message.notification?.body}")
         ensureChannel()
 
-        val title = message.notification?.title ?: message.data["title"] ?: "Session finished"
-        val body = message.notification?.body ?: message.data["body"] ?: "A runner session finished."
+        val (defaultTitle, defaultBody) = notificationContentFor(message.data)
+        val title = message.notification?.title ?: message.data["title"] ?: defaultTitle
+        val body = message.notification?.body ?: message.data["body"] ?: defaultBody
 
         val contentIntent = PendingIntent.getActivity(
             this,
@@ -66,6 +70,23 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
         // NotificationManagerCompat.notify silently no-ops if POST_NOTIFICATIONS (API 33+) was
         // never granted - there is nothing to catch here, Android just drops it.
         NotificationManagerCompat.from(this).notify(System.currentTimeMillis().toInt(), notification)
+    }
+
+    /**
+     * Maps the runner's `data.type` field (see runner/internal/notify) to a fallback
+     * title/body, used whenever the message carries no explicit `notification`/`title`/`body` of
+     * its own — which is every message the runner currently sends, since it only ever sets
+     * `data`. Unknown/missing type falls back to the original "Session finished" text so old
+     * runner builds (sending no `type` at all) keep behaving exactly as before.
+     */
+    private fun notificationContentFor(data: Map<String, String>): Pair<String, String> {
+        return when (data["type"]) {
+            "runner_suspending" -> {
+                val hostname = data["hostname"] ?: "A runner"
+                "$hostname is going to sleep" to "No active session — suspending to save power. Wake it from the Runners screen."
+            }
+            else -> "Session finished" to "A runner session finished."
+        }
     }
 
     private fun ensureChannel() {

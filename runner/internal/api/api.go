@@ -11,6 +11,7 @@ import (
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
+	"relay/runner/internal/uptime"
 	"relay/runner/internal/wol"
 )
 
@@ -24,6 +25,13 @@ type ComposeFuncs struct {
 	Stop  func(projectDir string) error
 }
 
+// UptimeStore reports this runner's own up/down interval history. It's an
+// interface (satisfied by *uptime.Store) so tests can fake it without
+// touching disk - same pattern as ComposeFuncs/wol.PacketSender.
+type UptimeStore interface {
+	List() []uptime.Interval
+}
+
 // Server holds the dependencies needed to serve the v1 API.
 type Server struct {
 	Key      string
@@ -32,11 +40,12 @@ type Server struct {
 	Compose  ComposeFuncs
 	Devices  *notify.Registry
 	Sender   wol.PacketSender
+	Uptime   UptimeStore
 }
 
 // NewServer builds a Server.
-func NewServer(key string, projects *project.Registry, sessions *session.Manager, compose ComposeFuncs, devices *notify.Registry, sender wol.PacketSender) *Server {
-	return &Server{Key: key, Projects: projects, Sessions: sessions, Compose: compose, Devices: devices, Sender: sender}
+func NewServer(key string, projects *project.Registry, sessions *session.Manager, compose ComposeFuncs, devices *notify.Registry, sender wol.PacketSender, uptimeStore UptimeStore) *Server {
+	return &Server{Key: key, Projects: projects, Sessions: sessions, Compose: compose, Devices: devices, Sender: sender, Uptime: uptimeStore}
 }
 
 // Routes builds the HTTP handler for the v1 API, using Go 1.22's
@@ -59,6 +68,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/containers/stop-all", s.auth(s.handleContainersStopAll))
 	mux.HandleFunc("POST /v1/wake", s.auth(s.handleWake))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleRegisterDevice))
+	mux.HandleFunc("GET /v1/uptime", s.auth(s.handleUptime))
 
 	return mux
 }
@@ -83,6 +93,12 @@ type runnerInfo struct {
 	Hostname string `json:"hostname"`
 	Busy     bool   `json:"busy"`
 	Version  string `json:"version"`
+	// LocalSubnet is this runner's LAN network in CIDR form (e.g.
+	// "192.168.1.0/24"), omitted if it couldn't be detected. The phone app
+	// uses it to auto-match which two known runners share a physical LAN
+	// segment for Wake-on-LAN, instead of requiring wakeViaRunnerId to be
+	// typed in by hand - see wol.LocalSubnet and shared/API.md.
+	LocalSubnet string `json:"localSubnet,omitempty"`
 }
 
 func (s *Server) handleRunnerInfo(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +116,20 @@ func (s *Server) handleRunnerInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, runnerInfo{Hostname: hostname, Busy: busy, Version: Version})
+	subnet, err := wol.LocalSubnet()
+	if err != nil {
+		subnet = ""
+	}
+
+	writeJSON(w, http.StatusOK, runnerInfo{Hostname: hostname, Busy: busy, Version: Version, LocalSubnet: subnet})
+}
+
+func (s *Server) handleUptime(w http.ResponseWriter, r *http.Request) {
+	if s.Uptime == nil {
+		writeJSON(w, http.StatusOK, []uptime.Interval{})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Uptime.List())
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {

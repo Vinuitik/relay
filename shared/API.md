@@ -40,12 +40,21 @@ RunnerInfo {
   hostname: string     // tailnet hostname
   busy: boolean         // true if any session across any project is busy
   version: string
+  localSubnet: string? // this runner's LAN network in CIDR form, e.g. "192.168.1.0/24" —
+                        // omitted if it couldn't be detected. Used to auto-match which two
+                        // known runners are on the same physical LAN for Wake-on-LAN; see
+                        // ARCHITECTURE.md "Relay device".
 }
 
 Device {
   id: string           // stable id for this phone install, generated client-side
   fcmToken: string
   registeredAt: string // RFC3339
+}
+
+UptimeInterval {
+  start: string        // RFC3339
+  end: string?         // RFC3339, null while this interval is still ongoing (runner is up now)
 }
 ```
 
@@ -67,9 +76,22 @@ Device {
 | POST | `/v1/containers/start-all` | - | `200 [{projectId, ok, error?}]` | runs `docker compose up -d` across every project known to this runner; best-effort per project, one failure doesn't block the rest |
 | POST | `/v1/containers/stop-all` | - | `200 [{projectId, ok, error?}]` | runs `docker compose down` across every project known to this runner; best-effort per project, one failure doesn't block the rest |
 | POST | `/v1/wake` | `{mac: string}` | `202 {}` | sends a Wake-on-LAN magic packet as a UDP broadcast on **this runner's own local network**. Call this on whichever known runner is on the same LAN as the machine you want to wake — never on the target itself, since if it's off it can't be reached. See ARCHITECTURE.md "Relay device". |
-| POST | `/v1/devices` | `{fcmToken: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner, so the runner can notify it on session-finish. Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
+| POST | `/v1/devices` | `{fcmToken: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner, so the runner can notify it on session-finish (or on suspend, see below). Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
+| GET | `/v1/uptime` | - | `200 UptimeInterval[]` | this runner's own up/down interval history, oldest first. **Short-term buffer only** (14 days, see runner/FLOWS.md "Uptime tracking") — the phone app is expected to poll this whenever a runner is reachable and persist its own merged weekly history locally, since a runner going to sleep is exactly when it becomes unreachable to ask. |
 
 Errors: `4xx/5xx` bodies are `{"error": string}`.
+
+## FCM message `data.type` values
+
+Every push the runner sends is data-only (no `notification` block — the app builds its own, see
+`RelayFirebaseMessagingService.notificationContentFor`). `data.type` is:
+
+- `session_finished` — `data: {type, sessionId, projectId}`
+- `runner_suspending` — `data: {type, hostname}`, sent best-effort right before the runner
+  suspends to S5 (never on a manual `/v1/sessions/{id}/stop`) — see runner/FLOWS.md "Idle-suspend".
+
+An older app build (or a message missing `type` entirely) falls back to the `session_finished`
+text, so this list can grow without breaking already-installed clients.
 
 ## Not covered by this contract (see ARCHITECTURE.md)
 

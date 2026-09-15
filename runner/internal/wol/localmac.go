@@ -27,9 +27,44 @@ var virtualIfacePrefixes = []string{
 // callers should treat that as "omit the MAC, fall back to manual entry",
 // not a fatal condition.
 func LocalMAC() (string, error) {
+	iface, _, err := pickLANInterface()
+	if err != nil {
+		return "", err
+	}
+	return iface.HardwareAddr.String(), nil
+}
+
+// LocalSubnet reports this machine's LAN IPv4 network in CIDR form (e.g.
+// "192.168.1.0/24"), using the same "first up, non-virtual interface with an
+// assigned address" heuristic as LocalMAC. Exposed via GET /v1/runner/info
+// so the phone app can auto-detect which two known runners share a physical
+// LAN segment (see api.handleRunnerInfo and shared/API.md) - a runner that
+// can wake another via WoL must be on that same segment, so matching
+// subnets replaces having to type wakeViaRunnerId in by hand. Returns an
+// error under the same conditions as LocalMAC - callers should fall back to
+// manual entry, never guess.
+func LocalSubnet() (string, error) {
+	_, addr, err := pickLANInterface()
+	if err != nil {
+		return "", err
+	}
+	ipNet, ok := addr.(*net.IPNet)
+	if !ok || ipNet.IP.To4() == nil {
+		return "", fmt.Errorf("no IPv4 address found on local interface")
+	}
+	network := ipNet.IP.Mask(ipNet.Mask)
+	ones, _ := ipNet.Mask.Size()
+	return fmt.Sprintf("%s/%d", network.String(), ones), nil
+}
+
+// pickLANInterface finds this machine's real (non-virtual) NIC and its first
+// assigned address - the shared heuristic behind both LocalMAC and
+// LocalSubnet, so "which interface counts as the LAN NIC" is decided in
+// exactly one place.
+func pickLANInterface() (net.Interface, net.Addr, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", fmt.Errorf("list network interfaces: %w", err)
+		return net.Interface{}, nil, fmt.Errorf("list network interfaces: %w", err)
 	}
 
 	for _, iface := range ifaces {
@@ -46,9 +81,9 @@ func LocalMAC() (string, error) {
 		if err != nil || len(addrs) == 0 {
 			continue
 		}
-		return iface.HardwareAddr.String(), nil
+		return iface, addrs[0], nil
 	}
-	return "", fmt.Errorf("no non-virtual network interface with an assigned address found")
+	return net.Interface{}, nil, fmt.Errorf("no non-virtual network interface with an assigned address found")
 }
 
 func isVirtualIfaceName(name string) bool {
