@@ -61,6 +61,7 @@ fun RunnerListScreen(
     var showAddDialog by remember { mutableStateOf(false) }
     var showQrScan by remember { mutableStateOf(false) }
     var editingRunner by remember { mutableStateOf<KnownRunner?>(null) }
+    var confirmRemoveRunner by remember { mutableStateOf<KnownRunner?>(null) }
 
     if (showQrScan) {
         QrScanScreen(
@@ -163,6 +164,13 @@ fun RunnerListScreen(
                                                     Toast.makeText(context, "Stopping all containers on ${runner.hostname}…", Toast.LENGTH_SHORT).show()
                                                 },
                                             )
+                                            DropdownMenuItem(
+                                                text = { Text("Remove runner") },
+                                                onClick = {
+                                                    showMenu = false
+                                                    confirmRemoveRunner = runner
+                                                },
+                                            )
                                         }
                                     }
                                 }
@@ -208,6 +216,27 @@ fun RunnerListScreen(
                 }
                 editingRunner = null
             },
+        )
+    }
+
+    confirmRemoveRunner?.let { runner ->
+        AlertDialog(
+            onDismissRequest = { confirmRemoveRunner = null },
+            title = { Text("Remove ${runner.hostname}?") },
+            text = {
+                Text(
+                    "This only removes it from this phone's known-runners list - the runner " +
+                        "itself keeps running. To add it back, scan its QR code again (or run " +
+                        "its \"-qr\" flag again to reprint one; its key never changes).",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { repository.removeRunner(runner.hostname) }
+                    confirmRemoveRunner = null
+                }) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { confirmRemoveRunner = null }) { Text("Cancel") } },
         )
     }
 }
