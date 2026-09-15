@@ -59,11 +59,21 @@ fun RunnerListScreen(
             onScanned = { scanned ->
                 scope.launch {
                     repository.addRunner(
-                        KnownRunner(hostname = scanned.hostname, port = scanned.port, key = scanned.key),
+                        KnownRunner(
+                            hostname = scanned.hostname,
+                            port = scanned.port,
+                            key = scanned.key,
+                            wakeMac = scanned.mac,
+                        ),
                     )
                 }
                 showQrScan = false
-                Toast.makeText(context, "Added runner ${scanned.hostname}", Toast.LENGTH_SHORT).show()
+                val message = if (scanned.mac != null) {
+                    "Added runner ${scanned.hostname} (wake MAC captured — set \"wake via\" in Edit once you have a second runner)"
+                } else {
+                    "Added runner ${scanned.hostname}"
+                }
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             },
             onManualEntry = {
                 showQrScan = false

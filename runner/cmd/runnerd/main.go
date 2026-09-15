@@ -131,16 +131,28 @@ func main() {
 	}
 }
 
-// printPairingQR renders a relay://host:port?key=... QR code to stdout as
-// terminal Unicode blocks - no image, no display server, just the SSH
-// session's own terminal. cfg.ListenAddr is whatever RELAY_LISTEN_ADDR
-// resolved to (install.sh sets it to the Tailscale IP once logged in); if
-// Tailscale isn't up yet this still prints, just with the useless loopback
-// default - the caller (install.sh) only invokes -qr after Tailscale login
-// succeeds, so that's a manual `relay-runner -qr` misuse case, not a normal
-// path.
+// printPairingQR renders a relay://host:port?key=...&mac=... QR code to
+// stdout as terminal Unicode blocks - no image, no display server, just
+// the SSH session's own terminal. cfg.ListenAddr is whatever
+// RELAY_LISTEN_ADDR resolved to (install.sh sets it to the Tailscale IP
+// once logged in); if Tailscale isn't up yet this still prints, just with
+// the useless loopback default - the caller (install.sh) only invokes -qr
+// after Tailscale login succeeds, so that's a manual `relay-runner -qr`
+// misuse case, not a normal path.
+//
+// mac is this machine's own real NIC hardware address (wol.LocalMAC),
+// included so scanning fills in KnownRunner.wakeMac automatically - the
+// MAC another runner needs to wake *this* machine via /v1/wake. Omitted
+// from the URI if detection fails (multi-NIC machine, unusual interface
+// naming, etc.) rather than guessing - the app's manual "Edit" affordance
+// still covers that case.
 func printPairingQR(cfg *config.Config) {
 	uri := fmt.Sprintf("relay://%s?key=%s", cfg.ListenAddr, cfg.Key)
+	if mac, err := wol.LocalMAC(); err != nil {
+		log.Printf("qr: could not detect this machine's MAC address, omitting from QR (wake config will need manual entry): %v", err)
+	} else {
+		uri += "&mac=" + mac
+	}
 	fmt.Println("Scan this in the Relay Android app (Add Runner -> Scan QR):")
 	fmt.Println()
 	qrterminal.GenerateHalfBlock(uri, qrterminal.L, os.Stdout)

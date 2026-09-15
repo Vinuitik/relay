@@ -44,6 +44,16 @@ To change the sender: `api.Server.Sender` (`wol.PacketSender` interface) — rea
 `wol.DefaultSender`, tests inject a fake, same pattern as `compose.Runner`.
 To change target port/broadcast address: `wol.go` constants `discardPort`/`broadcastAddr`.
 
+**Own-MAC detection for pairing** (`wol.LocalMAC`, in `localmac.go`): picks this machine's
+own real NIC's MAC to embed in the pairing QR (`printPairingQR` in `cmd/runnerd/main.go`) -
+answers "what MAC does another runner need to wake *this* machine" without the phone user
+looking it up and typing it in by hand. Heuristic: first up, non-loopback, non-virtual
+(`virtualIfacePrefixes` - skips `tailscale*`, `docker*`, `veth*`, etc.) interface that has an
+assigned IP address. Wrong on a genuinely multi-NIC machine, or a WiFi-only machine whose
+chipset doesn't support WoL at all regardless of MAC - the app's manual "Edit" affordance on
+RunnerListScreen is the fallback either way. To change what counts as virtual: `localmac.go`'s
+`virtualIfacePrefixes`.
+
 ## Idle-suspend (S5) - the other half of the sleep path
 
 **This is the missing half of ARCHITECTURE.md's "Sleep path" line** - WoL (`internal/wol`)
@@ -118,8 +128,9 @@ auto-filling `RELAY_LISTEN_ADDR` in `/etc/relay/runner.env` from the
 Tailscale IP → prints a boxed summary with the real runner key + address
 read straight from `key.txt`, then (if both a key and a Tailscale IP exist)
 runs `relay-runner -qr` to print a terminal QR code encoding
-`relay://host:port?key=...` — scan it in the app instead of typing 64 hex
-chars by hand.
+`relay://host:port?key=...&mac=...` (mac from `wol.LocalMAC`, omitted if
+detection fails) — scan it in the app instead of typing 64 hex chars and a
+MAC address by hand.
 
 **Login is NOT automated, by necessity, not oversight.** `tailscale up`
 still needs a human to open a URL in a browser somewhere - no amount of

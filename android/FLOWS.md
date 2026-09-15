@@ -1,9 +1,10 @@
 # Android app flows
 
-Files: MainActivity.kt, RelayNavHost.kt, RunnerListScreen.kt, ProjectListScreen.kt,
-SessionListScreen.kt, ChatScreen.kt, KnownRunnersRepository.kt, WidgetConfigRepository.kt,
-RelayApiClient.kt, RelayApiService.kt, RelayFirebaseMessagingService.kt,
-RelayWidgetProvider.kt, StopContainersWorker.kt, WakeRunnerWorker.kt, RegisterDeviceWorker.kt
+Files: MainActivity.kt, RelayNavHost.kt, RunnerListScreen.kt, QrScanScreen.kt,
+ProjectListScreen.kt, SessionListScreen.kt, ChatScreen.kt, KnownRunnersRepository.kt,
+WidgetConfigRepository.kt, RelayApiClient.kt, RelayApiService.kt,
+RelayFirebaseMessagingService.kt, RelayWidgetProvider.kt, StopContainersWorker.kt,
+WakeRunnerWorker.kt, RegisterDeviceWorker.kt
 
 ## Navigation
 
@@ -15,8 +16,29 @@ To add a screen: RelayNavHost.kt
 
 ## Data flow
 
-RunnerListScreen ↔ KnownRunnersRepository (DataStore Preferences) — hostname+key pairs, added
-manually per ARCHITECTURE.md's manual-registration decision.
+RunnerListScreen ↔ KnownRunnersRepository (DataStore Preferences) — hostname+key(+wakeMac)
+triples. Added via QR scan by default (see "Pairing" below); manual entry (the original
+ARCHITECTURE.md decision) is still there as a fallback.
+
+## Pairing (QR scan)
+
+Files: QrScanScreen.kt, RunnerListScreen.kt
+
+RunnerListScreen's "+" FAB → `QrScanScreen` (full-screen, replaces the whole screen content
+while open - see the `if (showQrScan) { ...; return }` early-return at the top of
+`RunnerListScreen`) → requests CAMERA permission → CameraX preview + ML Kit on-device barcode
+decode → `parseRelayQrContent(rawValue)` → on a valid `relay://host:port?key=...&mac=...`
+match → `KnownRunnersRepository.addRunner(...)`, `wakeMac` set directly from the scanned `mac`
+if the runner's QR included one (see runner/FLOWS.md "Own-MAC detection for pairing").
+
+`wakeViaRunnerId` (which *other* runner should broadcast the wake packet) is NOT auto-filled
+by a scan - it can't be: that's a LAN-topology fact (which runners share a physical network
+segment), not something either runner's own QR code can know about itself. Still requires the
+manual "Edit" affordance once a second runner exists.
+
+Manual entry is reachable two ways: `AddRunnerDialog` directly (bypassed by default now), or
+tapping "Enter key manually instead" from inside the scan screen (denied camera permission, no
+camera, or just preference).
 
 ProjectListScreen/SessionListScreen/ChatScreen → RelayApiClient.forRunner(hostname, key) →
 RelayApiService (Retrofit+OkHttp+Moshi) → `X-Relay-Key` header on every call → runner's
