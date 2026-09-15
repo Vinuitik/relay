@@ -1,14 +1,17 @@
 name: Android build + distribute
 
-# Only runs when something under android/ actually changed - a runner-only or
-# docs-only commit to main shouldn't rebuild and re-notify testers of a build
-# with no app changes in it. See android/FLOWS.md "Distribution" for the
-# manual equivalent of this same command.
+# Only runs when something under android/ actually changed, excluding
+# FLOWS.md itself - a runner-only or docs-only commit to main shouldn't
+# rebuild and re-notify testers of a build with no app changes in it (a
+# FLOWS.md-only commit did exactly that once before this exclusion existed).
+# See android/FLOWS.md "Distribution" for the manual equivalent of this
+# same command.
 on:
   push:
     branches: [main]
     paths:
       - "android/**"
+      - "!android/FLOWS.md"
   workflow_dispatch: {}
 
 jobs:

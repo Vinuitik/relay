@@ -4,12 +4,15 @@ name: Runner build + release
 # and windows/amd64 binaries plus a checksums.txt - this is exactly what
 # runner/internal/selfupdate polls for (see that package's doc comment for
 # why pull-from-GitHub instead of push-via-SSH). Only fires on runner/
-# changes, same reasoning as android-deploy.yml's path filter.
+# changes excluding FLOWS.md itself, same reasoning as android-deploy.yml's
+# path filter (a docs-only commit republishing an identical binary under a
+# new tag is pure waste).
 on:
   push:
     branches: [main]
     paths:
       - "runner/**"
+      - "!runner/FLOWS.md"
   workflow_dispatch: {}
 
 permissions:
