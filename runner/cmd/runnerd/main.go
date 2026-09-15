@@ -118,31 +118,47 @@ func main() {
 	// Never starts unless RELAY_IDLE_SUSPEND_ENABLED=true is explicitly set,
 	// so a plain local run (or a container running runnerd without that env
 	// var) never tries to power its host off.
-	idleCfg := idle.LoadConfig()
-	if idleCfg.Enabled {
-		log.Printf("idle: suspend-to-S5 enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)
-		mon := idle.NewMonitor(sessions, idle.DefaultShutdowner, idleCfg)
-		mon.BeforeShutdown = func() {
-			if err := uptimeStore.Close(); err != nil {
-				log.Printf("uptime: failed to close interval before shutdown: %v", err)
-			}
-			hostname, err := os.Hostname()
-			if err != nil {
-				hostname = "unknown"
-			}
-			for _, d := range devices.List() {
-				if err := notifier.NotifyRunnerSuspending(d, hostname); err != nil {
-					log.Printf("notify device %s of suspend: %v", d.ID, err)
-				}
+	// beforeShutdown closes out the uptime buffer and fires a best-effort
+	// "going down" push, shared by both the automatic idle-suspend path
+	// (idle.Monitor.BeforeShutdown, called right before it invokes
+	// Shutdowner.Shutdown itself) and the manual /v1/suspend path below
+	// (which calls Shutdowner.Shutdown itself right after).
+	beforeShutdown := func() {
+		if err := uptimeStore.Close(); err != nil {
+			log.Printf("uptime: failed to close interval before shutdown: %v", err)
+		}
+		hostname, err := os.Hostname()
+		if err != nil {
+			hostname = "unknown"
+		}
+		for _, d := range devices.List() {
+			if err := notifier.NotifyRunnerSuspending(d, hostname); err != nil {
+				log.Printf("notify device %s of suspend: %v", d.ID, err)
 			}
 		}
-		go mon.Run()
 	}
 
+	idleCfg := idle.LoadConfig()
 	srv := api.NewServer(cfg.Key, projects, sessions, api.ComposeFuncs{
 		Start: compose.Start,
 		Stop:  compose.Stop,
 	}, devices, wol.DefaultSender, uptimeStore)
+
+	if idleCfg.Enabled {
+		log.Printf("idle: suspend-to-S5 enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)
+		mon := idle.NewMonitor(sessions, idle.DefaultShutdowner, idleCfg)
+		mon.BeforeShutdown = beforeShutdown
+		go mon.Run()
+
+		// Manual "I'm done, suspend now" from the phone - see
+		// api.Server.Suspend's doc comment for why this reuses the same
+		// RELAY_IDLE_SUSPEND_ENABLED gate as the automatic path instead of
+		// being always available.
+		srv.Suspend = func() error {
+			beforeShutdown()
+			return idle.DefaultShutdowner.Shutdown()
+		}
+	}
 
 	// NOTE: cfg.ListenAddr defaults to loopback for local dev/tests. A
 	// production deployment must bind only to the Tailscale interface,

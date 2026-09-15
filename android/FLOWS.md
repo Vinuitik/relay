@@ -130,6 +130,20 @@ are logged, not surfaced individually to the user (Toast just says "Starting/Sto
 To change: `widget/ContainersAllWorker.kt`, `ui/screens/RunnerListScreen.kt`
 (`enqueueContainersAll`).
 
+## Manual suspend / remove runner
+
+RunnerListScreen row → overflow menu → "Suspend now" → confirm dialog (explains: refused if
+busy, needs WoL to bring back) → `SuspendRunnerWorker` → POSTs `/v1/suspend` on that runner (see
+runner/FLOWS.md "Manual suspend"). `409`/`503` responses are terminal (logged, not retried - the
+runner already made the correct call); other failures get one WorkManager retry.
+
+"Remove runner" → confirm dialog → `repository.removeRunner(hostname)` - local-only, the runner
+itself is untouched; re-adding is just a rescan since the runner's key never changes. (This
+existed in `KnownRunnersRepository` for a while with no screen ever calling it - the gap this
+closes.)
+
+To change: `widget/SuspendRunnerWorker.kt`, `ui/screens/RunnerListScreen.kt`.
+
 ## Wake-on-LAN
 
 `KnownRunner` (model/Models.kt) carries two optional fields per runner: `wakeMac` (the MAC to
@@ -289,6 +303,8 @@ contains. Same fix, same reasoning, in runner-release.yml's `--notes`.
 | FCM registration background call (loops all runners) | `fcm/RegisterDeviceWorker.kt` |
 | Widget provider / Stop + Wake actions | `widget/RelayWidgetProvider.kt`, `widget/StopContainersWorker.kt`, `widget/WakeRunnerWorker.kt` |
 | Per-runner start-all/stop-all containers | `widget/ContainersAllWorker.kt`, `ui/screens/RunnerListScreen.kt` |
+| Manual suspend | `widget/SuspendRunnerWorker.kt`, `ui/screens/RunnerListScreen.kt` |
+| Remove runner | `data/KnownRunnersRepository.kt` (`removeRunner`), `ui/screens/RunnerListScreen.kt` |
 | Wake-via auto-match on pairing | `data/WakeViaMatcher.kt` |
 | Room schema (sessions/messages/uptime) | `data/db/Entities.kt`, `data/db/RelayDatabase.kt` (version) |
 | Room queries / write-through cache point | `data/db/Daos.kt` (`SessionCacheDao.replaceSession`, `UptimeDao.upsertAll`) |

@@ -41,6 +41,16 @@ type Server struct {
 	Devices  *notify.Registry
 	Sender   wol.PacketSender
 	Uptime   UptimeStore
+	// Suspend, if set, powers this machine off immediately on
+	// POST /v1/suspend (see handleSuspend) - a manual counterpart to
+	// idle.Monitor's automatic timeout, for "I'm done, don't wait 3
+	// minutes." Left nil (not wired in cmd/runnerd/main.go) unless
+	// RELAY_IDLE_SUSPEND_ENABLED=true, deliberately reusing idle-suspend's
+	// existing opt-in gate rather than inventing a second one - a manual
+	// trigger is still "run systemctl poweroff on this host," the same
+	// real, hard-to-undo action the idle package's doc comment already
+	// warns never to enable outside an intentional deployment.
+	Suspend func() error
 }
 
 // NewServer builds a Server.
@@ -69,6 +79,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/wake", s.auth(s.handleWake))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleRegisterDevice))
 	mux.HandleFunc("GET /v1/uptime", s.auth(s.handleUptime))
+	mux.HandleFunc("POST /v1/suspend", s.auth(s.handleSuspend))
 
 	return mux
 }
@@ -101,19 +112,24 @@ type runnerInfo struct {
 	LocalSubnet string `json:"localSubnet,omitempty"`
 }
 
+// anyBusy reports whether any session across any project is currently
+// busy - shared by handleRunnerInfo's `busy` field and handleSuspend's
+// refusal to power off out from under a running agent.
+func (s *Server) anyBusy() bool {
+	for _, p := range s.Projects.List() {
+		for _, sess := range s.Sessions.ListByProject(p.ID) {
+			if sess.State == session.StateBusy {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Server) handleRunnerInfo(w http.ResponseWriter, r *http.Request) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "unknown"
-	}
-
-	busy := false
-	for _, p := range s.Projects.List() {
-		for _, sess := range s.Sessions.ListByProject(p.ID) {
-			if sess.State == session.StateBusy {
-				busy = true
-			}
-		}
 	}
 
 	subnet, err := wol.LocalSubnet()
@@ -121,7 +137,27 @@ func (s *Server) handleRunnerInfo(w http.ResponseWriter, r *http.Request) {
 		subnet = ""
 	}
 
-	writeJSON(w, http.StatusOK, runnerInfo{Hostname: hostname, Busy: busy, Version: Version, LocalSubnet: subnet})
+	writeJSON(w, http.StatusOK, runnerInfo{Hostname: hostname, Busy: s.anyBusy(), Version: Version, LocalSubnet: subnet})
+}
+
+// handleSuspend powers this machine off immediately (POST /v1/suspend) - see
+// Server.Suspend's doc comment for why it's gated behind the same
+// RELAY_IDLE_SUSPEND_ENABLED flag as automatic idle-suspend, and never
+// fires while a session is busy regardless of that flag.
+func (s *Server) handleSuspend(w http.ResponseWriter, r *http.Request) {
+	if s.anyBusy() {
+		writeError(w, http.StatusConflict, "cannot suspend while a session is busy")
+		return
+	}
+	if s.Suspend == nil {
+		writeError(w, http.StatusServiceUnavailable, "manual suspend is not enabled on this runner (set RELAY_IDLE_SUSPEND_ENABLED=true)")
+		return
+	}
+	if err := s.Suspend(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{})
 }
 
 func (s *Server) handleUptime(w http.ResponseWriter, r *http.Request) {

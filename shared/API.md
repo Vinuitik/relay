@@ -78,6 +78,7 @@ UptimeInterval {
 | POST | `/v1/wake` | `{mac: string}` | `202 {}` | sends a Wake-on-LAN magic packet as a UDP broadcast on **this runner's own local network**. Call this on whichever known runner is on the same LAN as the machine you want to wake — never on the target itself, since if it's off it can't be reached. See ARCHITECTURE.md "Relay device". |
 | POST | `/v1/devices` | `{fcmToken: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner, so the runner can notify it on session-finish (or on suspend, see below). Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
 | GET | `/v1/uptime` | - | `200 UptimeInterval[]` | this runner's own up/down interval history, oldest first. **Short-term buffer only** (14 days, see runner/FLOWS.md "Uptime tracking") — the phone app is expected to poll this whenever a runner is reachable and persist its own merged weekly history locally, since a runner going to sleep is exactly when it becomes unreachable to ask. |
+| POST | `/v1/suspend` | - | `202 {}` | manually suspends this machine to S5 right now, instead of waiting for the idle timeout. `409` if any session is currently busy (never kills active work); `503` if the runner wasn't started with `RELAY_IDLE_SUSPEND_ENABLED=true` — this endpoint deliberately reuses that same opt-in gate, see runner/FLOWS.md "Idle-suspend". |
 
 Errors: `4xx/5xx` bodies are `{"error": string}`.
 

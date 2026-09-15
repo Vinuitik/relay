@@ -46,6 +46,7 @@ import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.data.WakeViaMatcher
 import com.relay.app.model.KnownRunner
 import com.relay.app.widget.ContainersAllWorker
+import com.relay.app.widget.SuspendRunnerWorker
 import com.relay.app.widget.WakeRunnerWorker
 import kotlinx.coroutines.launch
 
@@ -62,6 +63,7 @@ fun RunnerListScreen(
     var showQrScan by remember { mutableStateOf(false) }
     var editingRunner by remember { mutableStateOf<KnownRunner?>(null) }
     var confirmRemoveRunner by remember { mutableStateOf<KnownRunner?>(null) }
+    var confirmSuspendRunner by remember { mutableStateOf<KnownRunner?>(null) }
 
     if (showQrScan) {
         QrScanScreen(
@@ -165,6 +167,13 @@ fun RunnerListScreen(
                                                 },
                                             )
                                             DropdownMenuItem(
+                                                text = { Text("Suspend now") },
+                                                onClick = {
+                                                    showMenu = false
+                                                    confirmSuspendRunner = runner
+                                                },
+                                            )
+                                            DropdownMenuItem(
                                                 text = { Text("Remove runner") },
                                                 onClick = {
                                                     showMenu = false
@@ -237,6 +246,31 @@ fun RunnerListScreen(
                 }) { Text("Remove") }
             },
             dismissButton = { TextButton(onClick = { confirmRemoveRunner = null }) { Text("Cancel") } },
+        )
+    }
+
+    confirmSuspendRunner?.let { runner ->
+        AlertDialog(
+            onDismissRequest = { confirmSuspendRunner = null },
+            title = { Text("Suspend ${runner.hostname} now?") },
+            text = {
+                Text(
+                    "Powers the machine off immediately instead of waiting out the idle " +
+                        "timeout. Refused if a session is currently busy - nothing running gets " +
+                        "killed. You'll need Wake-on-LAN to bring it back.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val request = OneTimeWorkRequestBuilder<SuspendRunnerWorker>()
+                        .setInputData(workDataOf(SuspendRunnerWorker.KEY_TARGET_HOSTNAME to runner.hostname))
+                        .build()
+                    WorkManager.getInstance(context).enqueue(request)
+                    Toast.makeText(context, "Suspending ${runner.hostname}…", Toast.LENGTH_SHORT).show()
+                    confirmSuspendRunner = null
+                }) { Text("Suspend") }
+            },
+            dismissButton = { TextButton(onClick = { confirmSuspendRunner = null }) { Text("Cancel") } },
         )
     }
 }

@@ -110,6 +110,18 @@ lost" is the deliberate choice here (no queue, no retry, no delivery guarantee),
 delivery would mean building real message durability for a notification whose entire value is
 "heads up, right now."
 
+**Manual suspend** (POST /v1/suspend, `api.handleSuspend`): the "I'm done, don't make me wait out
+the timeout" counterpart to the automatic path above. Shares the same `beforeShutdown` closure
+(uptime close + best-effort push) and the same `idle.DefaultShutdowner`, but is invoked directly
+from the API instead of through `Monitor`'s ticker. Two independent refusals, checked before
+anything happens: `anyBusy()` (never suspend out from under a running session, `409` if busy -
+this check applies regardless of the flag below) and `srv.Suspend == nil` (`503`) - `main.go` only
+sets `srv.Suspend` when `idleCfg.Enabled` is true, deliberately reusing idle-suspend's own opt-in
+gate rather than making a manual trigger always available. Reasoning: it's still "run `systemctl
+poweroff` on this host" either way, the same real action the idle package's doc comment already
+warns never to enable outside an intentional deployment - a manual button doesn't change that
+risk, so it shouldn't get its own, looser gate.
+
 ## Uptime tracking
 
 Files: internal/uptime/uptime.go
@@ -381,6 +393,7 @@ To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
 | Uptime interval recording / buffer window | `internal/uptime/uptime.go` (`Open`, `Close`, `MaxAge`) |
 | Uptime endpoint | `internal/api/api.go` (`handleUptime`) |
 | Best-effort "runner suspending" push | `cmd/runnerd/main.go` (`Monitor.BeforeShutdown` wiring), `internal/notify/fcm.go` (`NotifyRunnerSuspending`) |
+| Manual suspend endpoint / busy refusal / enable gate | `internal/api/api.go` (`handleSuspend`, `anyBusy`, `Server.Suspend`), `cmd/runnerd/main.go` (`srv.Suspend` wiring) |
 | Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
 | Shutdown command (S5) | `internal/idle/shutdown_unix.go` (`systemctl poweroff` / `shutdown -h now` fallback), `internal/idle/shutdown_windows.go` (`shutdown /s /t 0`) |
 | Idle-suspend ticker wiring | `cmd/runnerd/main.go` (`idle.NewMonitor(...).Run()`, gated on `idleCfg.Enabled`) |
