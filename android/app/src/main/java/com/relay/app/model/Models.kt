@@ -33,6 +33,16 @@ data class RunnerInfo(
     val hostname: String,
     val busy: Boolean,
     val version: String,
+    // This runner's LAN network in CIDR form (e.g. "192.168.1.0/24"), null if undetectable.
+    // Used to auto-match which two known runners share a physical LAN for Wake-on-LAN — see
+    // [com.relay.app.data.WakeViaMatcher].
+    val localSubnet: String? = null,
+)
+
+/** Mirrors shared/API.md's `UptimeInterval` — one entry from `GET /v1/uptime`. */
+data class UptimeInterval(
+    val start: String,
+    val end: String?,
 )
 
 /** A runner the phone has been manually pointed at (see ARCHITECTURE.md "Registration"). */

@@ -1,10 +1,11 @@
 # Android app flows
 
 Files: MainActivity.kt, RelayNavHost.kt, RunnerListScreen.kt, QrScanScreen.kt,
-ProjectListScreen.kt, SessionListScreen.kt, ChatScreen.kt, KnownRunnersRepository.kt,
-WidgetConfigRepository.kt, RelayApiClient.kt, RelayApiService.kt,
+ProjectListScreen.kt, SessionListScreen.kt, ChatScreen.kt, DashboardScreen.kt,
+KnownRunnersRepository.kt, WidgetConfigRepository.kt, WakeViaMatcher.kt,
+RelayDatabase.kt, Entities.kt, Daos.kt, RelayApiClient.kt, RelayApiService.kt,
 RelayFirebaseMessagingService.kt, RelayWidgetProvider.kt, StopContainersWorker.kt,
-WakeRunnerWorker.kt, RegisterDeviceWorker.kt
+WakeRunnerWorker.kt, RegisterDeviceWorker.kt, ContainersAllWorker.kt, UptimeSyncWorker.kt
 
 ## Navigation
 
@@ -49,6 +50,66 @@ ChatScreen polls GET /v1/sessions/{id} every few seconds via LaunchedEffect+dela
 
 To change poll interval: ChatScreen.kt LaunchedEffect delay value
 To change API base URL scheme (http vs https): RelayApiClient.kt
+
+## Wake-via auto-match (no manual "Edit" step for a same-LAN relay)
+
+Files: WakeViaMatcher.kt, RunnerListScreen.kt
+
+Right after `repository.addRunner(newRunner)` (both the QR-scan and manual-entry paths in
+RunnerListScreen) → `WakeViaMatcher.autoMatch(repository, newRunner)` → fetches
+`GET /v1/runner/info` from every OTHER already-known runner plus the new one → compares
+`localSubnet` (see runner/FLOWS.md "Same-LAN detection for wake-via auto-match") → exactly one
+match → `repository.updateRunner` on BOTH runners, setting `wakeViaRunnerId` to each other
+(either might be the one asleep later). Zero or 2+ matches, or any runner unreachable at pairing
+time → silently skips, leaving the existing manual "Edit" affordance as the fallback - this is a
+one-shot best-effort check at pairing time, not an ongoing protocol, so there's no
+consensus/leader-election machinery here even with 3+ runners.
+
+To change: `data/WakeViaMatcher.kt`.
+
+## On-device cache (Room) - chats + uptime history
+
+Files: RelayDatabase.kt, Entities.kt, Daos.kt
+
+`RelayDatabase.get(context)` (lazy singleton) → `sessionCacheDao()` mirrors runner
+sessions/messages, `uptimeDao()` holds the phone's own long-term uptime history. Both are
+write-through mirrors of runner state - the app never originates data in these tables, it only
+ever copies what a runner returned, so there's no local-edit-vs-runner-state conflict to resolve.
+
+- **Sessions/messages**: ChatScreen and SessionListScreen each load the cached copy first (so
+  the transcript/list renders instantly and works if the runner is currently unreachable), then
+  poll the runner live; on success `SessionCacheDao.replaceSession` clears and reinserts that
+  session's messages wholesale (the runner always returns the full transcript, nothing to diff)
+  and an `offline` banner clears; on failure - if there was already something on screen - the
+  banner shows "Offline — showing last known data" instead of blanking the view.
+- **Uptime**: see "Dashboard" below.
+
+To change: `data/db/Entities.kt` (schema), `data/db/Daos.kt` (queries), `data/db/RelayDatabase.kt`
+(version - bump on any schema change; no migrations written yet, see Technology Notes).
+
+## Dashboard (per-app, not per-runner, uptime history)
+
+Files: DashboardScreen.kt, UptimeSyncWorker.kt, MainActivity.kt
+
+`MainActivity.scheduleUptimeSync()` → `WorkManager.enqueueUniquePeriodicWork("uptime-sync", KEEP,
+...)` every 15 minutes (WorkManager's minimum periodic interval) → `UptimeSyncWorker.doWork()` →
+for every known runner, best-effort `GET /v1/uptime` → `UptimeDao.upsertAll` into the app's own
+`uptime_intervals` table, keyed by (runnerHostname, start) so a re-synced interval's `end` update
+replaces the row instead of duplicating it. A runner that's asleep/unreachable is just skipped for
+that run - caught on the next one, and the runner's own short-term buffer
+(runner/FLOWS.md "Uptime tracking") covers the gap in between.
+
+RunnerListScreen's top bar → DateRange icon → `Routes.DASHBOARD` → `DashboardScreen` reads
+**only** from local Room (`uptimeDao().observeAll()`), never live from any runner - this is
+deliberate per the user's framing: the dashboard belongs to the app, not to any one device, and
+must still show history for a runner that's currently asleep. `aggregateByWeek` buckets each
+interval into the ISO week its *start* falls in (an interval spanning a week boundary is not
+split - accepted simplification, see the file's doc comment) and sums seconds per week;
+`aggregateCurrentWeekByRunner` does the same scoped to the current week, broken out per runner.
+
+To change the sync interval: `MainActivity.scheduleUptimeSync` (15 min is WorkManager's floor,
+can't go lower). To change week-bucketing logic: `ui/screens/DashboardScreen.kt`
+(`aggregateByWeek`, `weekLabelFor`).
 
 ## Widget
 
@@ -180,16 +241,29 @@ contains. Same fix, same reasoning, in runner-release.yml's `--notes`.
   `RELAY_FCM_CREDENTIALS` pointed at a real service-account key (see runner/FLOWS.md) — without
   that the runner still registers devices but silently skips sending. The Android side has no
   remaining Firebase-project blocker.
-- **Wake-on-LAN app-side is fully wired** — WakeRunnerWorker calls a real `/v1/wake` on a
-  configured "via" runner. What's still not automatic: *which* runner is on the same LAN as a
-  given wake target is entered manually per runner (`wakeViaRunnerId`), and no physical relay
-  device (Pi Zero 2 W) exists yet — any already-running runner can serve that role today since
-  it's the same binary everywhere (see ARCHITECTURE.md "Relay device").
+- **Wake-on-LAN app-side is fully wired, and the "via" pick is now automatic on same-LAN
+  pairing** — WakeViaMatcher auto-sets `wakeViaRunnerId` when exactly one already-known runner
+  shares the new one's subnet (see "Wake-via auto-match" above); the manual "Edit" affordance
+  remains for the ambiguous/unreachable-at-pairing-time case. No physical relay device (Pi Zero
+  2 W) exists yet — any already-running runner (including a laptop, for now) can serve that role
+  today since it's the same binary everywhere (see ARCHITECTURE.md "Relay device").
 - **DataStore Preferences has no encryption** — the runner key (and now the plaintext wake MAC)
   is stored in plaintext prefs. Acceptable for now (single-user, own devices) but worth
   revisiting before wider use.
-- **No offline/local persistence of sessions or messages** — everything is fetched live from
-  the runner each time; if the runner is unreachable, screens simply fail to load (no cache).
+- **Sessions/messages and uptime now persist on-device via Room** (see "On-device cache" and
+  "Dashboard" above) — the only screens still fully live-or-nothing are ProjectListScreen and the
+  containers start/stop actions, which don't need history the way chats/uptime do.
+- **Room has no migrations written yet** — `RelayDatabase`'s `version = 1` is the only schema
+  that has ever existed. Any future field/table change needs either a real `Migration` or, for
+  this pre-release skeleton, a version bump accepted as "wipes the local cache" (it's a mirror of
+  runner state plus an accumulating log the runner can partially re-supply via its own buffer -
+  not unrecoverable, but real uptime history before the wipe is genuinely gone, per "if lost,
+  then lost").
+- **Dashboard week-bucketing doesn't split an interval across a week boundary** — see
+  DashboardScreen's doc comment; a session that runs from Sunday night into Monday morning counts
+  entirely toward Sunday's week. Deliberate simplification for a personal dashboard.
+- **UptimeSyncWorker runs at WorkManager's 15-minute floor** — can't be scheduled more often than
+  that for periodic work; not a problem for how coarse "which week was this awake" needs to be.
 - **WorkManager has no dedup/backoff tuning here** — `OneTimeWorkRequestBuilder` uses defaults;
   a `RegisterDeviceWorker` run for every runner during `doWork()` is sequential, not parallel,
   so a slow/unreachable runner delays (but does not block, thanks to the try/catch) the rest.
@@ -215,4 +289,10 @@ contains. Same fix, same reasoning, in runner-release.yml's `--notes`.
 | FCM registration background call (loops all runners) | `fcm/RegisterDeviceWorker.kt` |
 | Widget provider / Stop + Wake actions | `widget/RelayWidgetProvider.kt`, `widget/StopContainersWorker.kt`, `widget/WakeRunnerWorker.kt` |
 | Per-runner start-all/stop-all containers | `widget/ContainersAllWorker.kt`, `ui/screens/RunnerListScreen.kt` |
+| Wake-via auto-match on pairing | `data/WakeViaMatcher.kt` |
+| Room schema (sessions/messages/uptime) | `data/db/Entities.kt`, `data/db/RelayDatabase.kt` (version) |
+| Room queries / write-through cache point | `data/db/Daos.kt` (`SessionCacheDao.replaceSession`, `UptimeDao.upsertAll`) |
+| Chat/session offline cache read+write | `ui/screens/ChatScreen.kt`, `ui/screens/SessionListScreen.kt` |
+| Uptime sync schedule/logic | `MainActivity.kt` (`scheduleUptimeSync`), `data/UptimeSyncWorker.kt` |
+| Dashboard screen / week-bucketing | `ui/screens/DashboardScreen.kt` (`aggregateByWeek`, `aggregateCurrentWeekByRunner`) |
 | Gradle/Kotlin/Compose versions | `app/build.gradle.kts`, `build.gradle.kts`, `gradle/wrapper/gradle-wrapper.properties` |

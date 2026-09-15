@@ -16,6 +16,7 @@ import androidx.navigation.navArgument
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.data.WidgetConfigRepository
 import com.relay.app.ui.screens.ChatScreen
+import com.relay.app.ui.screens.DashboardScreen
 import com.relay.app.ui.screens.ProjectListScreen
 import com.relay.app.ui.screens.RunnerListScreen
 import com.relay.app.ui.screens.SessionListScreen
@@ -23,6 +24,7 @@ import com.relay.app.ui.screens.SessionListScreen
 /** Route templates, kept next to their builder functions so a nav arg never gets typo'd. */
 object Routes {
     const val RUNNER_LIST = "runners"
+    const val DASHBOARD = "dashboard"
     const val PROJECT_LIST = "runners/{hostname}/projects"
     const val SESSION_LIST = "runners/{hostname}/projects/{projectId}/sessions"
     const val CHAT = "runners/{hostname}/projects/{projectId}/sessions/{sessionId}/chat"
@@ -46,7 +48,12 @@ fun RelayNavHost(
             RunnerListScreen(
                 repository = runnersRepository,
                 onRunnerSelected = { runner -> navController.navigate(Routes.projectList(runner.hostname)) },
+                onDashboard = { navController.navigate(Routes.DASHBOARD) },
             )
+        }
+
+        composable(Routes.DASHBOARD) {
+            DashboardScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -42,6 +43,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.relay.app.data.KnownRunnersRepository
+import com.relay.app.data.WakeViaMatcher
 import com.relay.app.model.KnownRunner
 import com.relay.app.widget.ContainersAllWorker
 import com.relay.app.widget.WakeRunnerWorker
@@ -51,6 +53,7 @@ import kotlinx.coroutines.launch
 fun RunnerListScreen(
     repository: KnownRunnersRepository,
     onRunnerSelected: (KnownRunner) -> Unit,
+    onDashboard: () -> Unit,
 ) {
     val runners by repository.runners.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
@@ -62,23 +65,25 @@ fun RunnerListScreen(
     if (showQrScan) {
         QrScanScreen(
             onScanned = { scanned ->
+                val newRunner = KnownRunner(
+                    hostname = scanned.hostname,
+                    port = scanned.port,
+                    key = scanned.key,
+                    wakeMac = scanned.mac,
+                )
                 scope.launch {
-                    repository.addRunner(
-                        KnownRunner(
-                            hostname = scanned.hostname,
-                            port = scanned.port,
-                            key = scanned.key,
-                            wakeMac = scanned.mac,
-                        ),
-                    )
+                    repository.addRunner(newRunner)
+                    val matchedHostname = WakeViaMatcher.autoMatch(repository, newRunner)
+                    val message = when {
+                        matchedHostname != null ->
+                            "Added runner ${scanned.hostname} — auto-matched wake-via $matchedHostname (same LAN)"
+                        scanned.mac != null ->
+                            "Added runner ${scanned.hostname} (wake MAC captured — set \"wake via\" in Edit once you have a second runner)"
+                        else -> "Added runner ${scanned.hostname}"
+                    }
+                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                 }
                 showQrScan = false
-                val message = if (scanned.mac != null) {
-                    "Added runner ${scanned.hostname} (wake MAC captured — set \"wake via\" in Edit once you have a second runner)"
-                } else {
-                    "Added runner ${scanned.hostname}"
-                }
-                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             },
             onManualEntry = {
                 showQrScan = false
@@ -90,7 +95,16 @@ fun RunnerListScreen(
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Runners") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Runners") },
+                actions = {
+                    IconButton(onClick = onDashboard) {
+                        Icon(Icons.Default.DateRange, contentDescription = "Dashboard")
+                    }
+                },
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(onClick = { showQrScan = true }) {
                 Icon(Icons.Default.Add, contentDescription = "Add runner")
@@ -166,7 +180,14 @@ fun RunnerListScreen(
         AddRunnerDialog(
             onDismiss = { showAddDialog = false },
             onSave = { hostname, port, key ->
-                scope.launch { repository.addRunner(KnownRunner(hostname = hostname, port = port, key = key)) }
+                val newRunner = KnownRunner(hostname = hostname, port = port, key = key)
+                scope.launch {
+                    repository.addRunner(newRunner)
+                    val matchedHostname = WakeViaMatcher.autoMatch(repository, newRunner)
+                    if (matchedHostname != null) {
+                        Toast.makeText(context, "Auto-matched wake-via $matchedHostname (same LAN)", Toast.LENGTH_LONG).show()
+                    }
+                }
                 showAddDialog = false
             },
         )

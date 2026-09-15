@@ -5,6 +5,7 @@ import com.relay.app.model.Device
 import com.relay.app.model.Project
 import com.relay.app.model.RunnerInfo
 import com.relay.app.model.Session
+import com.relay.app.model.UptimeInterval
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
@@ -87,4 +88,10 @@ interface RelayApiService {
      * typed [Device] per shared/API.md, but no current caller needs it beyond success/failure. */
     @POST("v1/devices")
     suspend fun registerDevice(@Body request: DeviceRegistrationRequest): Device
+
+    /** This runner's short-term up/down interval buffer — see shared/API.md and
+     * [com.relay.app.data.UptimeSyncWorker], which pulls this into the app's own long-term Room
+     * history. */
+    @GET("v1/uptime")
+    suspend fun uptime(): List<UptimeInterval>
 }
