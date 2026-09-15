@@ -94,4 +94,10 @@ interface RelayApiService {
      * history. */
     @GET("v1/uptime")
     suspend fun uptime(): List<UptimeInterval>
+
+    /** Manual "suspend now" — see shared/API.md: `409` if a session is busy, `503` if the runner
+     * wasn't started with RELAY_IDLE_SUSPEND_ENABLED=true. See
+     * [com.relay.app.widget.SuspendRunnerWorker]. */
+    @POST("v1/suspend")
+    suspend fun suspend(): Response<ResponseBody>
 }
