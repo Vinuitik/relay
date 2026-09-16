@@ -230,6 +230,17 @@ NOT install anything by itself:
   Play Store production build (its own update flow can read as policy
   friction) - moot here since this app was never headed for the Store.
 
+**A force-push to `main` never triggers this workflow.** GitHub's `push` event (what
+`on: push` listens for) is not emitted for a non-fast-forward ref update - confirmed
+2026-09-16 by diffing the repo's public events feed: every ordinary push to `main` shows
+up as a `PushEvent`, a force-pushed commit (history rewrite to strip stray attribution
+trailers) showed zero matching event, and correspondingly zero workflow run. Not a bug,
+not a free-tier/quota limit (this repo is public - unlimited Actions minutes) - GitHub
+simply never tells Actions a push happened. After ANY force-push to `main` (should be
+rare - a history rewrite, not normal commit flow), manually fire the build:
+`gh workflow run android-deploy.yml --ref main`, or Actions tab → this workflow → "Run
+workflow" → main.
+
 To change who gets releases: swap `--testers` for `--groups <name>` once
 more than one person is testing (create the group in the Firebase console
 first). To change the app being targeted: the `--app` id comes from
