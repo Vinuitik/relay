@@ -150,6 +150,25 @@ To change the poll interval: env `RELAY_IDLE_CHECK_INTERVAL` (default `idle.Defa
 To enable this feature at all: env `RELAY_IDLE_SUSPEND_ENABLED=true` - **disabled by default,
 see Technology notes below before ever setting this locally.**
 
+## File viewing (read-only, scoped to a project dir)
+
+Files: internal/project/project.go (`ResolvePath`), internal/api/api.go (`handleListFiles`,
+`handleFileContent`)
+
+GET /v1/projects/{id}/files?path=<rel> → `Registry.ResolvePath(id, path)` (rejects absolute
+paths and any `../` escape via `filepath.Rel` + prefix check) → `os.ReadDir` → `FileEntry[]`
+(name, isDir, size). `path` omitted/empty = project root.
+
+GET /v1/projects/{id}/files/content?path=<rel> → same `ResolvePath` scoping → refuses a
+directory, anything over `maxViewableFileSize` (1MiB), and anything that looks binary (a null
+byte in the first 512 bytes, `isBinary`) → `FileContent{path, content}`.
+
+Read-only by design, per ARCHITECTURE.md "Runner responsibilities" - no write/delete/rename
+endpoint exists or is planned for v1.
+
+To change the size cap: `internal/api/api.go` (`maxViewableFileSize`).
+To change path-escape rules: `internal/project/project.go` (`Registry.ResolvePath`).
+
 ## Device registration + notify-on-finish
 
 ## Bulk container start/stop (per-runner, all projects)
@@ -252,6 +271,16 @@ To disable on a given machine: `RELAY_AUTO_UPDATE_ENABLED=false` in
 
 To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
 (e.g. `1h`), same env file.
+
+## Dev note: Docker + Git Bash on Windows
+
+Any `docker run -v src:/dst ...` command from Git Bash (not PowerShell) needs
+`MSYS_NO_PATHCONV=1` prefixed, e.g. `MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/app" -w
+/app golang:1.22 go test ./...`. Without it, Git Bash's automatic POSIX-to-Windows path
+conversion mangles the `src:/dst` bind-mount syntax into one broken semicolon-joined path
+(`C:\...\runner;C:\Program Files\Git\app`), the command fails, and as a side effect leaves a
+literal junk directory with that exact garbled name behind on disk (found and deleted twice
+now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code path).
 
 ## Technology notes
 
@@ -397,3 +426,6 @@ To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
 | Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
 | Shutdown command (S5) | `internal/idle/shutdown_unix.go` (`systemctl poweroff` / `shutdown -h now` fallback), `internal/idle/shutdown_windows.go` (`shutdown /s /t 0`) |
 | Idle-suspend ticker wiring | `cmd/runnerd/main.go` (`idle.NewMonitor(...).Run()`, gated on `idleCfg.Enabled`) |
+| File listing / content endpoints | `internal/api/api.go` (`handleListFiles`, `handleFileContent`) |
+| Project-path escape guard | `internal/project/project.go` (`Registry.ResolvePath`) |
+| Viewable file size cap | `internal/api/api.go` (`maxViewableFileSize`) |

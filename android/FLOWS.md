@@ -67,6 +67,21 @@ consensus/leader-election machinery here even with 3+ runners.
 
 To change: `data/WakeViaMatcher.kt`.
 
+## File browser (read-only)
+
+Files: FileBrowserScreen.kt, RelayApiService.kt
+
+ProjectListScreen row → folder icon (next to the widget-default star) → `FileBrowserScreen`.
+Directory drill-down and file viewing are both local Compose state here, not
+[RelayNavHost] routes - tapping a directory appends to a `pathSegments` list, tapping a file
+sets `viewingFile` and fetches its content; the hardware/gesture back button
+(`BackHandler`) steps back one level (out of a file, then up one directory) before finally
+calling `onBack` to leave the screen. `GET /v1/projects/{id}/files` lists a directory,
+`GET /v1/projects/{id}/files/content` returns one file's text - see runner/FLOWS.md "File
+viewing" for the server side. Read-only - no edit/save affordance exists.
+
+To change: `ui/screens/FileBrowserScreen.kt`.
+
 ## On-device cache (Room) - chats + uptime history
 
 Files: RelayDatabase.kt, Entities.kt, Daos.kt
@@ -258,6 +273,16 @@ contains. Same fix, same reasoning, in runner-release.yml's `--notes`.
 
 ## Technology notes
 
+- **Cleartext HTTP was blocked on every real device until 2026-09-16.** `RelayApiClient` talks
+  plain `http://` deliberately (ARCHITECTURE.md: Tailscale's tunnel is the transport security,
+  not app-level TLS), but Android has blocked cleartext traffic by default since API 28 and the
+  manifest never declared `android:usesCleartextTraffic="true"` to opt back in. Every API call
+  failed with "not permitted by network security policy" the first time this app ever ran
+  against a real runner - invisible to the Docker-only compile check below, since that never
+  executes the app, only builds it. Fixed in `AndroidManifest.xml`. This also silently broke
+  `WakeViaMatcher`'s auto-match at pairing time (it calls `GET /v1/runner/info` over the same
+  blocked HTTP), which is why wake-via looked "not configured" even on same-LAN runners - not a
+  separate bug, same root cause.
 - **No build/run verification via emulator** — none available in this environment. Compile
   verified via a one-off Dockerized `./gradlew assembleDebug` (mingc/android-build-box image);
   no instrumented/UI tests have ever run, so the notification/permission flow above is
@@ -323,3 +348,5 @@ contains. Same fix, same reasoning, in runner-release.yml's `--notes`.
 | Uptime sync schedule/logic | `MainActivity.kt` (`scheduleUptimeSync`), `data/UptimeSyncWorker.kt` |
 | Dashboard screen / week-bucketing | `ui/screens/DashboardScreen.kt` (`aggregateByWeek`, `aggregateCurrentWeekByRunner`) |
 | Gradle/Kotlin/Compose versions | `app/build.gradle.kts`, `build.gradle.kts`, `gradle/wrapper/gradle-wrapper.properties` |
+| File browser screen | `ui/screens/FileBrowserScreen.kt` |
+| Cleartext HTTP opt-in | `app/src/main/AndroidManifest.xml` (`android:usesCleartextTraffic`) |

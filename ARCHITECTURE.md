@@ -157,7 +157,35 @@ request over the tailnet and fires the local broadcast.
   sessions — end to end. Only buy the Pi Zero 2 W afterward, once the design is confirmed
   working, and move the relay role onto it last.
 
-## Status as of 2026-09-15 (pick up here next session)
+## Status as of 2026-09-16 (pick up here next session)
+
+**Built tonight (2026-09-16):**
+- Read-only file viewing: `GET /v1/projects/{id}/files` + `/files/content` on the runner,
+  folder-icon → `FileBrowserScreen` in the app. See runner/FLOWS.md and android/FLOWS.md.
+- **Fixed a real on-device blocker**: cleartext HTTP was silently rejected by Android (no
+  `usesCleartextTraffic` declared) — every single API call failed on a real phone until this
+  was fixed, including `WakeViaMatcher`'s auto-match, which is why wake-via looked broken/
+  unconfigurable. This had never been caught because verification was Docker-compile-only,
+  never run-on-device.
+- First real end-to-end pairing attempt: laptop runner (Windows, Tailscale IP
+  100.124.46.7:7777) and server runner (Linux, Tailscale IP 100.119.134.101:7777) both
+  confirmed live and reachable over the tailnet. Tailscale was already installed and logged in
+  on all three devices (laptop, server, phone) from prior setup — that step was already done,
+  not part of tonight's work.
+- Git history rewrite: stripped a stray `Co-Authored-By: Claude` trailer that had been added to
+  16 past commits, contrary to this project's own no-attribution convention. Force-pushed to
+  `origin/main`. Learned the hard way that force-pushing does not fire GitHub's `push` event, so
+  `android-deploy.yml` silently didn't run until manually triggered via `workflow_dispatch` —
+  documented in android/FLOWS.md "Distribution".
+
+**Not yet actually confirmed** (cleartext fix was pushed and should be building/distributing,
+but the resulting APK had not been re-paired against either runner by the end of this session):
+- Phone successfully pairing with both runners post-fix.
+- Wake-via auto-match actually succeeding now that the underlying HTTP calls work.
+- Chat/session/container flows exercised for real against either runner.
+- S5 suspend + WoL wake-back, actually exercised.
+
+## Status as of 2026-09-15
 
 **Built and merged** (runner + app, both compile/test clean - runner via `go test ./...`,
 Android via a Dockerized `./gradlew assembleDebug`, see runner/FLOWS.md and android/FLOWS.md for
