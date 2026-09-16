@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -80,6 +81,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleRegisterDevice))
 	mux.HandleFunc("GET /v1/uptime", s.auth(s.handleUptime))
 	mux.HandleFunc("POST /v1/suspend", s.auth(s.handleSuspend))
+	mux.HandleFunc("GET /v1/projects/{projectId}/files", s.auth(s.handleListFiles))
+	mux.HandleFunc("GET /v1/projects/{projectId}/files/content", s.auth(s.handleFileContent))
 
 	return mux
 }
@@ -393,6 +396,103 @@ func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	device := s.Devices.Register(req.FCMToken)
 	writeJSON(w, http.StatusOK, device)
+}
+
+// maxViewableFileSize caps what handleFileContent will read into memory and
+// return. Read-only file viewing is meant for skimming source/config, not
+// downloading arbitrary large files - see ARCHITECTURE.md "File viewing".
+const maxViewableFileSize = 1 << 20 // 1 MiB
+
+type fileEntry struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"isDir"`
+	Size  int64  `json:"size"`
+}
+
+// handleListFiles lists the contents of a directory within a project, per
+// shared/API.md. path="" (or omitted) lists the project root.
+func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	full, err := s.Projects.ResolvePath(r.PathValue("projectId"), r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "path not found")
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is not a directory")
+		return
+	}
+	entries, err := os.ReadDir(full)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]fileEntry, 0, len(entries))
+	for _, e := range entries {
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, fileEntry{Name: e.Name(), IsDir: e.IsDir(), Size: fi.Size()})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type fileContent struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// handleFileContent returns a text file's contents, per shared/API.md. Read
+// only, scoped to the project directory via Registry.ResolvePath - never
+// serves a directory, a file above maxViewableFileSize, or anything that
+// looks binary (a null byte in the first 512 bytes).
+func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
+	relPath := r.URL.Query().Get("path")
+	if relPath == "" {
+		writeError(w, http.StatusBadRequest, "path query parameter is required")
+		return
+	}
+	full, err := s.Projects.ResolvePath(r.PathValue("projectId"), relPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "path not found")
+		return
+	}
+	if info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is a directory")
+		return
+	}
+	if info.Size() > maxViewableFileSize {
+		writeError(w, http.StatusRequestEntityTooLarge, "file too large to view (>1MiB)")
+		return
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if isBinary(data) {
+		writeError(w, http.StatusUnsupportedMediaType, "binary file, not viewable")
+		return
+	}
+	writeJSON(w, http.StatusOK, fileContent{Path: relPath, Content: string(data)})
+}
+
+func isBinary(data []byte) bool {
+	n := len(data)
+	if n > 512 {
+		n = 512
+	}
+	return bytes.IndexByte(data[:n], 0) != -1
 }
 
 func decodeJSON(r *http.Request, v any) error {

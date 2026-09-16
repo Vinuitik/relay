@@ -56,6 +56,17 @@ UptimeInterval {
   start: string        // RFC3339
   end: string?         // RFC3339, null while this interval is still ongoing (runner is up now)
 }
+
+FileEntry {
+  name: string
+  isDir: boolean
+  size: number         // bytes; 0 for directories
+}
+
+FileContent {
+  path: string         // echoes the requested project-relative path
+  content: string      // raw file text (UTF-8/ASCII assumed)
+}
 ```
 
 ## Endpoints
@@ -79,6 +90,8 @@ UptimeInterval {
 | POST | `/v1/devices` | `{fcmToken: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner, so the runner can notify it on session-finish (or on suspend, see below). Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
 | GET | `/v1/uptime` | - | `200 UptimeInterval[]` | this runner's own up/down interval history, oldest first. **Short-term buffer only** (14 days, see runner/FLOWS.md "Uptime tracking") — the phone app is expected to poll this whenever a runner is reachable and persist its own merged weekly history locally, since a runner going to sleep is exactly when it becomes unreachable to ask. |
 | POST | `/v1/suspend` | - | `202 {}` | manually suspends this machine to S5 right now, instead of waiting for the idle timeout. `409` if any session is currently busy (never kills active work); `503` if the runner wasn't started with `RELAY_IDLE_SUSPEND_ENABLED=true` — this endpoint deliberately reuses that same opt-in gate, see runner/FLOWS.md "Idle-suspend". |
+| GET | `/v1/projects/{projectId}/files?path=<relative>` | - | `200 FileEntry[]` | lists a directory within the project. `path` omitted/empty = project root. `400` if `path` escapes the project directory (`../`) or isn't a directory. Read-only — see ARCHITECTURE.md "Runner responsibilities". |
+| GET | `/v1/projects/{projectId}/files/content?path=<relative>` | - | `200 FileContent` | returns one file's text content. `400` if `path` is missing/escapes the project dir/is a directory, `404` if it doesn't exist, `413` if over 1MiB, `415` if it looks binary (a null byte in the first 512 bytes). |
 
 Errors: `4xx/5xx` bodies are `{"error": string}`.
 

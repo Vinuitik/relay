@@ -118,3 +118,45 @@ func TestDirResolvesProjectPath(t *testing.T) {
 		t.Error("Dir returned ok=true for unknown project")
 	}
 }
+
+func TestResolvePathWithinProject(t *testing.T) {
+	reg := newTestRegistry(t)
+	p, err := reg.Create("Resolve Test")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	full, err := reg.ResolvePath(p.ID, "sub/file.txt")
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	want := filepath.Join(p.Path, "sub", "file.txt")
+	if full != want {
+		t.Errorf("ResolvePath = %q, want %q", full, want)
+	}
+}
+
+func TestResolvePathRejectsEscape(t *testing.T) {
+	reg := newTestRegistry(t)
+	p, err := reg.Create("Escape Test")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for _, bad := range []string{"../outside.txt", "../../etc/passwd", "sub/../../escape.txt"} {
+		if _, err := reg.ResolvePath(p.ID, bad); err == nil {
+			t.Errorf("ResolvePath(%q) = nil error, want an error", bad)
+		}
+	}
+}
+
+func TestResolvePathRejectsAbsolute(t *testing.T) {
+	reg := newTestRegistry(t)
+	p, err := reg.Create("Absolute Test")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := reg.ResolvePath(p.ID, filepath.Join(string(filepath.Separator), "etc", "passwd")); err == nil {
+		t.Error("ResolvePath(absolute) = nil error, want an error")
+	}
+}

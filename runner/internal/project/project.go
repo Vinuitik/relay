@@ -97,6 +97,28 @@ func (r *Registry) Dir(id string) (string, bool) {
 	return p.Path, true
 }
 
+// ResolvePath validates that projectRelPath stays within project id's
+// directory (rejecting absolute paths and any "../" escape) and returns the
+// resulting absolute path. Used by the file-viewing endpoints to guarantee a
+// runner never serves a path outside the project it was asked about - see
+// ARCHITECTURE.md "Runner responsibilities" (file read/write scoped to that
+// project's directory only, never the whole filesystem).
+func (r *Registry) ResolvePath(id, projectRelPath string) (string, error) {
+	p, err := r.Get(id)
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(projectRelPath) {
+		return "", fmt.Errorf("path must be relative")
+	}
+	full := filepath.Join(p.Path, projectRelPath)
+	rel, err := filepath.Rel(p.Path, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes project directory")
+	}
+	return full, nil
+}
+
 // Create scaffolds a new project directory under the registry's root and
 // registers it, persisting the registry to disk.
 func (r *Registry) Create(name string) (Project, error) {
