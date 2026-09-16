@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Star as StarBorder
 import androidx.compose.material3.AlertDialog
@@ -48,6 +49,7 @@ fun ProjectListScreen(
     runner: KnownRunner,
     widgetConfigRepository: WidgetConfigRepository,
     onProjectSelected: (Project) -> Unit,
+    onFilesSelected: (Project) -> Unit,
     onBack: () -> Unit,
 ) {
     val api = remember(runner) { RelayApiClient.forRunner(runner) }
@@ -107,15 +109,23 @@ fun ProjectListScreen(
                             headlineContent = { Text(project.name) },
                             supportingContent = { Text(project.path) },
                             trailingContent = {
-                                IconButton(onClick = {
-                                    scope.launch {
-                                        widgetConfigRepository.setDefault(WidgetTarget(runner, project.id))
+                                Row {
+                                    IconButton(onClick = { onFilesSelected(project) }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Folder,
+                                            contentDescription = "Browse files",
+                                        )
                                     }
-                                }) {
-                                    Icon(
-                                        imageVector = if (isWidgetDefault) Icons.Default.Star else Icons.Outlined.StarBorder,
-                                        contentDescription = "Set as widget default project",
-                                    )
+                                    IconButton(onClick = {
+                                        scope.launch {
+                                            widgetConfigRepository.setDefault(WidgetTarget(runner, project.id))
+                                        }
+                                    }) {
+                                        Icon(
+                                            imageVector = if (isWidgetDefault) Icons.Default.Star else Icons.Outlined.StarBorder,
+                                            contentDescription = "Set as widget default project",
+                                        )
+                                    }
                                 }
                             },
                             modifier = Modifier.clickable { onProjectSelected(project) },

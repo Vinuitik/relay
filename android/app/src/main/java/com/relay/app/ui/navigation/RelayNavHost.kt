@@ -17,6 +17,7 @@ import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.data.WidgetConfigRepository
 import com.relay.app.ui.screens.ChatScreen
 import com.relay.app.ui.screens.DashboardScreen
+import com.relay.app.ui.screens.FileBrowserScreen
 import com.relay.app.ui.screens.ProjectListScreen
 import com.relay.app.ui.screens.RunnerListScreen
 import com.relay.app.ui.screens.SessionListScreen
@@ -28,11 +29,13 @@ object Routes {
     const val PROJECT_LIST = "runners/{hostname}/projects"
     const val SESSION_LIST = "runners/{hostname}/projects/{projectId}/sessions"
     const val CHAT = "runners/{hostname}/projects/{projectId}/sessions/{sessionId}/chat"
+    const val FILES = "runners/{hostname}/projects/{projectId}/files"
 
     fun projectList(hostname: String) = "runners/$hostname/projects"
     fun sessionList(hostname: String, projectId: String) = "runners/$hostname/projects/$projectId/sessions"
     fun chat(hostname: String, projectId: String, sessionId: String) =
         "runners/$hostname/projects/$projectId/sessions/$sessionId/chat"
+    fun files(hostname: String, projectId: String) = "runners/$hostname/projects/$projectId/files"
 }
 
 @Composable
@@ -71,6 +74,9 @@ fun RelayNavHost(
                     onProjectSelected = { project ->
                         navController.navigate(Routes.sessionList(hostname, project.id))
                     },
+                    onFilesSelected = { project ->
+                        navController.navigate(Routes.files(hostname, project.id))
+                    },
                     onBack = { navController.popBackStack() },
                 )
             }
@@ -95,6 +101,27 @@ fun RelayNavHost(
                     onSessionSelected = { session ->
                         navController.navigate(Routes.chat(hostname, projectId, session.id))
                     },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+        }
+
+        composable(
+            route = Routes.FILES,
+            arguments = listOf(
+                navArgument("hostname") { type = NavType.StringType },
+                navArgument("projectId") { type = NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val hostname = backStackEntry.arguments?.getString("hostname").orEmpty()
+            val projectId = backStackEntry.arguments?.getString("projectId").orEmpty()
+            val runner = runners.find { it.hostname == hostname }
+            if (runner == null) {
+                UnknownRunnerPlaceholder()
+            } else {
+                FileBrowserScreen(
+                    runner = runner,
+                    projectId = projectId,
                     onBack = { navController.popBackStack() },
                 )
             }

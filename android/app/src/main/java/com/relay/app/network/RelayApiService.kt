@@ -2,6 +2,8 @@ package com.relay.app.network
 
 import com.relay.app.model.ContainerActionResult
 import com.relay.app.model.Device
+import com.relay.app.model.FileContent
+import com.relay.app.model.FileEntry
 import com.relay.app.model.Project
 import com.relay.app.model.RunnerInfo
 import com.relay.app.model.Session
@@ -12,6 +14,7 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 data class HealthResponse(val ok: Boolean)
 data class NewProjectRequest(val name: String)
@@ -100,4 +103,20 @@ interface RelayApiService {
      * [com.relay.app.widget.SuspendRunnerWorker]. */
     @POST("v1/suspend")
     suspend fun suspend(): Response<ResponseBody>
+
+    /** Lists a directory within a project — `path` omitted/blank means the project root. See
+     * shared/API.md and [com.relay.app.ui.screens.FileBrowserScreen]. Read-only. */
+    @GET("v1/projects/{projectId}/files")
+    suspend fun listFiles(
+        @Path("projectId") projectId: String,
+        @Query("path") path: String = "",
+    ): List<FileEntry>
+
+    /** Returns one file's text content — see shared/API.md for the `400`/`404`/`413`/`415`
+     * refusal cases (path escape, missing, too large, binary). */
+    @GET("v1/projects/{projectId}/files/content")
+    suspend fun fileContent(
+        @Path("projectId") projectId: String,
+        @Query("path") path: String,
+    ): FileContent
 }

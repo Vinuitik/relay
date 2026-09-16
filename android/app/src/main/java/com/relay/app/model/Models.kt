@@ -77,3 +77,16 @@ data class ContainerActionResult(
     val ok: Boolean,
     val error: String? = null,
 )
+
+/** One entry from `GET /v1/projects/{id}/files` — a file or subdirectory. */
+data class FileEntry(
+    val name: String,
+    val isDir: Boolean,
+    val size: Long,
+)
+
+/** Response body of `GET /v1/projects/{id}/files/content` — see shared/API.md. */
+data class FileContent(
+    val path: String,
+    val content: String,
+)
