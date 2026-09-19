@@ -18,6 +18,7 @@ import com.relay.app.data.WidgetConfigRepository
 import com.relay.app.ui.screens.ChatScreen
 import com.relay.app.ui.screens.DashboardScreen
 import com.relay.app.ui.screens.FileBrowserScreen
+import com.relay.app.ui.screens.FolderPickerScreen
 import com.relay.app.ui.screens.ProjectListScreen
 import com.relay.app.ui.screens.RunnerListScreen
 import com.relay.app.ui.screens.SessionListScreen
@@ -27,15 +28,22 @@ object Routes {
     const val RUNNER_LIST = "runners"
     const val DASHBOARD = "dashboard"
     const val PROJECT_LIST = "runners/{hostname}/projects"
+    const val FOLDER_PICKER = "runners/{hostname}/projects/pick-folder"
     const val SESSION_LIST = "runners/{hostname}/projects/{projectId}/sessions"
     const val CHAT = "runners/{hostname}/projects/{projectId}/sessions/{sessionId}/chat"
     const val FILES = "runners/{hostname}/projects/{projectId}/files"
+    // Auth-login is a session with no associated project (see shared/API.md POST
+    // /v1/auth/login) - its own route rather than reusing CHAT, since there's no real
+    // projectId to put in the path.
+    const val AUTH_LOGIN_CHAT = "runners/{hostname}/auth-login/{sessionId}/chat"
 
     fun projectList(hostname: String) = "runners/$hostname/projects"
+    fun folderPicker(hostname: String) = "runners/$hostname/projects/pick-folder"
     fun sessionList(hostname: String, projectId: String) = "runners/$hostname/projects/$projectId/sessions"
     fun chat(hostname: String, projectId: String, sessionId: String) =
         "runners/$hostname/projects/$projectId/sessions/$sessionId/chat"
     fun files(hostname: String, projectId: String) = "runners/$hostname/projects/$projectId/files"
+    fun authLoginChat(hostname: String, sessionId: String) = "runners/$hostname/auth-login/$sessionId/chat"
 }
 
 @Composable
@@ -52,6 +60,9 @@ fun RelayNavHost(
                 repository = runnersRepository,
                 onRunnerSelected = { runner -> navController.navigate(Routes.projectList(runner.hostname)) },
                 onDashboard = { navController.navigate(Routes.DASHBOARD) },
+                onAuthLoginStarted = { runner, sessionId ->
+                    navController.navigate(Routes.authLoginChat(runner.hostname, sessionId))
+                },
             )
         }
 
@@ -76,6 +87,31 @@ fun RelayNavHost(
                     },
                     onFilesSelected = { project ->
                         navController.navigate(Routes.files(hostname, project.id))
+                    },
+                    onPickFolder = { navController.navigate(Routes.folderPicker(hostname)) },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+        }
+
+        composable(
+            route = Routes.FOLDER_PICKER,
+            arguments = listOf(navArgument("hostname") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val hostname = backStackEntry.arguments?.getString("hostname").orEmpty()
+            val runner = runners.find { it.hostname == hostname }
+            if (runner == null) {
+                UnknownRunnerPlaceholder()
+            } else {
+                FolderPickerScreen(
+                    runner = runner,
+                    onRegistered = { project ->
+                        // Skip back to the project list and go straight into the newly
+                        // registered project - picking a folder is already the "create" action,
+                        // there's nothing left to confirm by returning to an empty-feeling list.
+                        navController.navigate(Routes.sessionList(hostname, project.id)) {
+                            popUpTo(Routes.projectList(hostname))
+                        }
                     },
                     onBack = { navController.popBackStack() },
                 )
@@ -141,6 +177,30 @@ fun RelayNavHost(
             if (runner == null) {
                 UnknownRunnerPlaceholder()
             } else {
+                ChatScreen(
+                    runner = runner,
+                    sessionId = sessionId,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+        }
+
+        composable(
+            route = Routes.AUTH_LOGIN_CHAT,
+            arguments = listOf(
+                navArgument("hostname") { type = NavType.StringType },
+                navArgument("sessionId") { type = NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val hostname = backStackEntry.arguments?.getString("hostname").orEmpty()
+            val sessionId = backStackEntry.arguments?.getString("sessionId").orEmpty()
+            val runner = runners.find { it.hostname == hostname }
+            if (runner == null) {
+                UnknownRunnerPlaceholder()
+            } else {
+                // Same ChatScreen as a project session - it only needs a runner + sessionId,
+                // never a projectId, and an auth-login session polls/messages identically (see
+                // shared/API.md POST /v1/auth/login).
                 ChatScreen(
                     runner = runner,
                     sessionId = sessionId,

@@ -67,6 +67,46 @@ consensus/leader-election machinery here even with 3+ runners.
 
 To change: `data/WakeViaMatcher.kt`.
 
+## New project: scaffold vs. register existing folder
+
+Files: ProjectListScreen.kt, FolderPickerScreen.kt
+
+ProjectListScreen's "+" FAB now opens a small `DropdownMenu` instead of going straight to
+`NewProjectDialog`: "Scaffold new empty project" (the original flow, `POST /v1/projects {name}`)
+or "Register existing folder" → `onPickFolder` → `FolderPickerScreen`.
+
+`FolderPickerScreen` is an unscoped filesystem browser (`GET /v1/browse`, see runner/FLOWS.md) -
+deliberately separate from `FileBrowserScreen`, which is read-only and scoped to one
+already-registered project. Path history is a stack of absolute paths (empty string = the
+filesystem-roots view), same local-state back-navigation pattern as `FileBrowserScreen`. Its
+"select this folder" FAB (hidden at the roots view - registering `/` or `C:\` itself is
+nonsensical) calls `POST /v1/projects {path}` **directly from this screen**, then hands the
+resulting `Project` to `onRegistered` - registration happens here, not back in
+`ProjectListScreen`, specifically to avoid the awkwardness of popping back to a list screen that
+has no way to know it should re-fetch.
+
+`RelayNavHost`'s `FOLDER_PICKER` route wires `onRegistered` to navigate straight into that
+project's session list (`popUpTo` the project list), skipping back through an intermediate
+"now go tap the project you just made" step.
+
+To change: `ui/screens/FolderPickerScreen.kt`, `ui/screens/ProjectListScreen.kt`'s add-menu.
+
+## Auth-login (headless OAuth relay)
+
+Files: RunnerListScreen.kt, RelayNavHost.kt (reuses ChatScreen.kt)
+
+RunnerListScreen row → overflow menu → "Authenticate agent" → `POST /v1/auth/login` (see
+runner/FLOWS.md "Auth-login") → on success, navigate straight to `ChatScreen` via the
+`AUTH_LOGIN_CHAT` route (`runners/{hostname}/auth-login/{sessionId}/chat`) - a route separate
+from `CHAT` only because there's no real `projectId` to put in the path; `ChatScreen` itself
+takes no `projectId` parameter, so **no new chat UI was needed** - the OAuth URL the runner's
+`claude auth login` prints shows up as an ordinary "agent" message, and pasting the code back
+into the existing message input goes through the same `POST /v1/sessions/{id}/message` → stdin
+path a real coding session uses.
+
+To change: `ui/screens/RunnerListScreen.kt` (menu item), `ui/navigation/RelayNavHost.kt`
+(`AUTH_LOGIN_CHAT` route).
+
 ## File browser (read-only)
 
 Files: FileBrowserScreen.kt, RelayApiService.kt
@@ -350,3 +390,5 @@ contains. Same fix, same reasoning, in runner-release.yml's `--notes`.
 | Gradle/Kotlin/Compose versions | `app/build.gradle.kts`, `build.gradle.kts`, `gradle/wrapper/gradle-wrapper.properties` |
 | File browser screen | `ui/screens/FileBrowserScreen.kt` |
 | Cleartext HTTP opt-in | `app/src/main/AndroidManifest.xml` (`android:usesCleartextTraffic`) |
+| Register existing folder / new-project menu | `ui/screens/ProjectListScreen.kt`, `ui/screens/FolderPickerScreen.kt` |
+| Auth-login menu item / route | `ui/screens/RunnerListScreen.kt`, `ui/navigation/RelayNavHost.kt` (`AUTH_LOGIN_CHAT`) |

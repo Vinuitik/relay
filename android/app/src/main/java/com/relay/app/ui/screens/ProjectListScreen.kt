@@ -15,6 +15,8 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Star as StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -50,6 +52,7 @@ fun ProjectListScreen(
     widgetConfigRepository: WidgetConfigRepository,
     onProjectSelected: (Project) -> Unit,
     onFilesSelected: (Project) -> Unit,
+    onPickFolder: () -> Unit,
     onBack: () -> Unit,
 ) {
     val api = remember(runner) { RelayApiClient.forRunner(runner) }
@@ -59,6 +62,7 @@ fun ProjectListScreen(
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var showAddMenu by remember { mutableStateOf(false) }
 
     val widgetTarget by widgetConfigRepository.defaultTarget.collectAsState(initial = null)
 
@@ -88,8 +92,26 @@ fun ProjectListScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showAddDialog = true }) {
-                Icon(Icons.Default.Add, contentDescription = "New project")
+            Box {
+                FloatingActionButton(onClick = { showAddMenu = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "New project")
+                }
+                DropdownMenu(expanded = showAddMenu, onDismissRequest = { showAddMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Register existing folder") },
+                        onClick = {
+                            showAddMenu = false
+                            onPickFolder()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Scaffold new empty project") },
+                        onClick = {
+                            showAddMenu = false
+                            showAddDialog = true
+                        },
+                    )
+                }
             }
         },
     ) { padding ->

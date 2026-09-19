@@ -1,5 +1,6 @@
 package com.relay.app.network
 
+import com.relay.app.model.BrowseResult
 import com.relay.app.model.ContainerActionResult
 import com.relay.app.model.Device
 import com.relay.app.model.FileContent
@@ -17,7 +18,7 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 
 data class HealthResponse(val ok: Boolean)
-data class NewProjectRequest(val name: String)
+data class NewProjectRequest(val name: String, val path: String? = null)
 data class NewSessionRequest(val provider: String)
 data class MessageRequest(val text: String)
 data class WakeRequest(val mac: String)
@@ -44,6 +45,12 @@ interface RelayApiService {
     @POST("v1/projects")
     suspend fun createProject(@Body request: NewProjectRequest): Project
 
+    /** Lists subdirectories of an arbitrary absolute path, unscoped — used to pick a project
+     * directory before it's registered, see [com.relay.app.ui.screens.FolderPickerScreen].
+     * `path` omitted/blank lists filesystem roots. */
+    @GET("v1/browse")
+    suspend fun browse(@Query("path") path: String = ""): BrowseResult
+
     @GET("v1/projects/{projectId}/sessions")
     suspend fun listSessions(@Path("projectId") projectId: String): List<Session>
 
@@ -52,6 +59,12 @@ interface RelayApiService {
         @Path("projectId") projectId: String,
         @Body request: NewSessionRequest,
     ): Session
+
+    /** Starts the `claude`/`codex` CLI's OAuth login as a session with no associated project —
+     * see shared/API.md and [com.relay.app.ui.screens.AuthLoginScreen]. The OAuth URL shows up
+     * as an "agent" message in the returned session; paste the code back via [sendMessage]. */
+    @POST("v1/auth/login")
+    suspend fun startAuthLogin(): Session
 
     @GET("v1/sessions/{sessionId}")
     suspend fun getSession(@Path("sessionId") sessionId: String): Session

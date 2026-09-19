@@ -90,3 +90,15 @@ data class FileContent(
     val path: String,
     val content: String,
 )
+
+/** One directory entry from `GET /v1/browse` — see [com.relay.app.ui.screens.FolderPickerScreen]. */
+data class DirEntry(
+    val name: String,
+)
+
+/** Response body of `GET /v1/browse` — unscoped filesystem browsing for picking a project
+ * directory to register, unlike [FileEntry]'s project-scoped listing. */
+data class BrowseResult(
+    val path: String,
+    val entries: List<DirEntry>,
+)

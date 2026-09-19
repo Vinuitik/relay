@@ -150,6 +150,58 @@ To change the poll interval: env `RELAY_IDLE_CHECK_INTERVAL` (default `idle.Defa
 To enable this feature at all: env `RELAY_IDLE_SUSPEND_ENABLED=true` - **disabled by default,
 see Technology notes below before ever setting this locally.**
 
+## Register an existing project folder + unscoped browse
+
+Files: internal/project/project.go (`RegisterExisting`, `BrowseDir`), internal/project/roots_unix.go,
+internal/project/roots_windows.go, internal/api/api.go (`handleCreateProject`, `handleBrowse`)
+
+`POST /v1/projects {name, path}` → if `path` set, `Registry.RegisterExisting(path, name)` instead
+of `Create` → validates `path` is absolute and an existing directory, defaults `name` to
+`filepath.Base(path)` if empty, refuses a `path` already registered as another project → same
+persisted `Project` shape either way, no marker distinguishing "scaffolded" vs "registered
+existing" after the fact.
+
+`GET /v1/browse?path=<abs>` → `project.BrowseDir` → deliberately **unscoped** (unlike
+`ResolvePath`/file-viewing below) - its whole purpose is finding a directory to register before
+any project-level scoping exists. Lists subdirectories only (never files), skips dotfiles,
+`path` empty/omitted lists filesystem roots (`listRoots()`, build-tagged: `/` on Unix, existing
+drive letters `A:\`-`Z:\` on Windows via `os.Stat` probing - stdlib only, no cgo).
+
+To change what's excluded from a browse listing (e.g. dotfiles): `project.go`'s `BrowseDir`.
+To change root listing: `roots_unix.go` / `roots_windows.go`.
+
+## Auth-login (headless OAuth for claude/codex CLI)
+
+Files: internal/session/session.go (`StartAuthLogin`, `authLoginProvider`,
+`defaultAuthLoginCommand`), internal/api/api.go (`handleAuthLogin`)
+
+**The problem this solves:** a deployed runner has no local browser, but `claude auth login`
+still wants one. Confirmed by hand (2026-09-19, isolated Docker container, `node:20-slim` +
+`npm install -g @anthropic-ai/claude-code`) that headless `claude auth login` prints an OAuth
+URL to stdout (`Opening browser to sign in… If the browser didn't open, visit: https://...`)
+then blocks reading a pasted authorization code from stdin, retrying with a fresh URL on an
+invalid code rather than exiting - i.e. exactly the shape `session.Manager`'s existing
+stdout-pump / stdin-write session machinery already handles. No new subprocess mechanism was
+needed, just a different command run through it.
+
+`POST /v1/auth/login` → `Sessions.StartAuthLogin(s.Home)` → registers a synthetic
+`auth-login` pseudo-provider (not a real project's CLI agent) mapped to `defaultAuthLoginCommand`
+(`claude auth login`), then calls the same internal `Manager.start(projectID="", provider,
+dir=s.Home)` every project session uses → returns a `Session` with `projectId: ""`.
+
+That session is polled/messaged through the **same generic endpoints** as any project session -
+`GET /v1/sessions/{id}` (the OAuth URL shows up as an "agent" `Message`) and
+`POST /v1/sessions/{id}/message` (writes the pasted code to the CLI's stdin) - neither is
+scoped by project, so no new session-handling code was needed beyond the start path.
+
+To change the command: env `RELAY_PROVIDER_AUTH_LOGIN` (same `RELAY_PROVIDER_<NAME>` convention
+every other provider uses, resolved via `resolveProvider`), e.g. to point at `codex login`
+instead, or to test with a fake command.
+
+**Not yet done:** where `claude auth login` actually persists credentials on a headless Linux
+box (file vs. OS keychain call that might behave differently with no desktop session) hasn't
+been checked - do that before relying on this against the real server.
+
 ## File viewing (read-only, scoped to a project dir)
 
 Files: internal/project/project.go (`ResolvePath`), internal/api/api.go (`handleListFiles`,
@@ -429,3 +481,8 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | File listing / content endpoints | `internal/api/api.go` (`handleListFiles`, `handleFileContent`) |
 | Project-path escape guard | `internal/project/project.go` (`Registry.ResolvePath`) |
 | Viewable file size cap | `internal/api/api.go` (`maxViewableFileSize`) |
+| Register existing folder as a project | `internal/project/project.go` (`RegisterExisting`), `internal/api/api.go` (`handleCreateProject`) |
+| Unscoped directory browse (project picking) | `internal/project/project.go` (`BrowseDir`), `internal/api/api.go` (`handleBrowse`) |
+| Filesystem roots listing | `internal/project/roots_unix.go`, `roots_windows.go` (`listRoots`) |
+| Auth-login pseudo-session / command | `internal/session/session.go` (`StartAuthLogin`, `defaultAuthLoginCommand`) — env `RELAY_PROVIDER_AUTH_LOGIN` |
+| Auth-login endpoint | `internal/api/api.go` (`handleAuthLogin`) |

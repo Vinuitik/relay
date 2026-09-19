@@ -45,6 +45,7 @@ import androidx.work.workDataOf
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.data.WakeViaMatcher
 import com.relay.app.model.KnownRunner
+import com.relay.app.network.RelayApiClient
 import com.relay.app.widget.ContainersAllWorker
 import com.relay.app.widget.SuspendRunnerWorker
 import com.relay.app.widget.WakeRunnerWorker
@@ -55,6 +56,10 @@ fun RunnerListScreen(
     repository: KnownRunnersRepository,
     onRunnerSelected: (KnownRunner) -> Unit,
     onDashboard: () -> Unit,
+    // Started via POST /v1/auth/login (see shared/API.md) - a one-time, per-machine admin
+    // action for headless OAuth login, not a coding session, hence its own callback rather than
+    // going through onRunnerSelected -> ProjectListScreen -> ... -> ChatScreen's normal path.
+    onAuthLoginStarted: (KnownRunner, sessionId: String) -> Unit,
 ) {
     val runners by repository.runners.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
@@ -171,6 +176,25 @@ fun RunnerListScreen(
                                                 onClick = {
                                                     showMenu = false
                                                     confirmSuspendRunner = runner
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Authenticate agent") },
+                                                onClick = {
+                                                    showMenu = false
+                                                    scope.launch {
+                                                        try {
+                                                            val api = RelayApiClient.forRunner(runner)
+                                                            val session = api.startAuthLogin()
+                                                            onAuthLoginStarted(runner, session.id)
+                                                        } catch (e: Exception) {
+                                                            Toast.makeText(
+                                                                context,
+                                                                e.message ?: "Failed to start auth login",
+                                                                Toast.LENGTH_LONG,
+                                                            ).show()
+                                                        }
+                                                    }
                                                 },
                                             )
                                             DropdownMenuItem(
