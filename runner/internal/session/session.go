@@ -10,6 +10,7 @@ package session
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -65,7 +66,22 @@ type Session struct {
 type ProviderCommand struct {
 	Name string
 	Args []string
+	// Codec selects how SendMessage/pump encode stdin and decode stdout for
+	// this provider - "" means raw text (a line in, a line out), matching
+	// the package doc comment's original assumption. See codecClaudeStreamJSON.
+	Codec string
 }
+
+// codecClaudeStreamJSON is `claude`'s `--input-format=stream-json
+// --output-format=stream-json` wire format - confirmed by hand (2026-09-19,
+// piping one probe message through `claude --print --input-format=stream-json
+// --output-format=stream-json --verbose`) rather than assumed. Plain
+// `claude` with piped stdin and no flags is NOT this: it silently runs in
+// one-shot `--print` mode and errors if no input arrives immediately,
+// which is what a bare auto-detected `claude` did the first time this was
+// tried - the flags plus this codec are both required together, not
+// optional extras.
+const codecClaudeStreamJSON = "claude-stream-json"
 
 // record is the internal, mutable state for one session.
 type record struct {
@@ -74,6 +90,9 @@ type record struct {
 
 	cmd   *exec.Cmd
 	stdin io.WriteCloser // nil once the process has exited or Stop was called
+	// codec is set once at Start and never changes for the session's
+	// lifetime, so it's read without rec.mu held (same as cmd/data.Provider).
+	codec string
 	// stopped marks that Stop() already finalized this session, so the
 	// background reader goroutine (which observes process exit
 	// independently) must not overwrite that final state.
@@ -131,19 +150,34 @@ func defaultProviders() map[string]ProviderCommand {
 // CLI is actually installed. Bare names (no args) deliberately reuse
 // os/exec.Command's own PATH-resolution behavior, the same mechanism
 // StartAuthLogin's defaultAuthLoginCommand already relies on for "claude".
-var autoDetectProviders = map[string]string{
-	"claude": "claude",
-	"codex":  "codex",
+// autoDetectProviders maps a provider name the phone app is allowed to ask
+// for to the command to run if it resolves on PATH right now - no manual
+// RELAY_PROVIDER_<NAME> setup needed on a fresh deployment as long as the
+// CLI is actually installed. "claude" needs the stream-json flags (see
+// codecClaudeStreamJSON) to hold a persistent multi-turn conversation over
+// one piped stdin instead of exiting after one one-shot --print call.
+// "codex" has no confirmed equivalent wire format yet, so it stays raw
+// text/no-args for now - untested end-to-end, see runner/FLOWS.md.
+var autoDetectProviders = map[string]ProviderCommand{
+	"claude": {
+		Name:  "claude",
+		Args:  []string{"--print", "--input-format=stream-json", "--output-format=stream-json", "--verbose"},
+		Codec: codecClaudeStreamJSON,
+	},
+	"codex": {Name: "codex"},
 }
 
 // resolveProvider maps a provider name to a command, in order: (1)
 // RELAY_PROVIDER_<NAME> (name upper-cased, "-" -> "_") as a shell command
 // string, e.g. RELAY_PROVIDER_CLAUDE="claude --project ." - still the way
-// to override the bare command or pass extra args; (2) a hardcoded
+// to override the bare command, pass extra args, or opt out of the
+// stream-json codec (an env override always gets Codec: "", raw text - see
+// the doc comment above codecClaudeStreamJSON if you need to override
+// *and* keep the codec, which isn't supported today); (2) a hardcoded
 // provider (currently just "echo-agent", for tests); (3) autoDetectProviders
-// - if the name is a known CLI and it resolves on PATH right now, use it
-// with no args. Checked last, not first, so an explicit env override always
-// wins over what's merely installed.
+// - if the name is a known CLI and it resolves on PATH right now, use its
+// pre-configured command+codec. Checked last, not first, so an explicit env
+// override always wins over what's merely installed.
 func (m *Manager) resolveProvider(name string) (ProviderCommand, error) {
 	envKey := "RELAY_PROVIDER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 	if cmdStr := os.Getenv(envKey); cmdStr != "" {
@@ -152,11 +186,11 @@ func (m *Manager) resolveProvider(name string) (ProviderCommand, error) {
 	if pc, ok := m.providers[name]; ok {
 		return pc, nil
 	}
-	if bin, ok := autoDetectProviders[name]; ok {
-		if _, err := exec.LookPath(bin); err == nil {
-			return ProviderCommand{Name: bin}, nil
+	if pc, ok := autoDetectProviders[name]; ok {
+		if _, err := exec.LookPath(pc.Name); err == nil {
+			return pc, nil
 		}
-		return ProviderCommand{}, fmt.Errorf("%w: %q CLI not found on PATH (install it, or set %s to its full path)", ErrUnknownProvider, bin, envKey)
+		return ProviderCommand{}, fmt.Errorf("%w: %q CLI not found on PATH (install it, or set %s to its full path)", ErrUnknownProvider, pc.Name, envKey)
 	}
 	return ProviderCommand{}, fmt.Errorf("%w: %q (configure it via %s)", ErrUnknownProvider, name, envKey)
 }
@@ -249,6 +283,7 @@ func (m *Manager) start(projectID, provider, dir string) (Session, error) {
 		},
 		cmd:   cmd,
 		stdin: stdinPipe,
+		codec: pc.Codec,
 	}
 
 	m.mu.Lock()
@@ -261,14 +296,91 @@ func (m *Manager) start(projectID, provider, dir string) (Session, error) {
 	return rec.snapshot(), nil
 }
 
-// pump reads the subprocess's combined stdout/stderr line by line, appending
-// each line as an "agent" message.
+// pump reads the subprocess's combined stdout/stderr line by line, decoding
+// each line per rec.codec before appending it as an "agent" message. Raw
+// codec (default) appends the line as-is; codecClaudeStreamJSON parses each
+// line as a claude-cli stream-json event and only surfaces assistant text
+// (see decodeClaudeStreamJSONLine) - a line that doesn't decode to visible
+// text (e.g. the "system"/"result" event types, or malformed JSON) is
+// dropped from the transcript rather than shown raw, so the phone doesn't
+// get an unreadable JSON blob in the chat.
 func (m *Manager) pump(rec *record, r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		rec.appendMessage(Message{Role: "agent", Text: scanner.Text(), At: now()})
+		line := scanner.Text()
+		if rec.codec == codecClaudeStreamJSON {
+			if text, ok := decodeClaudeStreamJSONLine(line); ok {
+				rec.appendMessage(Message{Role: "agent", Text: text, At: now()})
+			}
+			continue
+		}
+		rec.appendMessage(Message{Role: "agent", Text: line, At: now()})
 	}
+}
+
+// claudeStreamJSONContentBlock is one entry of a stream-json message's
+// "content" array. Non-text blocks (e.g. tool_use) are silently dropped by
+// both the encoder (never produced - user messages here are plain text)
+// and the decoder (ignored - see decodeClaudeStreamJSONLine's doc comment)
+// - `[NOT IMPLEMENTED]`: surfacing tool calls/results in the phone
+// transcript, only the assistant's own text is shown for v1.
+type claudeStreamJSONContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// encodeClaudeStreamJSONUserMessage builds one `claude --input-format
+// stream-json` input line for a plain-text user message - the shape
+// confirmed by hand against a real `claude --print --input-format=stream-json
+// --output-format=stream-json` process (2026-09-19).
+func encodeClaudeStreamJSONUserMessage(text string) (string, error) {
+	payload := struct {
+		Type    string `json:"type"`
+		Message struct {
+			Role    string                         `json:"role"`
+			Content []claudeStreamJSONContentBlock `json:"content"`
+		} `json:"message"`
+	}{Type: "user"}
+	payload.Message.Role = "user"
+	payload.Message.Content = []claudeStreamJSONContentBlock{{Type: "text", Text: text}}
+
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode claude stream-json user message: %w", err)
+	}
+	return string(b), nil
+}
+
+// decodeClaudeStreamJSONLine parses one `claude --output-format=stream-json`
+// output line and, if it's an "assistant" event, returns its text content
+// blocks concatenated. Every other observed event type ("system" init,
+// "rate_limit_event", the final "result" summary) and any line that fails
+// to parse as JSON at all return ok=false - dropped from the transcript
+// rather than shown as raw JSON (see pump's doc comment).
+func decodeClaudeStreamJSONLine(line string) (text string, ok bool) {
+	var event struct {
+		Type    string `json:"type"`
+		Message *struct {
+			Content []claudeStreamJSONContentBlock `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return "", false
+	}
+	if event.Type != "assistant" || event.Message == nil {
+		return "", false
+	}
+	var sb strings.Builder
+	for _, block := range event.Message.Content {
+		if block.Type == "text" {
+			sb.WriteString(block.Text)
+		}
+	}
+	if sb.Len() == 0 {
+		return "", false
+	}
+	return sb.String(), true
 }
 
 // awaitExit waits for the subprocess to exit and finalizes session state,
@@ -388,11 +500,23 @@ func (m *Manager) SendMessage(sessionID, text string) error {
 		return ErrSessionFinished
 	}
 	stdin := rec.stdin
+	codec := rec.codec
 	rec.mu.Unlock()
 
-	if _, err := io.WriteString(stdin, text+"\n"); err != nil {
+	payload := text
+	if codec == codecClaudeStreamJSON {
+		encoded, err := encodeClaudeStreamJSONUserMessage(text)
+		if err != nil {
+			return err
+		}
+		payload = encoded
+	}
+
+	if _, err := io.WriteString(stdin, payload+"\n"); err != nil {
 		return fmt.Errorf("write to session stdin: %w", err)
 	}
+	// The transcript always stores the plain text the user typed, never the
+	// wire-format envelope - the phone should never see raw stream-json.
 	rec.appendMessage(Message{Role: "user", Text: text, At: now()})
 	return nil
 }

@@ -49,6 +49,25 @@ unlisted provider - checked first, so an explicit override always wins over auto
 If the CLI genuinely isn't installed, starting a session fails with a clear "not found on PATH"
 error rather than silently falling back to anything.
 
+**"claude" needs a wire-format codec, not just a bare command.** A bare `claude` with piped
+stdin and no flags silently runs in one-shot `--print` mode and errors if no input arrives
+within a few seconds - discovered exactly this way the first time auto-detect was tried end to
+end. Real multi-turn chat over one persistent process needs
+`--print --input-format=stream-json --output-format=stream-json` (each line in and out is a
+JSON event, not plain text) - confirmed by hand (2026-09-19) piping one probe message through it
+directly, then again through the full runner→session→API path (two real messages in the same
+session, second one correctly referencing the first - see the test transcript in this session's
+history if you need the exact request/response). `autoDetectProviders["claude"]` carries both
+the flags and `ProviderCommand.Codec = codecClaudeStreamJSON`; `SendMessage` encodes outgoing
+text via `encodeClaudeStreamJSONUserMessage`, `pump` decodes incoming lines via
+`decodeClaudeStreamJSONLine` (only `"assistant"`-type events' text content survives into the
+transcript - `"system"`/`"rate_limit_event"`/`"result"` events and anything that fails to parse
+as JSON are dropped, never shown as raw JSON on the phone). `[NOT IMPLEMENTED]`: surfacing
+tool-use/tool-result content blocks in the transcript - only assistant text is shown for v1.
+"codex" has no confirmed equivalent wire format yet and stays raw text/no-args - **untested
+end-to-end**, likely to hit the same one-shot-vs-persistent problem claude did until someone
+actually runs it and checks.
+
 ## Wake-on-LAN
 
 POST /v1/wake → api.handleWake → wol.BuildMagicPacket(mac) (6×0xFF + MAC×16, 102 bytes)
@@ -459,6 +478,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Projects root / registry file location | `internal/config/config.go` (env `RELAY_HOME`) |
 | Listen address | `internal/config/config.go` (env `RELAY_LISTEN_ADDR`) |
 | Provider → command mapping | `internal/session/session.go` (`resolveProvider`, `autoDetectProviders`, env `RELAY_PROVIDER_<NAME>` override) |
+| claude stream-json codec (encode/decode) | `internal/session/session.go` (`encodeClaudeStreamJSONUserMessage`, `decodeClaudeStreamJSONLine`, `codecClaudeStreamJSON`) |
 | Session purge cutoff | `cmd/runnerd/main.go` ticker + `internal/history/history.go` |
 | Auth header check | `internal/api/api.go` middleware |
 | Docker compose invocation | `internal/compose/compose.go` |
