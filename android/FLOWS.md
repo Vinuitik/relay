@@ -21,6 +21,27 @@ RunnerListScreen ↔ KnownRunnersRepository (DataStore Preferences) — hostname
 triples. Added via QR scan by default (see "Pairing" below); manual entry (the original
 ARCHITECTURE.md decision) is still there as a fallback.
 
+## Display name (label a runner instead of showing its raw address)
+
+Files: model/Models.kt (`KnownRunner.displayName`, `.label`), RunnerListScreen.kt
+(`NameRunnerDialog`, `AddRunnerDialog`), data/FriendlyNameGenerator.kt
+
+`KnownRunner.hostname` is the Tailscale address/IP used to actually connect (e.g.
+"100.124.46.7") - it was also being shown directly as the runner's name in every screen, which
+read as a meaningless string of numbers. `displayName` is a separate, purely cosmetic field set
+once at pairing time and never recomputed; `KnownRunner.label` (`displayName` if set, else falls
+back to `hostname` for pre-migration entries) is what every screen shows instead.
+
+QR-scan flow now inserts `NameRunnerDialog` between a successful scan and the actual
+`repository.addRunner` call, prefilled with a generated "Adjective Noun" default
+(`FriendlyNameGenerator.generate()`) the user can accept or overwrite. Manual entry
+(`AddRunnerDialog`) gets the same field. `hostname` itself is untouched everywhere it's used as
+an actual identifier (Room cache keys, `RelayApiClient`'s base URL, `KnownRunnersRepository`'s
+upsert key) - only display surfaces (list rows, screen titles, confirm dialogs) were switched to
+`.label`.
+
+To change the generated-name word lists: `data/FriendlyNameGenerator.kt`.
+
 ## Pairing (QR scan)
 
 Files: QrScanScreen.kt, RunnerListScreen.kt
@@ -187,10 +208,12 @@ To change: `widget/ContainersAllWorker.kt`, `ui/screens/RunnerListScreen.kt`
 
 ## Manual suspend / remove runner
 
-RunnerListScreen row → overflow menu → "Suspend now" → confirm dialog (explains: refused if
-busy, needs WoL to bring back) → `SuspendRunnerWorker` → POSTs `/v1/suspend` on that runner (see
-runner/FLOWS.md "Manual suspend"). `409`/`503` responses are terminal (logged, not retried - the
-runner already made the correct call); other failures get one WorkManager retry.
+RunnerListScreen row → **"Sleep" button** (promoted to a primary row action, symmetric with
+"Wake" - previously buried as "Suspend now" in the overflow menu, which read as if there were no
+sleep action at all next to the always-visible Wake button) → confirm dialog (explains: refused
+if busy, needs WoL to bring back) → `SuspendRunnerWorker` → POSTs `/v1/suspend` on that runner
+(see runner/FLOWS.md "Manual suspend"). `409`/`503` responses are terminal (logged, not retried -
+the runner already made the correct call); other failures get one WorkManager retry.
 
 "Remove runner" → confirm dialog → `repository.removeRunner(hostname)` - local-only, the runner
 itself is untouched; re-adding is just a rescan since the runner's key never changes. (This
@@ -208,9 +231,13 @@ KnownRunnersRepository upserts by hostname). Both null/absent decode fine for ru
 before this migration (moshi-kotlin reflection respects Kotlin default parameter values for
 missing JSON keys).
 
-RunnerListScreen row → "Edit" button → EditWakeConfigDialog → KnownRunnersRepository.updateRunner
-(upsert-by-hostname, same as addRunner) sets `wakeMac`/`wakeViaRunnerId` on that runner's stored
-entry.
+RunnerListScreen row → overflow menu → **"Wake settings"** (demoted from a standalone "Edit"
+button, which read as unexplained clutter for the common case where `WakeViaMatcher` already
+auto-filled both fields at pairing time) → `WakeSettingsDialog` (now explains in-dialog what
+these two fields are for and when they're needed - only for waking a fully-powered-off machine,
+see ARCHITECTURE.md "Relay device" - not a general-purpose setting) →
+KnownRunnersRepository.updateRunner (upsert-by-hostname, same as addRunner) sets
+`wakeMac`/`wakeViaRunnerId` on that runner's stored entry.
 
 RunnerListScreen row → "Wake" button (or widget's Wake button, which has no per-runner UI and
 falls back to the widget's default project's runner) → WakeRunnerWorker (WorkManager, mirrors
@@ -372,7 +399,8 @@ contains. Same fix, same reasoning, in runner-release.yml's `--notes`.
 | HTTP client / auth header | `network/RelayApiClient.kt`, `network/RelayApiService.kt` |
 | Navigation graph | `ui/navigation/RelayNavHost.kt` |
 | Chat poll interval | `ui/screens/ChatScreen.kt` |
-| Wake-on-LAN edit UI + per-row Wake button | `ui/screens/RunnerListScreen.kt` |
+| Wake-on-LAN settings UI (overflow menu) + per-row Wake button | `ui/screens/RunnerListScreen.kt` (`WakeSettingsDialog`) |
+| Runner display name / generated default | `model/Models.kt` (`KnownRunner.displayName`, `.label`), `data/FriendlyNameGenerator.kt` |
 | Wake-on-LAN background call | `widget/WakeRunnerWorker.kt` |
 | FCM token registration (on refresh) | `fcm/RelayFirebaseMessagingService.kt` |
 | FCM token registration (on app startup) | `MainActivity.kt` |

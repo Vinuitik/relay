@@ -50,6 +50,13 @@ data class KnownRunner(
     val hostname: String,
     val port: Int = DEFAULT_PORT,
     val key: String,
+    // Human-readable label shown in the UI instead of `hostname` (a Tailscale address like
+    // "100.124.46.7" - not something a person should have to read as a name, see
+    // [com.relay.app.data.FriendlyNameGenerator]). Set once at pairing time (typed by the user,
+    // or a generated "Adjective Noun" default if left blank) and never recomputed afterward, so
+    // it stays stable even if `hostname` changes. Null for any runner added before this field
+    // existed (absent JSON key decodes to null via Moshi) - [label] falls back to `hostname`.
+    val displayName: String? = null,
     // Wake-on-LAN config for waking THIS runner's machine when it's fully off (see
     // ARCHITECTURE.md "Relay device"). Both null until set via the edit affordance on
     // RunnerListScreen. There's no separate "id" concept in this skeleton — `hostname` is
@@ -59,6 +66,9 @@ data class KnownRunner(
     val wakeMac: String? = null,
     val wakeViaRunnerId: String? = null,
 ) {
+    /** What to show in the UI - the display name if set, else the raw hostname/address. */
+    val label: String get() = displayName?.takeIf { it.isNotBlank() } ?: hostname
+
     companion object {
         const val DEFAULT_PORT = 8080
     }

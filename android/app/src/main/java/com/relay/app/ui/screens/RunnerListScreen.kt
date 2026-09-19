@@ -23,6 +23,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.relay.app.data.FriendlyNameGenerator
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.data.WakeViaMatcher
 import com.relay.app.model.KnownRunner
@@ -66,32 +68,35 @@ fun RunnerListScreen(
     val context = LocalContext.current
     var showAddDialog by remember { mutableStateOf(false) }
     var showQrScan by remember { mutableStateOf(false) }
+    var namingScannedRunner by remember { mutableStateOf<ScannedRunner?>(null) }
     var editingRunner by remember { mutableStateOf<KnownRunner?>(null) }
     var confirmRemoveRunner by remember { mutableStateOf<KnownRunner?>(null) }
     var confirmSuspendRunner by remember { mutableStateOf<KnownRunner?>(null) }
 
+    fun addScannedRunner(scanned: ScannedRunner, displayName: String) {
+        val newRunner = KnownRunner(
+            hostname = scanned.hostname,
+            port = scanned.port,
+            key = scanned.key,
+            displayName = displayName,
+            wakeMac = scanned.mac,
+        )
+        scope.launch {
+            repository.addRunner(newRunner)
+            val matchedHostname = WakeViaMatcher.autoMatch(repository, newRunner)
+            val message = when {
+                matchedHostname != null -> "Added $displayName — auto-matched wake-via $matchedHostname (same LAN)"
+                else -> "Added $displayName"
+            }
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
     if (showQrScan) {
         QrScanScreen(
             onScanned = { scanned ->
-                val newRunner = KnownRunner(
-                    hostname = scanned.hostname,
-                    port = scanned.port,
-                    key = scanned.key,
-                    wakeMac = scanned.mac,
-                )
-                scope.launch {
-                    repository.addRunner(newRunner)
-                    val matchedHostname = WakeViaMatcher.autoMatch(repository, newRunner)
-                    val message = when {
-                        matchedHostname != null ->
-                            "Added runner ${scanned.hostname} — auto-matched wake-via $matchedHostname (same LAN)"
-                        scanned.mac != null ->
-                            "Added runner ${scanned.hostname} (wake MAC captured — set \"wake via\" in Edit once you have a second runner)"
-                        else -> "Added runner ${scanned.hostname}"
-                    }
-                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                }
                 showQrScan = false
+                namingScannedRunner = scanned
             },
             onManualEntry = {
                 showQrScan = false
@@ -100,6 +105,16 @@ fun RunnerListScreen(
             onClose = { showQrScan = false },
         )
         return
+    }
+
+    namingScannedRunner?.let { scanned ->
+        NameRunnerDialog(
+            onDismiss = { namingScannedRunner = null },
+            onSave = { displayName ->
+                addScannedRunner(scanned, displayName)
+                namingScannedRunner = null
+            },
+        )
     }
 
     Scaffold(
@@ -131,15 +146,15 @@ fun RunnerListScreen(
                     items(runners, key = { it.hostname }) { runner ->
                         var showMenu by remember { mutableStateOf(false) }
                         ListItem(
-                            headlineContent = { Text(runner.hostname) },
-                            supportingContent = { Text("port ${runner.port}") },
+                            headlineContent = { Text(runner.label) },
+                            supportingContent = { Text("${runner.hostname}:${runner.port}") },
                             trailingContent = {
                                 Row {
                                     TextButton(onClick = {
                                         if (runner.wakeMac.isNullOrBlank() || runner.wakeViaRunnerId.isNullOrBlank()) {
                                             Toast.makeText(
                                                 context,
-                                                "Wake not configured for ${runner.hostname} — tap Edit to set MAC + via-runner",
+                                                "Wake not configured for ${runner.label} — set it from the ⋮ menu (\"Wake settings\")",
                                                 Toast.LENGTH_LONG,
                                             ).show()
                                         } else {
@@ -149,10 +164,13 @@ fun RunnerListScreen(
                                             WorkManager.getInstance(context).enqueue(request)
                                         }
                                     }) { Text("Wake") }
-                                    TextButton(onClick = { editingRunner = runner }) { Text("Edit") }
+                                    // Symmetric with Wake - both primary, visible actions rather
+                                    // than burying "put it to sleep" one tap deeper than "wake it
+                                    // up." Reuses the same confirm dialog / worker as before.
+                                    TextButton(onClick = { confirmSuspendRunner = runner }) { Text("Sleep") }
                                     Box {
                                         IconButton(onClick = { showMenu = true }) {
-                                            Icon(Icons.Default.MoreVert, contentDescription = "More actions for ${runner.hostname}")
+                                            Icon(Icons.Default.MoreVert, contentDescription = "More actions for ${runner.label}")
                                         }
                                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                                             DropdownMenuItem(
@@ -160,7 +178,7 @@ fun RunnerListScreen(
                                                 onClick = {
                                                     showMenu = false
                                                     enqueueContainersAll(context, runner.hostname, start = true)
-                                                    Toast.makeText(context, "Starting all containers on ${runner.hostname}…", Toast.LENGTH_SHORT).show()
+                                                    Toast.makeText(context, "Starting all containers on ${runner.label}…", Toast.LENGTH_SHORT).show()
                                                 },
                                             )
                                             DropdownMenuItem(
@@ -168,14 +186,20 @@ fun RunnerListScreen(
                                                 onClick = {
                                                     showMenu = false
                                                     enqueueContainersAll(context, runner.hostname, start = false)
-                                                    Toast.makeText(context, "Stopping all containers on ${runner.hostname}…", Toast.LENGTH_SHORT).show()
+                                                    Toast.makeText(context, "Stopping all containers on ${runner.label}…", Toast.LENGTH_SHORT).show()
                                                 },
                                             )
+                                            // Only needed for waking a machine that's fully off
+                                            // (S5) via a same-LAN peer - see ARCHITECTURE.md
+                                            // "Relay device". Tucked in the overflow, not a
+                                            // top-level button, since most pairings never need
+                                            // to touch it (WakeViaMatcher auto-fills it on
+                                            // same-LAN pairing already).
                                             DropdownMenuItem(
-                                                text = { Text("Suspend now") },
+                                                text = { Text("Wake settings") },
                                                 onClick = {
                                                     showMenu = false
-                                                    confirmSuspendRunner = runner
+                                                    editingRunner = runner
                                                 },
                                             )
                                             DropdownMenuItem(
@@ -220,8 +244,8 @@ fun RunnerListScreen(
     if (showAddDialog) {
         AddRunnerDialog(
             onDismiss = { showAddDialog = false },
-            onSave = { hostname, port, key ->
-                val newRunner = KnownRunner(hostname = hostname, port = port, key = key)
+            onSave = { displayName, hostname, port, key ->
+                val newRunner = KnownRunner(hostname = hostname, port = port, key = key, displayName = displayName)
                 scope.launch {
                     repository.addRunner(newRunner)
                     val matchedHostname = WakeViaMatcher.autoMatch(repository, newRunner)
@@ -235,7 +259,7 @@ fun RunnerListScreen(
     }
 
     editingRunner?.let { runner ->
-        EditWakeConfigDialog(
+        WakeSettingsDialog(
             runner = runner,
             onDismiss = { editingRunner = null },
             onSave = { wakeMac, wakeViaRunnerId ->
@@ -255,7 +279,7 @@ fun RunnerListScreen(
     confirmRemoveRunner?.let { runner ->
         AlertDialog(
             onDismissRequest = { confirmRemoveRunner = null },
-            title = { Text("Remove ${runner.hostname}?") },
+            title = { Text("Remove ${runner.label}?") },
             text = {
                 Text(
                     "This only removes it from this phone's known-runners list - the runner " +
@@ -276,7 +300,7 @@ fun RunnerListScreen(
     confirmSuspendRunner?.let { runner ->
         AlertDialog(
             onDismissRequest = { confirmSuspendRunner = null },
-            title = { Text("Suspend ${runner.hostname} now?") },
+            title = { Text("Put ${runner.label} to sleep now?") },
             text = {
                 Text(
                     "Powers the machine off immediately instead of waiting out the idle " +
@@ -292,7 +316,7 @@ fun RunnerListScreen(
                     WorkManager.getInstance(context).enqueue(request)
                     Toast.makeText(context, "Suspending ${runner.hostname}…", Toast.LENGTH_SHORT).show()
                     confirmSuspendRunner = null
-                }) { Text("Suspend") }
+                }) { Text("Sleep") }
             },
             dismissButton = { TextButton(onClick = { confirmSuspendRunner = null }) { Text("Cancel") } },
         )
@@ -312,13 +336,18 @@ private fun enqueueContainersAll(context: android.content.Context, hostname: Str
 }
 
 /**
- * Small edit affordance for the two Wake-on-LAN fields on a known runner (see
- * [com.relay.app.model.KnownRunner]). `wakeViaRunnerId` is entered as plain text (another known
- * runner's hostname) rather than a picker — keeps this a "skeleton small edit" per scope, not a
- * full relationship UI.
+ * Edit affordance for the two Wake-on-LAN fields on a known runner (see
+ * [com.relay.app.model.KnownRunner]). Only matters for waking a machine that's fully powered
+ * off (S5) - a WoL broadcast can't cross a router, so it has to come from a second runner on the
+ * *same physical LAN* as the sleeping one (ARCHITECTURE.md "Relay device"), which is what
+ * "wake via" identifies. `WakeViaMatcher` already auto-fills both fields at pairing time when
+ * exactly one other known runner shares a subnet - this dialog is only needed when that
+ * auto-match couldn't happen (different LANs, or a runner was unreachable at pairing time).
+ * `wakeViaRunnerId` is entered as plain text (another known runner's hostname) rather than a
+ * picker — keeps this a "skeleton small edit" per scope, not a full relationship UI.
  */
 @Composable
-private fun EditWakeConfigDialog(
+private fun WakeSettingsDialog(
     runner: KnownRunner,
     onDismiss: () -> Unit,
     onSave: (wakeMac: String, wakeViaRunnerId: String) -> Unit,
@@ -328,9 +357,16 @@ private fun EditWakeConfigDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Wake config: ${runner.hostname}") },
+        title = { Text("Wake settings: ${runner.label}") },
         text = {
             Column {
+                Text(
+                    "Only needed to wake this machine after it's fully powered off. Leave blank " +
+                        "if you never power this machine fully down, or if it was already " +
+                        "auto-filled when you paired it.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(
                     value = wakeMac,
                     onValueChange = { wakeMac = it },
@@ -341,7 +377,7 @@ private fun EditWakeConfigDialog(
                 OutlinedTextField(
                     value = wakeViaRunnerId,
                     onValueChange = { wakeViaRunnerId = it },
-                    label = { Text("Wake via runner (hostname)") },
+                    label = { Text("Wake via runner (hostname, same LAN)") },
                     singleLine = true,
                 )
             }
@@ -353,11 +389,44 @@ private fun EditWakeConfigDialog(
     )
 }
 
+/**
+ * Shown right after a successful QR scan, before the runner is actually added - lets the user
+ * give it a friendly label instead of ending up with the raw Tailscale address as its only
+ * name. Prefilled with a generated "Adjective Noun" default (see [FriendlyNameGenerator]) that
+ * the user can accept as-is or overwrite.
+ */
+@Composable
+private fun NameRunnerDialog(
+    onDismiss: () -> Unit,
+    onSave: (displayName: String) -> Unit,
+) {
+    var name by remember { mutableStateOf(FriendlyNameGenerator.generate()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Name this runner") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Display name") },
+                singleLine = true,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(name.trim().ifBlank { FriendlyNameGenerator.generate() })
+            }) { Text("Add runner") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 @Composable
 private fun AddRunnerDialog(
     onDismiss: () -> Unit,
-    onSave: (hostname: String, port: Int, key: String) -> Unit,
+    onSave: (displayName: String, hostname: String, port: Int, key: String) -> Unit,
 ) {
+    var displayName by remember { mutableStateOf(FriendlyNameGenerator.generate()) }
     var hostname by remember { mutableStateOf("") }
     var port by remember { mutableStateOf(KnownRunner.DEFAULT_PORT.toString()) }
     var key by remember { mutableStateOf("") }
@@ -368,9 +437,16 @@ private fun AddRunnerDialog(
         text = {
             Column {
                 OutlinedTextField(
+                    value = displayName,
+                    onValueChange = { displayName = it },
+                    label = { Text("Display name") },
+                    singleLine = true,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
                     value = hostname,
                     onValueChange = { hostname = it },
-                    label = { Text("Tailscale hostname") },
+                    label = { Text("Tailscale hostname or address") },
                     singleLine = true,
                 )
                 Spacer(modifier = Modifier.height(8.dp))
@@ -393,7 +469,8 @@ private fun AddRunnerDialog(
             TextButton(onClick = {
                 val parsedPort = port.toIntOrNull() ?: KnownRunner.DEFAULT_PORT
                 if (hostname.isNotBlank() && key.isNotBlank()) {
-                    onSave(hostname.trim(), parsedPort, key.trim())
+                    val name = displayName.trim().ifBlank { FriendlyNameGenerator.generate() }
+                    onSave(name, hostname.trim(), parsedPort, key.trim())
                 }
             }) { Text("Save") }
         },
