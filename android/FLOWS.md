@@ -49,14 +49,24 @@ Files: QrScanScreen.kt, RunnerListScreen.kt
 RunnerListScreen's "+" FAB → `QrScanScreen` (full-screen, replaces the whole screen content
 while open - see the `if (showQrScan) { ...; return }` early-return at the top of
 `RunnerListScreen`) → requests CAMERA permission → CameraX preview + ML Kit on-device barcode
-decode → `parseRelayQrContent(rawValue)` → on a valid `relay://host:port?key=...&mac=...`
-match → `KnownRunnersRepository.addRunner(...)`, `wakeMac` set directly from the scanned `mac`
-if the runner's QR included one (see runner/FLOWS.md "Own-MAC detection for pairing").
+decode → `parseRelayQrContent(rawValue)` → on a valid `relay://host:port?key=...&mac=...` match:
+
+- **dedup check first** (`runners.find { it.hostname == scanned.hostname }`) - a re-scan of an
+  already-known runner just refreshes its `key`/`wakeMac` in place via `updateRunner` and shows
+  an "Already added as X — refreshed" toast. **No naming dialog, no re-add flow.** Fixed
+  2026-09-19: this used to skip straight to `NameRunnerDialog` regardless, walking you through
+  "name this runner" again for a runner you'd already paired, which read as if scanning did
+  nothing to prevent duplicates.
+- **new hostname** → `NameRunnerDialog` (prefilled with `FriendlyNameGenerator.generate()`) →
+  confirmed name → `KnownRunnersRepository.addRunner(...)`, `wakeMac` set directly from the
+  scanned `mac` if the runner's QR included one (see runner/FLOWS.md "Own-MAC detection for
+  pairing").
 
 `wakeViaRunnerId` (which *other* runner should broadcast the wake packet) is NOT auto-filled
 by a scan - it can't be: that's a LAN-topology fact (which runners share a physical network
 segment), not something either runner's own QR code can know about itself. Still requires the
-manual "Edit" affordance once a second runner exists.
+manual "Wake settings" affordance (overflow menu, see "Display name" section above) once a
+second runner exists and auto-match didn't fire.
 
 Manual entry is reachable two ways: `AddRunnerDialog` directly (bypassed by default now), or
 tapping "Enter key manually instead" from inside the scan screen (denied camera permission, no
@@ -71,6 +81,24 @@ ChatScreen polls GET /v1/sessions/{id} every few seconds via LaunchedEffect+dela
 
 To change poll interval: ChatScreen.kt LaunchedEffect delay value
 To change API base URL scheme (http vs https): RelayApiClient.kt
+
+## Connection error messages
+
+Files: network/RelayApiClient.kt (`friendlyErrorMessage`)
+
+Every screen's network catch block routes its exception through `friendlyErrorMessage(e,
+runner)` instead of using `e.message` directly - a raw `ConnectException`/`SocketTimeoutException`
+message like "Failed to connect to /100.124.46.7 (port 7777) after 1000ms: ECONNREFUSED" reads
+as a slow timeout when it's usually actually a near-instant refusal, and gives no hint what to
+check. The friendly version names the runner, its address, and walks through the three real
+causes found so far: runner not running, this phone's Tailscale not connected, or - confirmed by
+hand once already (2026-09-19, a Windows Firewall auto-generated inbound Block rule on the
+runner's Public-profile connection silently dropped every connection from other Tailscale peers
+while working fine from the runner's own machine) - a host firewall blocking inbound connections
+from other devices specifically.
+
+To change the wording or add another exception type: `network/RelayApiClient.kt`
+(`friendlyErrorMessage`).
 
 ## Wake-via auto-match (no manual "Edit" step for a same-LAN relay)
 

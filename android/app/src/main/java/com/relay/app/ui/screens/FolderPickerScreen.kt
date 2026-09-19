@@ -35,6 +35,7 @@ import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
 import com.relay.app.network.NewProjectRequest
 import com.relay.app.network.RelayApiClient
+import com.relay.app.network.friendlyErrorMessage
 import kotlinx.coroutines.launch
 
 /**
@@ -72,7 +73,7 @@ fun FolderPickerScreen(
         try {
             entries = api.browse(currentPath).entries.sortedBy { it.name.lowercase() }
         } catch (e: Exception) {
-            error = e.message ?: "Failed to browse"
+            error = friendlyErrorMessage(e, runner)
         } finally {
             loading = false
         }
@@ -112,7 +113,7 @@ fun FolderPickerScreen(
                             val project = api.createProject(NewProjectRequest(name = "", path = currentPath))
                             onRegistered(project)
                         } catch (e: Exception) {
-                            error = e.message ?: "Failed to register folder"
+                            error = friendlyErrorMessage(e, runner)
                         } finally {
                             registering = false
                         }

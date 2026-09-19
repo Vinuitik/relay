@@ -96,7 +96,19 @@ fun RunnerListScreen(
         QrScanScreen(
             onScanned = { scanned ->
                 showQrScan = false
-                namingScannedRunner = scanned
+                // Dedup BEFORE asking for a name - re-scanning a runner you already paired
+                // should just refresh it (key/MAC may have rotated) and say so, not walk you
+                // through "name this runner" again as if it were new.
+                val existing = runners.find { it.hostname == scanned.hostname }
+                if (existing != null) {
+                    val refreshed = existing.copy(key = scanned.key, wakeMac = scanned.mac ?: existing.wakeMac)
+                    scope.launch {
+                        repository.updateRunner(refreshed)
+                        Toast.makeText(context, "Already added as ${existing.label} — refreshed", Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    namingScannedRunner = scanned
+                }
             },
             onManualEntry = {
                 showQrScan = false

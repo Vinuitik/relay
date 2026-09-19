@@ -45,6 +45,7 @@ import com.relay.app.model.KnownRunner
 import com.relay.app.model.Session
 import com.relay.app.network.NewSessionRequest
 import com.relay.app.network.RelayApiClient
+import com.relay.app.network.friendlyErrorMessage
 import com.relay.app.ui.theme.StateBusy
 import com.relay.app.ui.theme.StateError
 import com.relay.app.ui.theme.StateFinished
@@ -99,7 +100,7 @@ fun SessionListScreen(
             }
         } catch (e: Exception) {
             if (sessions.isEmpty()) {
-                error = e.message ?: "Failed to load sessions"
+                error = friendlyErrorMessage(e, runner)
             } else {
                 offline = true
             }
@@ -173,7 +174,7 @@ fun SessionListScreen(
                         refresh()
                         onSessionSelected(created)
                     } catch (e: Exception) {
-                        error = e.message ?: "Failed to create session"
+                        error = friendlyErrorMessage(e, runner)
                     }
                 }
             },

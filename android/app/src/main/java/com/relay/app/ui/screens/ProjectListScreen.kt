@@ -44,6 +44,7 @@ import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
 import com.relay.app.network.NewProjectRequest
 import com.relay.app.network.RelayApiClient
+import com.relay.app.network.friendlyErrorMessage
 import kotlinx.coroutines.launch
 
 @Composable
@@ -72,7 +73,7 @@ fun ProjectListScreen(
         try {
             projects = api.listProjects()
         } catch (e: Exception) {
-            error = e.message ?: "Failed to load projects"
+            error = friendlyErrorMessage(e, runner)
         } finally {
             loading = false
         }
@@ -169,7 +170,7 @@ fun ProjectListScreen(
                         api.createProject(NewProjectRequest(name))
                         refresh()
                     } catch (e: Exception) {
-                        error = e.message ?: "Failed to create project"
+                        error = friendlyErrorMessage(e, runner)
                     }
                 }
             },

@@ -43,6 +43,7 @@ import com.relay.app.model.Message
 import com.relay.app.model.Session
 import com.relay.app.network.MessageRequest
 import com.relay.app.network.RelayApiClient
+import com.relay.app.network.friendlyErrorMessage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -107,7 +108,7 @@ fun ChatScreen(
                 )
             } catch (e: Exception) {
                 if (session == null) {
-                    error = e.message ?: "Failed to load session"
+                    error = friendlyErrorMessage(e, runner)
                 } else {
                     // Already have cached/last-known data on screen - keep showing it rather
                     // than replacing the transcript with an error.
@@ -189,7 +190,7 @@ fun ChatScreen(
                                     error = "Send failed: HTTP ${response.code()}"
                                 }
                             } catch (e: Exception) {
-                                error = e.message ?: "Failed to send message"
+                                error = friendlyErrorMessage(e, runner)
                             } finally {
                                 sending = false
                             }

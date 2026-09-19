@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.relay.app.model.FileEntry
 import com.relay.app.model.KnownRunner
 import com.relay.app.network.RelayApiClient
+import com.relay.app.network.friendlyErrorMessage
 import kotlinx.coroutines.launch
 
 /**
@@ -75,7 +76,7 @@ fun FileBrowserScreen(
             entries = api.listFiles(projectId, currentPath)
                 .sortedWith(compareBy({ !it.isDir }, { it.name.lowercase() }))
         } catch (e: Exception) {
-            error = e.message ?: "Failed to load directory"
+            error = friendlyErrorMessage(e, runner)
         } finally {
             loading = false
         }
@@ -93,7 +94,7 @@ fun FileBrowserScreen(
             try {
                 fileText = api.fileContent(projectId, relPath).content
             } catch (e: Exception) {
-                fileError = e.message ?: "Failed to load file"
+                fileError = friendlyErrorMessage(e, runner)
             } finally {
                 fileLoading = false
             }
