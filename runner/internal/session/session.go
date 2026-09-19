@@ -152,7 +152,44 @@ func (m *Manager) Start(projectID, provider string) (Session, error) {
 	if !ok {
 		return Session{}, fmt.Errorf("%w: %q", ErrProjectNotFound, projectID)
 	}
+	return m.start(projectID, provider, dir)
+}
 
+// authLoginProvider is a pseudo-provider name, not one a real project session
+// ever uses - it exists only to hang RELAY_PROVIDER_AUTH_LOGIN's env-var
+// override off the same resolveProvider lookup every other provider uses.
+const authLoginProvider = "auth-login"
+
+// defaultAuthLoginCommand is what runs when RELAY_PROVIDER_AUTH_LOGIN isn't
+// set - the `claude` CLI's own interactive OAuth login, confirmed (by hand,
+// in an isolated container, 2026-09-19) to print a URL to stdout and then
+// block reading an auth code from stdin, which is exactly the shape this
+// package's existing stdout-pump / stdin-write session machinery already
+// handles - no new subprocess mechanism needed, just a different command.
+var defaultAuthLoginCommand = ProviderCommand{Name: "claude", Args: []string{"auth", "login"}}
+
+// StartAuthLogin spawns the configured auth-login command (see
+// defaultAuthLoginCommand) as a session with no associated project - it's a
+// one-time, per-machine admin action, not a coding session, so it isn't
+// scoped to any project directory. The resulting Session behaves exactly
+// like a project session for polling/transcript/SendMessage purposes: the
+// OAuth URL the CLI prints shows up as an "agent" message, and the code you
+// paste back on the phone goes through the ordinary SendMessage -> stdin
+// path. dir is the working directory the command runs in (does not need to
+// be a registered project - typically the runner's own home directory).
+func (m *Manager) StartAuthLogin(dir string) (Session, error) {
+	m.mu.Lock()
+	if _, ok := m.providers[authLoginProvider]; !ok {
+		if m.providers == nil {
+			m.providers = map[string]ProviderCommand{}
+		}
+		m.providers[authLoginProvider] = defaultAuthLoginCommand
+	}
+	m.mu.Unlock()
+	return m.start("", authLoginProvider, dir)
+}
+
+func (m *Manager) start(projectID, provider, dir string) (Session, error) {
 	m.mu.Lock()
 	pc, err := m.resolveProvider(provider)
 	if err != nil {

@@ -42,6 +42,10 @@ type Server struct {
 	Devices  *notify.Registry
 	Sender   wol.PacketSender
 	Uptime   UptimeStore
+	// Home is the runner's own state directory (~/.relay by default) - used
+	// as the working directory for the auth-login pseudo-session, since that
+	// action isn't scoped to any project (see handleAuthLogin).
+	Home string
 	// Suspend, if set, powers this machine off immediately on
 	// POST /v1/suspend (see handleSuspend) - a manual counterpart to
 	// idle.Monitor's automatic timeout, for "I'm done, don't wait 3
@@ -55,8 +59,8 @@ type Server struct {
 }
 
 // NewServer builds a Server.
-func NewServer(key string, projects *project.Registry, sessions *session.Manager, compose ComposeFuncs, devices *notify.Registry, sender wol.PacketSender, uptimeStore UptimeStore) *Server {
-	return &Server{Key: key, Projects: projects, Sessions: sessions, Compose: compose, Devices: devices, Sender: sender, Uptime: uptimeStore}
+func NewServer(key string, projects *project.Registry, sessions *session.Manager, compose ComposeFuncs, devices *notify.Registry, sender wol.PacketSender, uptimeStore UptimeStore, home string) *Server {
+	return &Server{Key: key, Projects: projects, Sessions: sessions, Compose: compose, Devices: devices, Sender: sender, Uptime: uptimeStore, Home: home}
 }
 
 // Routes builds the HTTP handler for the v1 API, using Go 1.22's
@@ -68,8 +72,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/runner/info", s.auth(s.handleRunnerInfo))
 	mux.HandleFunc("GET /v1/projects", s.auth(s.handleListProjects))
 	mux.HandleFunc("POST /v1/projects", s.auth(s.handleCreateProject))
+	mux.HandleFunc("GET /v1/browse", s.auth(s.handleBrowse))
 	mux.HandleFunc("GET /v1/projects/{projectId}/sessions", s.auth(s.handleListSessions))
 	mux.HandleFunc("POST /v1/projects/{projectId}/sessions", s.auth(s.handleStartSession))
+	mux.HandleFunc("POST /v1/auth/login", s.auth(s.handleAuthLogin))
 	mux.HandleFunc("GET /v1/sessions/{sessionId}", s.auth(s.handleGetSession))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/message", s.auth(s.handleSendMessage))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/stop", s.auth(s.handleStopSession))
@@ -177,6 +183,9 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 
 type createProjectRequest struct {
 	Name string `json:"name"`
+	// Path, if set, registers this already-existing directory as a project
+	// instead of scaffolding a new empty one - see project.RegisterExisting.
+	Path string `json:"path"`
 }
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
@@ -185,12 +194,32 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	p, err := s.Projects.Create(req.Name)
+	var p project.Project
+	var err error
+	if req.Path != "" {
+		p, err = s.Projects.RegisterExisting(req.Path, req.Name)
+	} else {
+		p, err = s.Projects.Create(req.Name)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
+}
+
+// handleBrowse lists subdirectories of an arbitrary absolute path (or
+// filesystem roots, if path is omitted) - unscoped, unlike the per-project
+// file-viewing endpoints, since its purpose is finding a project directory
+// to register before any project-level scoping exists. See
+// project.BrowseDir.
+func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
+	current, entries, err := project.BrowseDir(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": current, "entries": entries})
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -224,6 +253,22 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeError(w, http.StatusInternalServerError, err.Error())
 		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, sess)
+}
+
+// handleAuthLogin starts the auth-login pseudo-session (see
+// session.Manager.StartAuthLogin) - a one-time, per-machine admin action to
+// authenticate the claude/codex CLI when there's no local browser to
+// complete OAuth with. The returned session is polled/messaged exactly like
+// a project session: the OAuth URL shows up as an "agent" message, and the
+// code pasted back on the phone goes through the ordinary
+// POST /v1/sessions/{id}/message -> stdin path.
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.Sessions.StartAuthLogin(s.Home)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, sess)

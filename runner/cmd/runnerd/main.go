@@ -142,7 +142,7 @@ func main() {
 	srv := api.NewServer(cfg.Key, projects, sessions, api.ComposeFuncs{
 		Start: compose.Start,
 		Stop:  compose.Stop,
-	}, devices, wol.DefaultSender, uptimeStore)
+	}, devices, wol.DefaultSender, uptimeStore, cfg.RelayHome)
 
 	if idleCfg.Enabled {
 		log.Printf("idle: suspend-to-S5 enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)

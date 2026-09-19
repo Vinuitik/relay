@@ -29,7 +29,7 @@ func newTestServer(t *testing.T) *Server {
 	return NewServer(testKey, projects, sessions, ComposeFuncs{
 		Start: func(string) error { return nil },
 		Stop:  func(string) error { return nil },
-	}, devices, &fakeSender{}, &fakeUptimeStore{})
+	}, devices, &fakeSender{}, &fakeUptimeStore{}, filepath.Join(root, "home"))
 }
 
 // fakeUptimeStore is a no-op UptimeStore for tests that don't care about
