@@ -198,6 +198,10 @@ func printPairingQR(cfg *config.Config) {
 	qrterminal.GenerateHalfBlock(uri, qrterminal.L, os.Stdout)
 	fmt.Println()
 	fmt.Printf("(runner address: %s)\n", cfg.ListenAddr)
+	// Plain-text fallback: lets a script (or a human) grab the exact pairing
+	// URI without needing to decode the terminal QR art above - e.g. to
+	// render it as a real scannable image elsewhere.
+	fmt.Printf("PAIRING URI: %s\n", uri)
 }
 
 // runHistoryPurge periodically drops finished/error sessions older than

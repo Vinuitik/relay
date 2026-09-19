@@ -30,16 +30,24 @@ compose.Runner
 ## Session lifecycle
 
 POST /v1/projects/{id}/sessions → session.Manager.Start(projectID, provider)
-→ provider resolved via env `RELAY_PROVIDER_<NAME>` (falls back to built-in "echo-agent" test
-  provider = `sh -c cat`) → os/exec.Command spawned, scoped to project dir
+→ provider resolved (`resolveProvider`), in order: (1) env `RELAY_PROVIDER_<NAME>` explicit
+  override → `sh -c <value>`, (2) built-in "echo-agent" test provider (`sh -c cat`), (3)
+  **auto-detect**: for `"claude"`/`"codex"` specifically, `exec.LookPath` on PATH right now - no
+  env var needed at all if the CLI is installed where the runner's user can see it (see
+  `autoDetectProviders`) → os/exec.Command spawned, scoped to project dir
 → stdout/stderr scanner goroutine appends to in-memory transcript (role "agent")
 → state: busy → idle/finished/error
 
 POST /v1/sessions/{id}/message → session.Manager.SendMessage → io.WriteString to subprocess stdin
 POST /v1/sessions/{id}/stop → session.Manager.Stop → kill process, state → finished
 
-To change real agent commands: set env `RELAY_PROVIDER_CLAUDE=claude`, `RELAY_PROVIDER_CODEX=codex`
-To add a provider: no code change needed, just set its env var
+**No manual setup needed for claude/codex** as long as the CLI is on PATH - confirmed this is
+exactly how `os/exec.Command` already resolves a bare name with no path separators, the same
+mechanism `StartAuthLogin`'s `defaultAuthLoginCommand` already relied on. `RELAY_PROVIDER_<NAME>`
+still exists to override the bare command (custom install path, extra flags) or add an
+unlisted provider - checked first, so an explicit override always wins over auto-detection.
+If the CLI genuinely isn't installed, starting a session fails with a clear "not found on PATH"
+error rather than silently falling back to anything.
 
 ## Wake-on-LAN
 
@@ -450,7 +458,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Key generation / storage | `internal/config/config.go` |
 | Projects root / registry file location | `internal/config/config.go` (env `RELAY_HOME`) |
 | Listen address | `internal/config/config.go` (env `RELAY_LISTEN_ADDR`) |
-| Provider → command mapping | `internal/session/session.go` (env `RELAY_PROVIDER_<NAME>`) |
+| Provider → command mapping | `internal/session/session.go` (`resolveProvider`, `autoDetectProviders`, env `RELAY_PROVIDER_<NAME>` override) |
 | Session purge cutoff | `cmd/runnerd/main.go` ticker + `internal/history/history.go` |
 | Auth header check | `internal/api/api.go` middleware |
 | Docker compose invocation | `internal/compose/compose.go` |

@@ -125,10 +125,25 @@ func defaultProviders() map[string]ProviderCommand {
 	}
 }
 
-// resolveProvider maps a provider name to a command. RELAY_PROVIDER_<NAME>
-// (name upper-cased, "-" -> "_") overrides/adds a provider as a shell
-// command string, e.g. RELAY_PROVIDER_CLAUDE="claude --project ." - this is
-// how real agent CLIs (claude/codex) get wired up without hardcoding them.
+// autoDetectProviders maps a provider name the phone app is allowed to ask
+// for to the bare CLI command name to look up on PATH - no manual
+// RELAY_PROVIDER_<NAME> setup needed on a fresh deployment as long as the
+// CLI is actually installed. Bare names (no args) deliberately reuse
+// os/exec.Command's own PATH-resolution behavior, the same mechanism
+// StartAuthLogin's defaultAuthLoginCommand already relies on for "claude".
+var autoDetectProviders = map[string]string{
+	"claude": "claude",
+	"codex":  "codex",
+}
+
+// resolveProvider maps a provider name to a command, in order: (1)
+// RELAY_PROVIDER_<NAME> (name upper-cased, "-" -> "_") as a shell command
+// string, e.g. RELAY_PROVIDER_CLAUDE="claude --project ." - still the way
+// to override the bare command or pass extra args; (2) a hardcoded
+// provider (currently just "echo-agent", for tests); (3) autoDetectProviders
+// - if the name is a known CLI and it resolves on PATH right now, use it
+// with no args. Checked last, not first, so an explicit env override always
+// wins over what's merely installed.
 func (m *Manager) resolveProvider(name string) (ProviderCommand, error) {
 	envKey := "RELAY_PROVIDER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 	if cmdStr := os.Getenv(envKey); cmdStr != "" {
@@ -136,6 +151,12 @@ func (m *Manager) resolveProvider(name string) (ProviderCommand, error) {
 	}
 	if pc, ok := m.providers[name]; ok {
 		return pc, nil
+	}
+	if bin, ok := autoDetectProviders[name]; ok {
+		if _, err := exec.LookPath(bin); err == nil {
+			return ProviderCommand{Name: bin}, nil
+		}
+		return ProviderCommand{}, fmt.Errorf("%w: %q CLI not found on PATH (install it, or set %s to its full path)", ErrUnknownProvider, bin, envKey)
 	}
 	return ProviderCommand{}, fmt.Errorf("%w: %q (configure it via %s)", ErrUnknownProvider, name, envKey)
 }
