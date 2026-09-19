@@ -99,6 +99,23 @@ runner's own; exactly one match auto-sets `wakeViaRunnerId` on both runners, rep
 failure, or zero/multiple matching runners, just skips the auto-fill and leaves manual Edit as
 the fallback - never guesses wrong silently.
 
+**Bug found and fixed (2026-09-19): `pickLANInterface` returned `addrs[0]` without checking IP
+version.** On Windows, an interface's `Addrs()` commonly lists its IPv6 link-local address
+(`fe80::...`) before its IPv4 one - confirmed by hand on a real laptop (`WiFi` interface, real
+addr `192.168.1.40/24`, but `addrs[0]` was `fe80::.../64`). `LocalSubnet`'s `ipNet.IP.To4() ==
+nil` check then always failed, so `GET /v1/runner/info` silently omitted `localSubnet` on every
+Windows runner, which meant `WakeViaMatcher` could never auto-match a Windows runner against
+anything, even a genuine same-LAN pair (this is exactly what happened during testing: laptop and
+server were on the same `192.168.1.0/24` network the whole time, but auto-match silently never
+fired because the laptop's half of the comparison was always missing - the phone app then showed
+"wake not configured" on every runner with no way to tell why). `LocalMAC` happened to keep
+working by accident - it only needed the right *interface*, not the right *address*, and
+`pickLANInterface` picked the interface correctly the whole time. Fixed via `firstIPv4Addr`,
+which searches an interface's address list for one that's actually IPv4 instead of trusting list
+order - see `TestFirstIPv4AddrSkipsLeadingIPv6` in `localmac_test.go`.
+**Runners paired before this fix keep whatever `wakeMac`/`wakeViaRunnerId` they got (likely
+none, on Windows) - re-pair (or use "Wake settings") to pick up a corrected auto-match.**
+
 ## Idle-suspend (S5) - the other half of the sleep path
 
 **This is the missing half of ARCHITECTURE.md's "Sleep path" line** - WoL (`internal/wol`)

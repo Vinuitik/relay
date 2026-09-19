@@ -81,9 +81,31 @@ func pickLANInterface() (net.Interface, net.Addr, error) {
 		if err != nil || len(addrs) == 0 {
 			continue
 		}
-		return iface, addrs[0], nil
+		// addrs[0] is NOT reliably the IPv4 address - confirmed on Windows
+		// (2026-09-19) that an interface's address list commonly lists its
+		// IPv6 link-local address (fe80::...) before its IPv4 one, which
+		// silently broke LocalSubnet for every caller on that OS: it always
+		// received the IPv6 address, failed its "is this IPv4" check, and
+		// returned an error - while LocalMAC still "worked" by accident
+		// (the interface itself was picked correctly, MAC doesn't depend on
+		// which address came back). Must search for an IPv4 addr
+		// explicitly rather than trust list order.
+		ipv4Addr := firstIPv4Addr(addrs)
+		if ipv4Addr == nil {
+			continue
+		}
+		return iface, ipv4Addr, nil
 	}
-	return net.Interface{}, nil, fmt.Errorf("no non-virtual network interface with an assigned address found")
+	return net.Interface{}, nil, fmt.Errorf("no non-virtual network interface with an assigned IPv4 address found")
+}
+
+func firstIPv4Addr(addrs []net.Addr) net.Addr {
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.To4() != nil {
+			return addr
+		}
+	}
+	return nil
 }
 
 func isVirtualIfaceName(name string) bool {
