@@ -351,6 +351,30 @@ To disable on a given machine: `RELAY_AUTO_UPDATE_ENABLED=false` in
 To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
 (e.g. `1h`), same env file.
 
+## Auto-restart on machine restart (both platforms)
+
+**Server (systemd):** already covered by the existing install - `relay-runner@<user>.service` is
+`enabled` (survives a full reboot, not just a crash - `Restart=always` in the unit only covers
+crashes while already running) and was confirmed `enabled` on the actual deployed server
+(2026-09-19). No action needed after a full power-off/on cycle.
+
+**Laptop (Windows, no systemd equivalent):** a Scheduled Task needs elevated
+(`Register-ScheduledTask`) rights this environment doesn't have (`Access is denied` even without
+`-RunLevel Highest`), so the fallback is a Startup-folder shortcut instead -
+`start-relay-runner.ps1` (sets `RELAY_LISTEN_ADDR` to this laptop's Tailscale IP, then
+`Start-Process -WindowStyle Hidden` the runner binary) launched via a `.lnk` in
+`shell:startup` (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`) pointing at
+`powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File start-relay-runner.ps1`.
+**This fires at user logon, not at raw machine power-on** - after a full shutdown, the runner
+comes back automatically once you log into Windows normally, no manual command needed; it does
+NOT come back before login (no auto-logon configured, deliberately - that would need storing a
+Windows credential unencrypted).
+
+To change the laptop's bind address: edit `RELAY_LISTEN_ADDR` directly in
+`install/start-relay-runner.ps1` (hardcoded, not re-detected - Tailscale IPs are stable per
+device but not guaranteed permanent).
+To remove: delete the `.lnk` from the Startup folder above.
+
 ## Dev note: Docker + Git Bash on Windows
 
 Any `docker run -v src:/dst ...` command from Git Bash (not PowerShell) needs
@@ -514,3 +538,4 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Filesystem roots listing | `internal/project/roots_unix.go`, `roots_windows.go` (`listRoots`) |
 | Auth-login pseudo-session / command | `internal/session/session.go` (`StartAuthLogin`, `defaultAuthLoginCommand`) — env `RELAY_PROVIDER_AUTH_LOGIN` |
 | Auth-login endpoint | `internal/api/api.go` (`handleAuthLogin`) |
+| Laptop auto-start at logon | `install/start-relay-runner.ps1` + Startup-folder `.lnk` (see "Auto-restart on machine restart") |
