@@ -1,0 +1,24 @@
+[Unit]
+Description=Relay wake daemon (wakerd)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/opt/relay/bin/wakerd
+Restart=always
+RestartSec=5
+EnvironmentFile=-/etc/waker/waker.env
+
+# Restart=always (not on-failure): same reasoning as relay-runner.service -
+# wakerd may exit 0 on purpose (e.g. after an in-place binary swap), which
+# on-failure would treat as "done, don't restart".
+
+# No poweroff/shutdown capability needed here (unlike the runner's idle-
+# suspend) - wakerd only ever sends WoL packets and probes TCP ports, it
+# never touches its own host's power state.
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

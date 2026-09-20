@@ -125,9 +125,67 @@ real network: `fakeSender` records payloads, `fakeProber` scripts up/down by cal
 
 Cross-compiles to a single static binary: `GOOS=linux GOARCH=arm64 go build ./cmd/wakerd/`
 (Pi Zero 2 W is ARM Cortex-A53 — `arm64` for 64-bit Raspberry Pi OS, `GOARCH=arm GOARM=7` for
-the 32-bit image). No cgo, no runtime dependencies. [NOT IMPLEMENTED] there is no installer,
-service unit, self-update, or pairing QR for wakerd — the runner's `install.sh` covers runnerd
-only; wakerd is copied over and started by hand (or via a systemd unit written by hand) today.
+the 32-bit image). No cgo, no runtime dependencies.
+
+## Pairing QR
+
+`-qr` prints a `relaywaker://<host>:<port>?key=<key>` URI as a terminal QR (`qrterminal`) and
+as plain text; `-qr-png <file>` renders the same URI to a 0600 PNG instead. Both live in
+`cmd/wakerd/main.go` (`pairingURI`, `printPairingQR`, `writePairingQRPNG`), mirroring runnerd's
+own `-qr`/`-qr-png` almost exactly — the one difference is the URI scheme: `relaywaker://` vs
+runnerd's `relay://`, so the phone app can tell a Pi apart from a runner before connecting.
+
+`pairingURI` refuses to encode an address nothing could reach: empty host, `0.0.0.0`, `::`, or
+loopback all `log.Fatalf` with a message naming `WAKER_LISTEN_ADDR` and pointing at `tailscale
+ip -4`. Refusal conditions are covered by `cmd/wakerd/main_test.go`.
+
+Because the Pi is headless (no screen, no keyboard, ever — see package doc), `-qr` over SSH is
+the *primary* pairing path here, not a convenience fallback like it is for runnerd.
+
+To change the URI scheme: `pairingURI` in `cmd/wakerd/main.go`
+To change the refusal conditions: same function
+
+## Installing on a headless Pi
+
+The whole point: a Pi Zero 2 W with **no screen and no keyboard, ever**. Every step below is
+either done before first boot (via Raspberry Pi Imager) or over SSH.
+
+1. **Flash with Raspberry Pi Imager, using its pre-flash "⚙" settings** (gear icon before
+   writing) — this is what makes a screen unnecessary at all:
+   - Hostname (e.g. `relay-waker`)
+   - Enable SSH → "Allow public-key authentication only", paste your laptop's public key
+   - Configure WiFi: SSID + password for the target LAN (same broadcast domain as the
+     machines to wake — see Technology Notes below)
+   - Locale/timezone as you like
+   Write the image, boot the Pi. No monitor is ever attached.
+2. **SSH in** once it's on the network: `ssh <user>@relay-waker.local` (or its DHCP-assigned
+   IP if mDNS doesn't resolve).
+3. **Cross-compile and copy the binary** from your dev machine:
+   `GOOS=linux GOARCH=arm64 go build -o wakerd ./cmd/wakerd/` then
+   `scp wakerd <user>@relay-waker.local:/tmp/wakerd`
+   (also copy `install/install-wakerd.sh`, `install/wakerd.service`, `install/waker.env.example`
+   — they must sit next to each other, same as `install.sh`'s layout)
+4. **Run the installer** over the same SSH session:
+   `sudo ./install-wakerd.sh /tmp/wakerd <user>`
+   This installs/logs into Tailscale (prints a login URL right there in the SSH terminal — open
+   it on your phone or laptop), installs the binary, systemd unit, and env file, then starts
+   `wakerd@<user>`.
+5. **Scan the pairing QR straight from the SSH terminal** — the installer prints it at the end
+   (`wakerd -qr`) using half-block Unicode characters; a normal SSH terminal renders it legibly
+   without any image support. Scan it in the Relay Android app (Add Waker → Scan QR).
+6. **Add machines by hand.** There is no API or UI for this (see "Startup" above) — SSH in
+   again and edit `~/.waker/config.json` (or `$WAKER_HOME/config.json` if set), adding one
+   entry per machine:
+   ```json
+   {"id":"dell","name":"Dell laptop","mac":"34:CF:F6:81:08:76",
+    "probeHost":"192.168.1.20","probePort":7777}
+   ```
+   `probeHost`/`probePort` are optional (fall back to `id` and `7777`). Then:
+   `sudo systemctl restart wakerd@<user>` — config is only read at startup.
+
+To change the install steps: `install/install-wakerd.sh`
+To change the unit file: `install/wakerd.service`
+To change the env template: `install/waker.env.example`
 
 ## Technology Notes
 
@@ -172,6 +230,17 @@ only; wakerd is copied over and started by hand (or via a systemd unit written b
   key is the only protection, and the daemon's whole purpose is powering machines on.
 - **Port 7778 was chosen to sit next to the runner's 7777** so the Pi could in principle run
   both; it has no other significance.
+- **The Pi itself never needs waking — it only ever sends.** It's always-on and on WiFi, so
+  there's no "wake the waker" problem. But that WiFi link is also the constraint: the magic
+  packet only reaches wired targets if the router bridges the WiFi and wired segments into one
+  broadcast domain. Most consumer routers do this by default; **AP isolation** (client/guest
+  isolation) explicitly breaks it by blocking station-to-station and broadcast traffic at the
+  access point, with no error surfaced anywhere — the wake just times out at 90s exactly like a
+  target with WoL disabled. If wakes consistently fail for one Pi but the same targets wake fine
+  from a wired sender, check the AP's isolation setting first, before touching NIC/BIOS config.
+- **The pairing PNG and QR encode a live key.** `-qr-png` writes 0600 but the file still exists
+  on disk afterward — clean it up once scanned, same caution as runnerd's pairing images
+  (`.gitignore` covers `*-pairing-qr.png` repo-wide).
 
 ## Change Index
 
@@ -197,3 +266,9 @@ only; wakerd is copied over and started by hand (or via a systemd unit written b
 | SO_BROADCAST socket option | `internal/wol/broadcast_unix.go`, `broadcast_windows.go` (`setBroadcast`) |
 | Send logging | `internal/wol/directed.go` (`InterfaceSender.Logf`), `internal/waker/api.go` (`Server.Logf`) |
 | Startup logging / first-run key print | `cmd/wakerd/main.go` |
+| Pairing URI scheme / refusal conditions | `cmd/wakerd/main.go` (`pairingURI`) |
+| Pairing QR (terminal) | `cmd/wakerd/main.go` (`printPairingQR`), flag `-qr` |
+| Pairing QR (PNG file) | `cmd/wakerd/main.go` (`writePairingQRPNG`), flag `-qr-png <file>` |
+| systemd unit | `install/wakerd.service` |
+| Env template (`WAKER_LISTEN_ADDR`, `WAKER_HOME`) | `install/waker.env.example` |
+| Headless Pi installer | `install/install-wakerd.sh` |
