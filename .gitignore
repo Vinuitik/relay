@@ -26,3 +26,7 @@ runner/install/relay-runner-*
 android/app/google-services.json
 runner/install/fcm-service-account.json
 *-service-account.json
+
+# pairing QR images encode the runner key - never commit
+*-pairing-qr.png
+runner/install/wakerd-*

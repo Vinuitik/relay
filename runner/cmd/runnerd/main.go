@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/mdp/qrterminal/v3"
+	"rsc.io/qr"
 
 	"relay/runner/internal/api"
 	"relay/runner/internal/compose"
@@ -32,6 +33,16 @@ func main() {
 	// phone app via camera scan instead of copy-pasting 64 hex chars.
 	if len(os.Args) > 1 && os.Args[1] == "-qr" {
 		printPairingQR(cfg)
+		return
+	}
+
+	// -qr-png <file>: same pairing URI as -qr, written as a scannable PNG
+	// instead of terminal blocks - for pairing from a phone that can't point
+	// its camera at this machine's console. The file contains this runner's
+	// key, so it is written 0600 and must never be committed (.gitignore
+	// covers *-pairing-qr.png).
+	if len(os.Args) > 2 && os.Args[1] == "-qr-png" {
+		writePairingQRPNG(cfg, os.Args[2])
 		return
 	}
 
@@ -119,7 +130,9 @@ func main() {
 // default - the caller (install.sh) only invokes -qr after Tailscale login
 // succeeds, so that's a manual `relay-runner -qr` misuse case, not a normal
 // path.
-func printPairingQR(cfg *config.Config) {
+// pairingURI builds the relay:// URI both -qr and -qr-png encode, refusing
+// addresses the phone could never reach. See printPairingQR.
+func pairingURI(cfg *config.Config) string {
 	// Refuse to encode an address the phone can never reach. RELAY_LISTEN_ADDR
 	// defaults to 127.0.0.1:7777, so running `-qr` without setting it would
 	// otherwise print a perfectly valid QR code pointing at the phone's own
@@ -137,7 +150,11 @@ func printPairingQR(cfg *config.Config) {
 		log.Fatalf("qr: RELAY_LISTEN_ADDR %q is loopback - the phone would try to connect to itself. Set it to this machine's Tailscale IP (tailscale ip -4) and restart the runner before pairing", cfg.ListenAddr)
 	}
 
-	uri := fmt.Sprintf("relay://%s?key=%s", cfg.ListenAddr, cfg.Key)
+	return fmt.Sprintf("relay://%s?key=%s", cfg.ListenAddr, cfg.Key)
+}
+
+func printPairingQR(cfg *config.Config) {
+	uri := pairingURI(cfg)
 	fmt.Println("Scan this in the Relay Android app (Add Runner -> Scan QR):")
 	fmt.Println()
 	qrterminal.GenerateHalfBlock(uri, qrterminal.L, os.Stdout)
@@ -147,4 +164,19 @@ func printPairingQR(cfg *config.Config) {
 	// URI without needing to decode the terminal QR art above - e.g. to
 	// render it as a real scannable image elsewhere.
 	fmt.Printf("PAIRING URI: %s\n", uri)
+}
+
+// writePairingQRPNG renders the pairing URI to a PNG file. Mode 0600 because
+// the QR image encodes this runner's key verbatim - anyone who can read the
+// image can pair with this runner.
+func writePairingQRPNG(cfg *config.Config, path string) {
+	code, err := qr.Encode(pairingURI(cfg), qr.M)
+	if err != nil {
+		log.Fatalf("qr-png: encode: %v", err)
+	}
+	if err := os.WriteFile(path, code.PNG(), 0o600); err != nil {
+		log.Fatalf("qr-png: write %q: %v", path, err)
+	}
+	fmt.Printf("Wrote pairing QR to %s (runner address: %s)\n", path, cfg.ListenAddr)
+	fmt.Println("This image encodes the runner key - do not commit or share it.")
 }
