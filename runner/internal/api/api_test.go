@@ -19,6 +19,9 @@ const testKey = "test-key-123"
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	root := t.TempDir()
+	// notify.NewRegistry now persists to $RELAY_HOME/devices.json; without
+	// this the test would write into the real ~/.relay of whoever runs it.
+	t.Setenv("RELAY_HOME", root)
 	projects, err := project.NewRegistry(filepath.Join(root, "projects"), filepath.Join(root, "projects.json"))
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)

@@ -352,11 +352,11 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   physically on, which is why waking belongs to a device that is always on that segment (see
   ARCHITECTURE.md "Relay device"). **Nothing in the runner calls these primitives today** — the
   runner-to-runner `/v1/wake` endpoint was removed; they're kept for the separate Pi daemon.
-- **Device registrations are in-memory only** (`notify.Registry`, mutex-guarded map keyed by
-  FCM token) — same limitation as `session.Manager`: a runner restart loses all registered
-  devices, and the phone app must re-register (it already does this on token refresh per
-  shared/API.md, but a runner restart with no token refresh means silence until the app
-  re-registers for some other reason). No code currently forces a periodic re-register.
+- **Device registrations persist to disk** (`notify.Registry`, mutex-guarded map keyed by FCM
+  token, written atomically to `$RELAY_HOME/devices.json`, mode 0600 — see `NewRegistryAt`).
+  They survive a runner restart, unlike `session.Manager`'s transcripts. A missing file means
+  "no devices yet" and a corrupt one logs and starts empty, so a bad file can never stop the
+  runner coming up. The file holds push tokens, hence 0600.
 - **FCM auth is a hand-rolled JWT-bearer OAuth2 exchange** (RFC 7523), not
   `golang.org/x/oauth2` — deliberately, to keep the runner's dependency graph at stdlib-only
   (`crypto/rsa`, `encoding/json`, `net/http`) rather than depend on module-fetch succeeding at

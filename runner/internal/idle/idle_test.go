@@ -136,3 +136,48 @@ func TestLoadConfig_MalformedDurationFallsBackToDefault(t *testing.T) {
 		t.Fatalf("Timeout = %s, want default %s on malformed input", cfg.Timeout, DefaultTimeout)
 	}
 }
+
+// TestMonitorReArmsAfterResume covers the regression introduced by switching
+// from S5 poweroff to S3 sleep: the runner process now SURVIVES a suspend, so
+// the one-shot `triggered` latch is never cleared by a restart the way it used
+// to be. Without resume detection the machine would auto-suspend exactly once
+// per process lifetime and never again.
+func TestMonitorReArmsAfterResume(t *testing.T) {
+	status := &fakeStatus{busy: false, idleSince: time.Now().Add(-1 * time.Hour)}
+	shutdown := &fakeShutdowner{}
+	cfg := Config{Enabled: true, Timeout: 3 * time.Minute, CheckInterval: time.Minute}
+	mon := NewMonitor(status, shutdown, cfg)
+
+	mon.tick()
+	if shutdown.calls != 1 {
+		t.Fatalf("first tick: got %d shutdown calls, want 1", shutdown.calls)
+	}
+	if !mon.triggered {
+		t.Fatal("expected monitor to latch triggered after a successful suspend")
+	}
+
+	// Simulate the process being frozen by the suspend and resuming much
+	// later: a wall-clock gap far larger than CheckInterval.
+	mon.lastTick = time.Now().Add(-30 * time.Minute)
+	mon.tick()
+	if mon.triggered {
+		t.Fatal("expected resume detection to clear the triggered latch")
+	}
+	if shutdown.calls != 1 {
+		t.Fatalf("tick right after resume must not re-suspend immediately: got %d calls, want 1", shutdown.calls)
+	}
+
+	// Still within the post-resume grace window - must not suspend.
+	mon.tick()
+	if shutdown.calls != 1 {
+		t.Fatalf("within post-resume grace: got %d calls, want 1", shutdown.calls)
+	}
+
+	// Once the full timeout has elapsed since resume, it may suspend again.
+	mon.resumeFloor = time.Now().Add(-2 * cfg.Timeout)
+	mon.lastTick = time.Now()
+	mon.tick()
+	if shutdown.calls != 2 {
+		t.Fatalf("after timeout elapsed post-resume: got %d calls, want 2", shutdown.calls)
+	}
+}

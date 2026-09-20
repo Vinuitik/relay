@@ -109,9 +109,33 @@ type Monitor struct {
 
 	// triggered is set once Shutdown has been called successfully, so a
 	// live Monitor never calls it a second time. See tick's doc comment for
-	// why, and what happens on a failed Shutdown call.
+	// why, and what happens on a failed Shutdown call. It is cleared again
+	// on resume - see resumeFloor.
 	triggered bool
+
+	// lastTick is when tick() last ran, used to detect that this process
+	// was suspended and has now resumed. Since the switch from S5 poweroff
+	// to S3 sleep, the runner process SURVIVES a suspend/resume cycle -
+	// under S5 it died and a fresh Monitor started at boot, which reset
+	// triggered for free. Without resume detection triggered would latch
+	// true for the life of the process and the machine would auto-suspend
+	// exactly once, ever.
+	lastTick time.Time
+
+	// resumeFloor is the moment this process most recently resumed from
+	// suspend. It acts as a lower bound on idleSince, so a machine that
+	// just woke gets a full cfg.Timeout of grace before it may suspend
+	// again - otherwise IdleStatus would still report the pre-suspend turn
+	// end, already older than the timeout, and the runner would re-suspend
+	// seconds after waking.
+	resumeFloor time.Time
 }
+
+// resumeGraceFactor multiplies CheckInterval to decide whether a gap
+// between ticks was a suspend rather than ordinary scheduler jitter. A
+// wall-clock jump of more than this many check intervals could not have
+// happened while the process was running normally.
+const resumeGraceFactor = 3
 
 // NewMonitor builds a Monitor. cfg.CheckInterval and cfg.Timeout should
 // normally come from LoadConfig.
@@ -146,11 +170,25 @@ func (mon *Monitor) Run() {
 // trying again. This is the simplest behavior that avoids a shutdown-retry
 // storm without silently giving up on a real failure.
 func (mon *Monitor) tick() {
+	now := time.Now()
+	// Resume detection: a wall-clock gap far larger than CheckInterval means
+	// this process was frozen by a suspend and has just come back. Clear the
+	// one-shot latch and restart the idle countdown from now.
+	if !mon.lastTick.IsZero() && now.Sub(mon.lastTick) > time.Duration(resumeGraceFactor)*mon.cfg.CheckInterval {
+		log.Printf("idle: detected resume after %s of wall-clock gap, re-arming idle-suspend", now.Sub(mon.lastTick).Round(time.Second))
+		mon.triggered = false
+		mon.resumeFloor = now
+	}
+	mon.lastTick = now
+
 	if mon.triggered {
 		return
 	}
 
 	busy, idleSince := mon.status.IdleStatus()
+	if idleSince.Before(mon.resumeFloor) {
+		idleSince = mon.resumeFloor
+	}
 	if busy {
 		return
 	}
