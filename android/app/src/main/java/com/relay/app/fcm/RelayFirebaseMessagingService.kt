@@ -83,7 +83,7 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
         return when (data["type"]) {
             "runner_suspending" -> {
                 val hostname = data["hostname"] ?: "A runner"
-                "$hostname is going to sleep" to "No active session — suspending to save power. Wake it from the Runners screen."
+                "$hostname is going to sleep" to "No active session — suspending to save power."
             }
             else -> "Session finished" to "A runner session finished."
         }

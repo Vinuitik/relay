@@ -44,10 +44,9 @@ class KnownRunnersRepository(context: Context) {
     }
 
     /**
-     * Replaces the stored entry for [runner] (matched by `hostname`, the de-facto id — see
-     * [KnownRunner.wakeViaRunnerId]) with [runner] itself. Same upsert-by-hostname semantics as
-     * [addRunner]; named separately because call sites editing wake config read more clearly as
-     * "update" than "add".
+     * Replaces the stored entry for [runner] (matched by `hostname`, the de-facto id) with
+     * [runner] itself. Same upsert-by-hostname semantics as [addRunner]; named separately
+     * because call sites refreshing an existing runner read more clearly as "update".
      */
     suspend fun updateRunner(runner: KnownRunner) = addRunner(runner)
 

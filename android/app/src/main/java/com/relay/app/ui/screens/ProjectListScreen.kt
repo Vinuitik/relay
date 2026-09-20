@@ -11,8 +11,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.Star as StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -29,7 +27,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,8 +35,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.relay.app.data.WidgetConfigRepository
-import com.relay.app.data.WidgetTarget
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
 import com.relay.app.network.NewProjectRequest
@@ -50,7 +45,6 @@ import kotlinx.coroutines.launch
 @Composable
 fun ProjectListScreen(
     runner: KnownRunner,
-    widgetConfigRepository: WidgetConfigRepository,
     onProjectSelected: (Project) -> Unit,
     onFilesSelected: (Project) -> Unit,
     onPickFolder: () -> Unit,
@@ -65,7 +59,6 @@ fun ProjectListScreen(
     var showAddDialog by remember { mutableStateOf(false) }
     var showAddMenu by remember { mutableStateOf(false) }
 
-    val widgetTarget by widgetConfigRepository.defaultTarget.collectAsState(initial = null)
 
     suspend fun refresh() {
         loading = true
@@ -126,29 +119,15 @@ fun ProjectListScreen(
                 projects.isEmpty() -> Text("No projects yet.", modifier = Modifier.align(Alignment.Center))
                 else -> LazyColumn {
                     items(projects, key = { it.id }) { project ->
-                        val isWidgetDefault = widgetTarget?.runner?.hostname == runner.hostname &&
-                            widgetTarget?.projectId == project.id
                         ListItem(
                             headlineContent = { Text(project.name) },
                             supportingContent = { Text(project.path) },
                             trailingContent = {
-                                Row {
-                                    IconButton(onClick = { onFilesSelected(project) }) {
-                                        Icon(
-                                            imageVector = Icons.Default.Folder,
-                                            contentDescription = "Browse files",
-                                        )
-                                    }
-                                    IconButton(onClick = {
-                                        scope.launch {
-                                            widgetConfigRepository.setDefault(WidgetTarget(runner, project.id))
-                                        }
-                                    }) {
-                                        Icon(
-                                            imageVector = if (isWidgetDefault) Icons.Default.Star else Icons.Outlined.StarBorder,
-                                            contentDescription = "Set as widget default project",
-                                        )
-                                    }
+                                IconButton(onClick = { onFilesSelected(project) }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Folder,
+                                        contentDescription = "Browse files",
+                                    )
                                 }
                             },
                             modifier = Modifier.clickable { onProjectSelected(project) },
