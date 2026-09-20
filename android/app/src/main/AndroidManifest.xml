@@ -10,9 +10,6 @@
          requested at runtime before the scanner screen opens, see ui/screens/QrScanScreen.kt. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
-    <!-- No CHANGE_WIFI_MULTICAST_STATE needed here: the phone never broadcasts the WoL packet
-         itself, it POSTs /v1/wake to another runner's HTTP API, which broadcasts locally on its
-         own LAN — see ARCHITECTURE.md "Relay device" and widget/WakeRunnerWorker.kt. -->
 
     <application
         android:allowBackup="true"
@@ -40,19 +37,6 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
-
-        <receiver
-            android:name=".widget.RelayWidgetProvider"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.relay.app.widget.ACTION_WAKE" />
-                <action android:name="com.relay.app.widget.ACTION_STOP_CONTAINERS" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/relay_widget_info" />
-        </receiver>
 
     </application>
 

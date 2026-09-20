@@ -11,9 +11,8 @@ Restart=always
 RestartSec=5
 EnvironmentFile=-/etc/relay/runner.env
 
-# Restart=always (not on-failure): a self-update (internal/selfupdate) replaces the
-# binary and exits 0 on success, which on-failure would treat as "done, don't restart" -
-# see runner/FLOWS.md "Self-update".
+# Restart=always (not on-failure): the runner may exit 0 on purpose (e.g. after an
+# in-place binary swap), which on-failure would treat as "done, don't restart".
 
 # Idle-suspend (RELAY_IDLE_SUSPEND_ENABLED=true, set in /etc/relay/runner.env)
 # calls `systemctl poweroff` as this unit's own user. Give that user passwordless

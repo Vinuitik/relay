@@ -20,7 +20,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -36,11 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.relay.app.data.db.CachedMessageEntity
-import com.relay.app.data.db.CachedSessionEntity
-import com.relay.app.data.db.RelayDatabase
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Session
 import com.relay.app.network.NewSessionRequest
@@ -50,7 +45,6 @@ import com.relay.app.ui.theme.StateBusy
 import com.relay.app.ui.theme.StateError
 import com.relay.app.ui.theme.StateFinished
 import com.relay.app.ui.theme.StateIdle
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 private val KNOWN_PROVIDERS = listOf("claude", "codex")
@@ -64,53 +58,25 @@ fun SessionListScreen(
 ) {
     val api = remember(runner) { RelayApiClient.forRunner(runner) }
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    val sessionDao = remember(context) { RelayDatabase.get(context).sessionCacheDao() }
 
     var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    var offline by remember { mutableStateOf(false) }
     var showNewSessionDialog by remember { mutableStateOf(false) }
-
-    // Cached entries render instantly and double as the offline/asleep-runner fallback below -
-    // messages aren't needed for this list view, so they're left empty here.
-    suspend fun loadFromCache() {
-        val cached = sessionDao.observeSessionsForProject(runner.hostname, projectId).first()
-        if (cached.isNotEmpty()) {
-            sessions = cached.map {
-                Session(it.sessionId, it.projectId, it.provider, it.state, it.createdAt, it.finishedAt, emptyList())
-            }
-            loading = false
-        }
-    }
 
     suspend fun refresh() {
         if (sessions.isEmpty()) loading = true
         error = null
         try {
-            val fetched = api.listSessions(projectId)
-            sessions = fetched
-            offline = false
-            fetched.forEach { s ->
-                sessionDao.replaceSession(
-                    CachedSessionEntity(runner.hostname, s.id, s.projectId, s.provider, s.state, s.createdAt, s.finishedAt),
-                    s.messages.map { CachedMessageEntity(runnerHostname = runner.hostname, sessionId = s.id, role = it.role, text = it.text, at = it.at) },
-                )
-            }
+            sessions = api.listSessions(projectId)
         } catch (e: Exception) {
-            if (sessions.isEmpty()) {
-                error = friendlyErrorMessage(e, runner)
-            } else {
-                offline = true
-            }
+            error = friendlyErrorMessage(e, runner)
         } finally {
             loading = false
         }
     }
 
     LaunchedEffect(projectId) {
-        loadFromCache()
         refresh()
     }
 
@@ -140,15 +106,6 @@ fun SessionListScreen(
                 )
                 sessions.isEmpty() -> Text("No sessions yet.", modifier = Modifier.align(Alignment.Center))
                 else -> LazyColumn {
-                    if (offline) {
-                        item {
-                            Text(
-                                text = "Offline — showing last known data",
-                                modifier = Modifier.background(MaterialTheme.colorScheme.errorContainer).padding(8.dp),
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                            )
-                        }
-                    }
                     items(sessions, key = { it.id }) { session ->
                         ListItem(
                             headlineContent = { Text(session.provider) },
