@@ -156,9 +156,25 @@ To change path-escape rules: `internal/project/project.go` (`Registry.ResolvePat
 
 ## Device registration + notify-on-finish
 
+Files: registry.go, notifier.go, fcm.go
+
 POST /v1/devices → api.handleRegisterDevice → notify.Registry.Register(fcmToken)
 → new device (server-generated id) or, if that token is already registered, updates its
-  registeredAt in place (no duplicate) → 200 Device
+  registeredAt in place (no duplicate) → persists the full device list to
+  `$RELAY_HOME/devices.json` (atomic temp-file + rename, mode 0o600) → 200 Device
+
+notify.NewRegistry() (called from `main.go`, unchanged signature) resolves the devices file
+path itself — `$RELAY_HOME/devices.json`, falling back to `~/.relay/devices.json` when
+`RELAY_HOME` is unset, matching `internal/config.relayHome()`'s resolution exactly — and loads
+any existing devices from it at construction. Missing file → starts empty (not an error).
+Corrupt/unparseable file → logs and starts empty rather than crashing the runner. Tests use
+`notify.NewRegistryAt(path)` (path-injecting constructor, `NewRegistry()` delegates to it) with
+`t.TempDir()` so they never touch a real `~/.relay`.
+
+**Why this matters:** the phone registers its FCM token once, in `MainActivity.onCreate`. Before
+this, a runner restart lost every registration and the runner couldn't push again until the user
+happened to reopen the app — exactly when they don't need the notification. Now registrations
+survive a runner restart.
 
 session.Manager.awaitExit / session.Manager.Stop → on transition to StateFinished →
 session.Manager.notifyFinished (async, via `Manager.OnFinished` hook set in main.go)
@@ -374,6 +390,8 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | WoL broadcast send / SO_BROADCAST | `internal/wol/broadcast_unix.go`, `broadcast_windows.go` |
 | WoL target port / broadcast address | `internal/wol/wol.go` constants |
 | Device registration (dedupe by token) | `internal/notify/registry.go` (`Registry.Register`) |
+| Device registry persistence path | env `RELAY_HOME` → `internal/notify/registry.go` (`devicesFilePath`), falls back to `~/.relay/devices.json` |
+| Device registry path-injecting constructor (tests) | `internal/notify/registry.go` (`NewRegistryAt`) |
 | FCM credential path | env `RELAY_FCM_CREDENTIALS` → `internal/notify/notifier.go` (`NewNotifier`) |
 | FCM JWT/OAuth2 exchange | `internal/notify/fcm.go` (`exchangeJWT`, `accessTokenFor`) |
 | Session-finish → notify wiring | `cmd/runnerd/main.go` (`sessions.OnFinished`), `internal/session/session.go` (`notifyFinished`) |
