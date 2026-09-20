@@ -12,6 +12,7 @@ import (
 	"github.com/mdp/qrterminal/v3"
 	"rsc.io/qr"
 
+	"relay/runner/internal/activity"
 	"relay/runner/internal/api"
 	"relay/runner/internal/compose"
 	"relay/runner/internal/config"
@@ -95,10 +96,23 @@ func main() {
 		Stop:  compose.Stop,
 	}, devices)
 
+	// tracker records phone-app foreground pings (POST /v1/activity) -
+	// wired unconditionally so the endpoint always works, shared between
+	// the API handler and idle.Monitor (only the latter actually reads it,
+	// and only when idle-suspend is enabled below). See internal/activity.
+	tracker := activity.NewTracker()
+	srv.Activity = tracker
+
 	if idleCfg.Enabled {
 		log.Printf("idle: suspend-to-sleep enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)
 		mon := idle.NewMonitor(sessions, idle.DefaultShutdowner, idleCfg)
 		mon.BeforeShutdown = beforeShutdown
+		// Sources (b) and (c) of the idle decision - see internal/idle's
+		// package doc. LocalInput is activity.LocalIdleTime directly:
+		// Windows-real, activity.ErrUnsupported on Linux (Monitor treats
+		// that as "no signal", not a failure).
+		mon.Activity = tracker
+		mon.LocalInput = activity.LocalIdleTime
 		go mon.Run()
 
 		// Manual "I'm done, suspend now" from the phone - see

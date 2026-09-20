@@ -5,7 +5,19 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"relay/runner/internal/activity"
 )
+
+// fakeActivity is a fake ActivitySource for tests - never touches a real
+// activity.Tracker's clock indirectly; tests set the timestamp explicitly.
+type fakeActivity struct {
+	last time.Time
+}
+
+func (f fakeActivity) LastActive() time.Time {
+	return f.last
+}
 
 // fakeStatus is a fake SessionStatus for tests - never touches real sessions.
 type fakeStatus struct {
@@ -179,5 +191,89 @@ func TestMonitorReArmsAfterResume(t *testing.T) {
 	mon.tick()
 	if shutdown.calls != 2 {
 		t.Fatalf("after timeout elapsed post-resume: got %d calls, want 2", shutdown.calls)
+	}
+}
+
+// TestTick_RecentActivityPingBlocksSuspend covers source (b): the session
+// itself looks idle for well past the timeout, but a phone-app activity
+// ping just arrived within the freshness window - suspend must not fire.
+func TestTick_RecentActivityPingBlocksSuspend(t *testing.T) {
+	status := fakeStatus{busy: false, idleSince: time.Now().Add(-time.Hour)}
+	act := fakeActivity{last: time.Now()}
+	shutdown := &fakeShutdowner{}
+	mon := NewMonitor(status, shutdown, Config{Timeout: time.Minute, CheckInterval: time.Second})
+	mon.Activity = act
+
+	mon.tick()
+
+	if shutdown.calls != 0 {
+		t.Fatalf("shutdown.calls = %d, want 0 (fresh activity ping should block suspend)", shutdown.calls)
+	}
+}
+
+// TestTick_StaleActivityPingDoesNotBlockSuspend covers the other half: a
+// ping older than the freshness window carries no signal, so a
+// long-idle session still suspends.
+func TestTick_StaleActivityPingDoesNotBlockSuspend(t *testing.T) {
+	status := fakeStatus{busy: false, idleSince: time.Now().Add(-time.Hour)}
+	act := fakeActivity{last: time.Now().Add(-2 * activity.DefaultWindow)}
+	shutdown := &fakeShutdowner{}
+	mon := NewMonitor(status, shutdown, Config{Timeout: time.Minute, CheckInterval: time.Second})
+	mon.Activity = act
+
+	mon.tick()
+
+	if shutdown.calls != 1 {
+		t.Fatalf("shutdown.calls = %d, want 1 (stale activity ping should not block suspend)", shutdown.calls)
+	}
+}
+
+// TestTick_LocalInputBlocksSuspend covers source (c): recent local
+// keyboard/mouse input should block suspend even though the session and
+// activity sources both look long idle.
+func TestTick_LocalInputBlocksSuspend(t *testing.T) {
+	status := fakeStatus{busy: false, idleSince: time.Now().Add(-time.Hour)}
+	shutdown := &fakeShutdowner{}
+	mon := NewMonitor(status, shutdown, Config{Timeout: time.Minute, CheckInterval: time.Second})
+	mon.LocalInput = func() (time.Duration, error) { return 5 * time.Second, nil }
+
+	mon.tick()
+
+	if shutdown.calls != 0 {
+		t.Fatalf("shutdown.calls = %d, want 0 (recent local input should block suspend)", shutdown.calls)
+	}
+}
+
+// TestTick_LocalInputUnsupportedIsIgnored covers the Linux case: a
+// LocalInput func that always returns activity.ErrUnsupported (see
+// internal/activity/local_unix.go) must not itself block a suspend that
+// would otherwise happen from session state alone.
+func TestTick_LocalInputUnsupportedIsIgnored(t *testing.T) {
+	status := fakeStatus{busy: false, idleSince: time.Now().Add(-time.Hour)}
+	shutdown := &fakeShutdowner{}
+	mon := NewMonitor(status, shutdown, Config{Timeout: time.Minute, CheckInterval: time.Second})
+	mon.LocalInput = func() (time.Duration, error) { return 0, activity.ErrUnsupported }
+
+	mon.tick()
+
+	if shutdown.calls != 1 {
+		t.Fatalf("shutdown.calls = %d, want 1 (ErrUnsupported should be treated as no signal)", shutdown.calls)
+	}
+}
+
+// TestTick_BusySessionOverridesActivityAndLocalInput confirms a busy
+// session still short-circuits to "busy" even when both new inputs would
+// otherwise report the machine as idle/quiet.
+func TestTick_BusySessionOverridesActivityAndLocalInput(t *testing.T) {
+	status := fakeStatus{busy: true, idleSince: time.Now().Add(-24 * time.Hour)}
+	shutdown := &fakeShutdowner{}
+	mon := NewMonitor(status, shutdown, Config{Timeout: time.Minute, CheckInterval: time.Second})
+	mon.Activity = fakeActivity{last: time.Time{}}
+	mon.LocalInput = func() (time.Duration, error) { return time.Hour, nil }
+
+	mon.tick()
+
+	if shutdown.calls != 0 {
+		t.Fatalf("shutdown.calls = %d, want 0 (busy session must still short-circuit)", shutdown.calls)
 	}
 }
