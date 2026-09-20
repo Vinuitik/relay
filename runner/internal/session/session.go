@@ -19,8 +19,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"relay/runner/internal/history"
 )
 
 // Session states.
@@ -148,8 +146,6 @@ func defaultProviders() map[string]ProviderCommand {
 // for to the bare CLI command name to look up on PATH - no manual
 // RELAY_PROVIDER_<NAME> setup needed on a fresh deployment as long as the
 // CLI is actually installed. Bare names (no args) deliberately reuse
-// os/exec.Command's own PATH-resolution behavior, the same mechanism
-// StartAuthLogin's defaultAuthLoginCommand already relies on for "claude".
 // autoDetectProviders maps a provider name the phone app is allowed to ask
 // for to the command to run if it resolves on PATH right now - no manual
 // RELAY_PROVIDER_<NAME> setup needed on a fresh deployment as long as the
@@ -208,40 +204,6 @@ func (m *Manager) Start(projectID, provider string) (Session, error) {
 		return Session{}, fmt.Errorf("%w: %q", ErrProjectNotFound, projectID)
 	}
 	return m.start(projectID, provider, dir)
-}
-
-// authLoginProvider is a pseudo-provider name, not one a real project session
-// ever uses - it exists only to hang RELAY_PROVIDER_AUTH_LOGIN's env-var
-// override off the same resolveProvider lookup every other provider uses.
-const authLoginProvider = "auth-login"
-
-// defaultAuthLoginCommand is what runs when RELAY_PROVIDER_AUTH_LOGIN isn't
-// set - the `claude` CLI's own interactive OAuth login, confirmed (by hand,
-// in an isolated container, 2026-09-19) to print a URL to stdout and then
-// block reading an auth code from stdin, which is exactly the shape this
-// package's existing stdout-pump / stdin-write session machinery already
-// handles - no new subprocess mechanism needed, just a different command.
-var defaultAuthLoginCommand = ProviderCommand{Name: "claude", Args: []string{"auth", "login"}}
-
-// StartAuthLogin spawns the configured auth-login command (see
-// defaultAuthLoginCommand) as a session with no associated project - it's a
-// one-time, per-machine admin action, not a coding session, so it isn't
-// scoped to any project directory. The resulting Session behaves exactly
-// like a project session for polling/transcript/SendMessage purposes: the
-// OAuth URL the CLI prints shows up as an "agent" message, and the code you
-// paste back on the phone goes through the ordinary SendMessage -> stdin
-// path. dir is the working directory the command runs in (does not need to
-// be a registered project - typically the runner's own home directory).
-func (m *Manager) StartAuthLogin(dir string) (Session, error) {
-	m.mu.Lock()
-	if _, ok := m.providers[authLoginProvider]; !ok {
-		if m.providers == nil {
-			m.providers = map[string]ProviderCommand{}
-		}
-		m.providers[authLoginProvider] = defaultAuthLoginCommand
-	}
-	m.mu.Unlock()
-	return m.start("", authLoginProvider, dir)
 }
 
 func (m *Manager) start(projectID, provider, dir string) (Session, error) {
@@ -558,42 +520,6 @@ func (m *Manager) lookup(sessionID string) (*record, error) {
 		return nil, fmt.Errorf("%w: %q", ErrSessionNotFound, sessionID)
 	}
 	return rec, nil
-}
-
-// PurgeFinishedBefore drops finished/error sessions that finished before
-// cutoff, delegating the keep/drop decision to the history package. It
-// returns the number of sessions removed.
-func (m *Manager) PurgeFinishedBefore(cutoff time.Time) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	infos := make([]history.SessionInfo, 0, len(m.sessions))
-	for id, rec := range m.sessions {
-		rec.mu.Lock()
-		info := history.SessionInfo{ID: id, State: rec.data.State}
-		if rec.data.FinishedAt != nil {
-			if t, err := time.Parse(time.RFC3339, *rec.data.FinishedAt); err == nil {
-				info.FinishedAt = &t
-			}
-		}
-		rec.mu.Unlock()
-		infos = append(infos, info)
-	}
-
-	kept := history.PurgeOlderThan(infos, cutoff)
-	keep := make(map[string]bool, len(kept))
-	for _, k := range kept {
-		keep[k.ID] = true
-	}
-
-	removed := 0
-	for id := range m.sessions {
-		if !keep[id] {
-			delete(m.sessions, id)
-			removed++
-		}
-	}
-	return removed
 }
 
 func (r *record) appendMessage(msg Message) {

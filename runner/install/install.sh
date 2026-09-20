@@ -94,11 +94,10 @@ fi
 
 echo "3/6 installing binary to /opt/relay/bin/relay-runner"
 # NOT /usr/local/bin: the service runs as $RUN_USER, not root (see
-# relay-runner.service), and internal/selfupdate replaces this binary from
-# that same non-root user. /usr/local/bin is root-owned/root-write-only, so
-# self-update would silently and permanently fail there. /opt/relay/bin is
-# owned by $RUN_USER instead - a fixed path (no home-dir specifier
-# uncertainty in the systemd unit) that the runner can actually write to.
+# relay-runner.service). /usr/local/bin is root-owned/root-write-only, so an
+# upgrade there always needs root. /opt/relay/bin is owned by $RUN_USER
+# instead - a fixed path (no home-dir specifier uncertainty in the systemd
+# unit) that the run user can actually write to.
 mkdir -p /opt/relay/bin
 install -m 0755 "$BINARY" /opt/relay/bin/relay-runner
 chown -R "$RUN_USER":"$RUN_USER" /opt/relay
@@ -138,8 +137,8 @@ echo "6/6 enabling + restarting relay-runner@$RUN_USER"
 # updated - it keeps executing the OLD binary from its already-open (and by
 # now possibly deleted-on-disk, e.g. old /usr/local/bin/relay-runner)
 # inode. A rerun of this script must always end up actually running what it
-# just installed - found this the hard way when self-update's own binary
-# swap never took effect because of exactly this.
+# just installed - found this the hard way when a binary swap never took
+# effect because of exactly this.
 systemctl enable "relay-runner@$RUN_USER"
 systemctl restart "relay-runner@$RUN_USER"
 

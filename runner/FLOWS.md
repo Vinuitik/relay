@@ -1,25 +1,19 @@
 # Runner flows
 
-Files: main.go, config.go, project.go, session.go, history.go, compose.go, api.go, wol.go,
-localmac.go, registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go,
-selfupdate.go, uptime.go
+Files: main.go, config.go, project.go, session.go, compose.go, api.go,
+registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go
 
 ## Startup
 
 main() → config.Load() → generates ~/.relay/key.txt + projects.json if absent, prints key once
 → **`-qr` flag check**: if present, `printPairingQR` and exit, skipping everything below (see
-"Install bootstrap") → **self-update check** (`selfupdate.CheckOnce`, unless
-`RELAY_AUTO_UPDATE_ENABLED=false` - see "Self-update"); an update found here exits before the
-server ever starts → api.NewServer(project.Registry, session.Manager) →
-http.ListenAndServe(config.ListenAddr) → goroutine: time.Ticker(1h) →
-session.Manager.PurgeFinishedBefore(7d) → goroutine: `idle.NewMonitor(...).Run()` if
-`RELAY_IDLE_SUSPEND_ENABLED=true` (see "Idle-suspend") → goroutine:
-`selfupdate.RunPeriodically` (see "Self-update")
+"Install bootstrap") → api.NewServer(project.Registry, session.Manager) →
+http.ListenAndServe(config.ListenAddr) → goroutine: `idle.NewMonitor(...).Run()` if
+`RELAY_IDLE_SUSPEND_ENABLED=true` (see "Idle-suspend")
 
 To change key/projects root: config.Load() (env `RELAY_HOME`)
 To change listen address: config.Load() (env `RELAY_LISTEN_ADDR`, default 127.0.0.1:7777 —
 binds to Tailscale interface only in production, not enforced by code)
-To change purge cutoff: history.PurgeOlderThan() call site in main.go
 
 ## Request path
 
@@ -68,67 +62,17 @@ tool-use/tool-result content blocks in the transcript - only assistant text is s
 end-to-end**, likely to hit the same one-shot-vs-persistent problem claude did until someone
 actually runs it and checks.
 
-## Wake-on-LAN
-
-POST /v1/wake → api.handleWake → wol.BuildMagicPacket(mac) (6×0xFF + MAC×16, 102 bytes)
-→ wol.PacketSender.SendBroadcast → UDP broadcast to 255.255.255.255:9 (SO_BROADCAST enabled via
-  build-tagged broadcast_unix.go/broadcast_windows.go, stdlib syscall only)
-→ 202 on success, 400 on malformed MAC (before any send is attempted), 500 if the send itself fails
-
-To change the sender: `api.Server.Sender` (`wol.PacketSender` interface) — real impl is
-`wol.DefaultSender`, tests inject a fake, same pattern as `compose.Runner`.
-To change target port/broadcast address: `wol.go` constants `discardPort`/`broadcastAddr`.
-
-**Own-MAC detection for pairing** (`wol.LocalMAC`, in `localmac.go`): picks this machine's
-own real NIC's MAC to embed in the pairing QR (`printPairingQR` in `cmd/runnerd/main.go`) -
-answers "what MAC does another runner need to wake *this* machine" without the phone user
-looking it up and typing it in by hand. Heuristic: first up, non-loopback, non-virtual
-(`virtualIfacePrefixes` - skips `tailscale*`, `docker*`, `veth*`, etc.) interface that has an
-assigned IP address. Wrong on a genuinely multi-NIC machine, or a WiFi-only machine whose
-chipset doesn't support WoL at all regardless of MAC - the app's manual "Edit" affordance on
-RunnerListScreen is the fallback either way. To change what counts as virtual: `localmac.go`'s
-`virtualIfacePrefixes`.
-
-**Same-LAN detection for wake-via auto-match** (`wol.LocalSubnet`, in `localmac.go`): shares
-`LocalMAC`'s interface-picking heuristic (factored into `pickLANInterface`) but reports the
-interface's IPv4 network in CIDR form instead of its hardware address - e.g. `192.168.1.0/24`.
-Surfaced via `GET /v1/runner/info`'s `localSubnet` field. When a new runner is paired, the app
-fetches this field from every already-known, reachable runner and compares it against the new
-runner's own; exactly one match auto-sets `wakeViaRunnerId` on both runners, replacing the manual
-"Edit" step (see android/FLOWS.md "Wake-on-LAN"). Same fallback as the MAC case: detection
-failure, or zero/multiple matching runners, just skips the auto-fill and leaves manual Edit as
-the fallback - never guesses wrong silently.
-
-**Bug found and fixed (2026-09-19): `pickLANInterface` returned `addrs[0]` without checking IP
-version.** On Windows, an interface's `Addrs()` commonly lists its IPv6 link-local address
-(`fe80::...`) before its IPv4 one - confirmed by hand on a real laptop (`WiFi` interface, real
-addr `192.168.1.40/24`, but `addrs[0]` was `fe80::.../64`). `LocalSubnet`'s `ipNet.IP.To4() ==
-nil` check then always failed, so `GET /v1/runner/info` silently omitted `localSubnet` on every
-Windows runner, which meant `WakeViaMatcher` could never auto-match a Windows runner against
-anything, even a genuine same-LAN pair (this is exactly what happened during testing: laptop and
-server were on the same `192.168.1.0/24` network the whole time, but auto-match silently never
-fired because the laptop's half of the comparison was always missing - the phone app then showed
-"wake not configured" on every runner with no way to tell why). `LocalMAC` happened to keep
-working by accident - it only needed the right *interface*, not the right *address*, and
-`pickLANInterface` picked the interface correctly the whole time. Fixed via `firstIPv4Addr`,
-which searches an interface's address list for one that's actually IPv4 instead of trusting list
-order - see `TestFirstIPv4AddrSkipsLeadingIPv6` in `localmac_test.go`.
-**Runners paired before this fix keep whatever `wakeMac`/`wakeViaRunnerId` they got (likely
-none, on Windows) - re-pair (or use "Wake settings") to pick up a corrected auto-match.**
-
 ## Idle-suspend (S5) - the other half of the sleep path
 
-**This is the missing half of ARCHITECTURE.md's "Sleep path" line** - WoL (`internal/wol`)
-wakes a machine back up; `internal/idle` is what puts it to sleep (S5, full poweroff) in the
-first place. The two only make sense together: once a runner powers itself off via this
-package, the *only* way back is a WoL magic packet sent from another LAN-local peer's
-`/v1/wake` (see the Wake-on-LAN section above and ARCHITECTURE.md "Relay device") - there is
-no self-wake. Cross-reference both sections if you're touching either.
+**This is the missing half of ARCHITECTURE.md's "Sleep path" line** - `internal/idle` is what
+puts the machine to sleep (S5, full poweroff); there is no self-wake. Waking it back up is a
+Wake-on-LAN magic packet sent from some other LAN-local device - **no longer the runner's job**
+(runners no longer wake each other; that moves to a separate Pi daemon). `internal/wol` still
+holds the magic-packet/broadcast primitives, but nothing in the runner's API calls them.
 
 main() → `idle.LoadConfig()` (env `RELAY_IDLE_SUSPEND_ENABLED`, `RELAY_IDLE_TIMEOUT`,
 `RELAY_IDLE_CHECK_INTERVAL`) → only if `Enabled` → goroutine: `idle.NewMonitor(sessions,
-idle.DefaultShutdowner, cfg).Run()` (ticker at `cfg.CheckInterval`, same wiring style as the
-history-purge ticker above, just conditionally started)
+idle.DefaultShutdowner, cfg).Run()` (ticker at `cfg.CheckInterval`, conditionally started)
 
 Each tick → `session.Manager.IdleStatus()` (busy bool, idleSince time.Time - computed from
 existing session state, not separately tracked; see its doc comment in session.go for why the
@@ -146,17 +90,16 @@ itself errors (command failed to run), `triggered` stays false and the next tick
 see `Monitor.tick`'s doc comment in idle.go.
 
 Right before calling `Shutdown()`, `tick` invokes `Monitor.BeforeShutdown` if set - wired in
-main.go to (1) `uptimeStore.Close()` (see "Uptime tracking" below), and (2) a best-effort
-`notifier.NotifyRunnerSuspending` push to every registered device (data type
-`runner_suspending`, see shared/API.md "FCM message data.type values"). Both are fire-and-forget:
-a failure in either is logged only, never blocks or cancels the actual shutdown - "if lost, then
+main.go to a best-effort `notifier.NotifyRunnerSuspending` push to every registered device (data
+type `runner_suspending`, see shared/API.md "FCM message data.type values"). Fire-and-forget:
+a failure is logged only, never blocks or cancels the actual shutdown - "if lost, then
 lost" is the deliberate choice here (no queue, no retry, no delivery guarantee), since guaranteed
 delivery would mean building real message durability for a notification whose entire value is
 "heads up, right now."
 
 **Manual suspend** (POST /v1/suspend, `api.handleSuspend`): the "I'm done, don't make me wait out
 the timeout" counterpart to the automatic path above. Shares the same `beforeShutdown` closure
-(uptime close + best-effort push) and the same `idle.DefaultShutdowner`, but is invoked directly
+(best-effort push) and the same `idle.DefaultShutdowner`, but is invoked directly
 from the API instead of through `Monitor`'s ticker. Two independent refusals, checked before
 anything happens: `anyBusy()` (never suspend out from under a running session, `409` if busy -
 this check applies regardless of the flag below) and `srv.Suspend == nil` (`503`) - `main.go` only
@@ -165,28 +108,6 @@ gate rather than making a manual trigger always available. Reasoning: it's still
 poweroff` on this host" either way, the same real action the idle package's doc comment already
 warns never to enable outside an intentional deployment - a manual button doesn't change that
 risk, so it shouldn't get its own, looser gate.
-
-## Uptime tracking
-
-Files: internal/uptime/uptime.go
-
-`main()` → `uptime.Open(~/.relay/uptime.json)` at startup → appends a new open
-`{start: now}` interval; if the last run's interval was left open (crash, power loss - it never
-got to call `Close`), that orphaned interval is closed at load time using the current time as its
-`end` (undercounts that one interval slightly, accepted per package doc - **this is deliberately
-a short-term buffer, not the dashboard's source of truth**, see next paragraph) →
-`idle.Monitor.BeforeShutdown` calls `uptimeStore.Close()` on a clean idle-suspend, sealing that
-interval accurately instead of relying on the crash-recovery fallback.
-
-GET /v1/uptime → `api.handleUptime` → `s.Uptime.List()` → `200 UptimeInterval[]`.
-
-**Why the runner only keeps ~14 days (`uptime.MaxAge`), not forever:** a sleeping runner is
-exactly the runner you can't ask for history, so the *phone* app is the one that persists a
-durable weekly view - it pulls this endpoint whenever a runner happens to be reachable and keeps
-its own merged copy locally (see android/FLOWS.md "Dashboard"). The runner's file is purely a
-catch-up buffer for whatever the phone hasn't synced yet; purged the same way session history is.
-
-To change the buffer window: `internal/uptime/uptime.go` (`MaxAge`).
 
 To change the idle threshold: env `RELAY_IDLE_TIMEOUT` (Go duration string, e.g. "45m";
 default `idle.DefaultTimeout` = 3m — a starting heuristic, tune once real usage data exists)
@@ -214,38 +135,6 @@ drive letters `A:\`-`Z:\` on Windows via `os.Stat` probing - stdlib only, no cgo
 To change what's excluded from a browse listing (e.g. dotfiles): `project.go`'s `BrowseDir`.
 To change root listing: `roots_unix.go` / `roots_windows.go`.
 
-## Auth-login (headless OAuth for claude/codex CLI)
-
-Files: internal/session/session.go (`StartAuthLogin`, `authLoginProvider`,
-`defaultAuthLoginCommand`), internal/api/api.go (`handleAuthLogin`)
-
-**The problem this solves:** a deployed runner has no local browser, but `claude auth login`
-still wants one. Confirmed by hand (2026-09-19, isolated Docker container, `node:20-slim` +
-`npm install -g @anthropic-ai/claude-code`) that headless `claude auth login` prints an OAuth
-URL to stdout (`Opening browser to sign in… If the browser didn't open, visit: https://...`)
-then blocks reading a pasted authorization code from stdin, retrying with a fresh URL on an
-invalid code rather than exiting - i.e. exactly the shape `session.Manager`'s existing
-stdout-pump / stdin-write session machinery already handles. No new subprocess mechanism was
-needed, just a different command run through it.
-
-`POST /v1/auth/login` → `Sessions.StartAuthLogin(s.Home)` → registers a synthetic
-`auth-login` pseudo-provider (not a real project's CLI agent) mapped to `defaultAuthLoginCommand`
-(`claude auth login`), then calls the same internal `Manager.start(projectID="", provider,
-dir=s.Home)` every project session uses → returns a `Session` with `projectId: ""`.
-
-That session is polled/messaged through the **same generic endpoints** as any project session -
-`GET /v1/sessions/{id}` (the OAuth URL shows up as an "agent" `Message`) and
-`POST /v1/sessions/{id}/message` (writes the pasted code to the CLI's stdin) - neither is
-scoped by project, so no new session-handling code was needed beyond the start path.
-
-To change the command: env `RELAY_PROVIDER_AUTH_LOGIN` (same `RELAY_PROVIDER_<NAME>` convention
-every other provider uses, resolved via `resolveProvider`), e.g. to point at `codex login`
-instead, or to test with a fake command.
-
-**Not yet done:** where `claude auth login` actually persists credentials on a headless Linux
-box (file vs. OS keychain call that might behave differently with no desktop session) hasn't
-been checked - do that before relying on this against the real server.
-
 ## File viewing (read-only, scoped to a project dir)
 
 Files: internal/project/project.go (`ResolvePath`), internal/api/api.go (`handleListFiles`,
@@ -264,20 +153,6 @@ endpoint exists or is planned for v1.
 
 To change the size cap: `internal/api/api.go` (`maxViewableFileSize`).
 To change path-escape rules: `internal/project/project.go` (`Registry.ResolvePath`).
-
-## Device registration + notify-on-finish
-
-## Bulk container start/stop (per-runner, all projects)
-
-POST /v1/containers/start-all / POST /v1/containers/stop-all → api.handleContainersStartAll /
-handleContainersStopAll → `runComposeAll` loops `s.Projects.List()`, calling `compose.Start`/
-`compose.Stop` per project dir → returns `[{projectId, ok, error?}]`, one entry per project.
-Best-effort by design: one project without a compose file (or docker not reachable) must not
-block the others - mirrors `runCompose`'s per-project error shape but as a list instead of a
-single error, since there's no single "the request failed" outcome across N independent
-projects.
-
-To change: `internal/api/api.go` (`runComposeAll`).
 
 ## Device registration + notify-on-finish
 
@@ -318,9 +193,8 @@ auto-filling `RELAY_LISTEN_ADDR` in `/etc/relay/runner.env` from the
 Tailscale IP → prints a boxed summary with the real runner key + address
 read straight from `key.txt`, then (if both a key and a Tailscale IP exist)
 runs `relay-runner -qr` to print a terminal QR code encoding
-`relay://host:port?key=...&mac=...` (mac from `wol.LocalMAC`, omitted if
-detection fails) — scan it in the app instead of typing 64 hex chars and a
-MAC address by hand.
+`relay://host:port?key=...` — scan it in the app instead of typing 64 hex
+chars by hand.
 
 **Login is NOT automated, by necessity, not oversight.** `tailscale up`
 still needs a human to open a URL in a browser somewhere - no amount of
@@ -334,39 +208,6 @@ when run headless (no local browser) - untested as of 2026-09-14, verify on
 the real server before building the relay.
 
 To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
-
-## Self-update
-
-Files: internal/selfupdate/selfupdate.go, cmd/runnerd/main.go,
-install/relay-runner.service, .github/workflows/runner-release.yml
-
-`main()` → `selfupdate.CheckOnce(version)` at startup → if a newer
-`runner-<sha>` release exists on GitHub, downloads the binary for its own
-OS/arch → verifies against `checksums.txt` → atomically renames over its
-own executable → exits 0 → systemd (`Restart=always`) brings the new
-binary up. Then `selfupdate.RunPeriodically` repeats the check every
-`RELAY_UPDATE_CHECK_INTERVAL` (default 10m) in a goroutine for as long as
-the process runs.
-
-**Pull, not push, deliberately.** The server checks GitHub over plain
-HTTPS outbound; nothing reaches in, and no SSH key to this machine is
-stored anywhere in GitHub. See the package doc comment in selfupdate.go for
-the full reasoning (a leaked push-deploy SSH secret would mean remote code
-execution on this box; a compromised GitHub release can only do what the
-runner already does).
-
-`version` is `"dev"` on a plain `go build` - self-update is a hard no-op for
-that (`devVersion` check in `CheckOnce`), so a developer's local build is
-never silently overwritten. Only `.github/workflows/runner-release.yml`
-builds with a real version (`-ldflags -X main.version=runner-<short-sha>`)
-and publishes it as a GitHub Release with `checksums.txt` attached - that's
-what a deployed runner is actually polling for.
-
-To disable on a given machine: `RELAY_AUTO_UPDATE_ENABLED=false` in
-`/etc/relay/runner.env`, then `systemctl restart relay-runner@<user>`.
-
-To change the check interval: `RELAY_UPDATE_CHECK_INTERVAL=<duration>`
-(e.g. `1h`), same env file.
 
 ## Auto-restart on machine restart (both platforms)
 
@@ -444,9 +285,10 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   Handled via two build-tagged files (`broadcast_unix.go`, `broadcast_windows.go`) that reach
   into the raw socket fd with `syscall.SetsockoptInt`, stdlib only (no cgo, no external dep) —
   matches the "single static binary, cross-compiles Linux/Windows" decision in ARCHITECTURE.md.
-  A WoL broadcast never crosses a router — it only reaches the LAN segment the *runner sending
-  it* is physically on, which is the entire reason `/v1/wake` must be called on a LAN-local
-  runner, never the target machine itself (see ARCHITECTURE.md "Relay device").
+  A WoL broadcast never crosses a router — it only reaches the LAN segment the sender is
+  physically on, which is why waking belongs to a device that is always on that segment (see
+  ARCHITECTURE.md "Relay device"). **Nothing in the runner calls these primitives today** — the
+  runner-to-runner `/v1/wake` endpoint was removed; they're kept for the separate Pi daemon.
 - **Device registrations are in-memory only** (`notify.Registry`, mutex-guarded map keyed by
   FCM token) — same limitation as `session.Manager`: a runner restart loses all registered
   devices, and the phone app must re-register (it already does this on token refresh per
@@ -479,9 +321,9 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   section explicitly resolved this: true near-zero power was the motivating pain, at the cost
   of a ~30-60s boot to come back — and per that doc, containers on the box need
   `restart: always` so they come back up automatically after boot. `internal/idle` has no way
-  to bring the machine back itself once it's off; that's `internal/wol`'s job, triggered
-  externally via `/v1/wake` from another LAN-local runner. The two features are two halves of
-  one loop and are meaningless without each other.
+  to bring the machine back itself once it's off - that needs an external WoL magic packet from
+  a LAN-local device (a separate Pi daemon, not another runner). **Until that daemon exists,
+  enabling idle-suspend means the machine stays off until someone powers it on by hand.**
 - **The idle check interval and threshold are both plain durations, not adaptive.** No
   backoff, no jitter, no "only check when otherwise idle anyway" optimization — a 1-minute
   ticker forever once enabled. Fine given how cheap `session.Manager.IdleStatus()` is (just
@@ -493,35 +335,17 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   stale, not safer. If Tailscale ever ships a breaking client change this assumption needs
   revisiting, but as of 2026-09-14 "always latest" is the right default for a single-user
   deployment like this one.
-- **Self-update replaces the binary on-disk while it's still the running process's
-  executable.** Works because Linux keeps a running process's already-open inode alive
-  after the file at that path is renamed out from under it - the old process finishes
-  serving whatever it's doing on the old inode, then exits and systemd starts the new
-  file. This does NOT reliably work on Windows (NTFS commonly locks a running exe's
-  file) - self-update's `install()` will likely just fail-and-retry-next-interval there.
-  Not a blocker: Windows was always the dev/laptop-testing target, not a deployed
-  self-updating runner (see ARCHITECTURE.md - the actual deployment target is Linux).
 - **Rerunning install.sh always ends in `systemctl restart`, never just `enable --now`.**
   Caught during testing: on an already-active service, `enable --now` is a no-op that does
   NOT pick up a binary step 3 just overwrote - the process keeps executing its old,
   already-open inode (even if that file was deleted from disk, e.g. the old
-  `/usr/local/bin/relay-runner`). Self-update updated the real deployed binary correctly,
-  and it sat there completely inert - only found out because the runner's own logs showed
-  zero selfupdate activity. Data over speculation: `journalctl` + `ps -o cmd -C
+  `/usr/local/bin/relay-runner`). Data over speculation: `journalctl` + `ps -o cmd -C
   relay-runner` (its cmdline points at a path `ls` says no longer exists) confirmed it
   before this was "fixed" without evidence.
 - **The binary lives at `/opt/relay/bin/relay-runner`, owned by the run user, not
-  `/usr/local/bin`.** Caught during testing: the service runs as a non-root user
-  (`User=%i`), and self-update replaces its own binary from that same user - a
-  root-owned `/usr/local/bin` would make self-update permanently, silently unable to
-  write there. install.sh removes any stale binary left at the old `/usr/local/bin`
-  location from before this fix.
-- **A GitHub release with a corrupted/malicious binary is the entire trust boundary**
-  for self-update. `checksums.txt` only proves the downloaded bytes match what the CI
-  workflow published - it does NOT protect against a compromised GitHub account/token
-  publishing a bad release in the first place. Same trust level as `curl | sh`-installing
-  any other tool; acceptable for a single-user deployment, worth revisiting (signed
-  releases, a pinned public key) before this is ever multi-tenant.
+  `/usr/local/bin`.** The service runs as a non-root user (`User=%i`), so keeping the
+  binary under a user-owned directory means an upgrade never needs root. install.sh
+  removes any stale binary left at the old `/usr/local/bin` location.
 - **The runner has one external dependency: `github.com/mdp/qrterminal/v3`**, added
   specifically for `-qr` (terminal QR code rendering for pairing - see "Install
   bootstrap"). Everything else stayed stdlib-only by design (see below); this was a
@@ -543,12 +367,10 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Listen address | `internal/config/config.go` (env `RELAY_LISTEN_ADDR`) |
 | Provider → command mapping | `internal/session/session.go` (`resolveProvider`, `autoDetectProviders`, env `RELAY_PROVIDER_<NAME>` override) |
 | claude stream-json codec (encode/decode) | `internal/session/session.go` (`encodeClaudeStreamJSONUserMessage`, `decodeClaudeStreamJSONLine`, `codecClaudeStreamJSON`) |
-| Session purge cutoff | `cmd/runnerd/main.go` ticker + `internal/history/history.go` |
 | Auth header check | `internal/api/api.go` middleware |
 | Docker compose invocation | `internal/compose/compose.go` |
-| Bulk container start/stop across all projects | `internal/api/api.go` (`runComposeAll`) |
 | HTTP endpoint routing | `internal/api/api.go` (must match `shared/API.md`) |
-| WoL magic packet construction | `internal/wol/wol.go` (`BuildMagicPacket`) |
+| WoL primitives (unused by the runner API today) | `internal/wol/wol.go` (`BuildMagicPacket`) |
 | WoL broadcast send / SO_BROADCAST | `internal/wol/broadcast_unix.go`, `broadcast_windows.go` |
 | WoL target port / broadcast address | `internal/wol/wol.go` constants |
 | Device registration (dedupe by token) | `internal/notify/registry.go` (`Registry.Register`) |
@@ -559,12 +381,6 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Idle timeout / check interval | env `RELAY_IDLE_TIMEOUT`, `RELAY_IDLE_CHECK_INTERVAL` → `internal/idle/idle.go` (`LoadConfig`, `DefaultTimeout`, `DefaultCheckInterval`) |
 | Pairing QR content/rendering | `cmd/runnerd/main.go` (`printPairingQR`, flag `-qr`) |
 | Tailscale / Node / CLI bootstrap | `runner/install/install.sh` steps 1-2 |
-| Self-update enable/interval | env `RELAY_AUTO_UPDATE_ENABLED`, `RELAY_UPDATE_CHECK_INTERVAL` → `cmd/runnerd/main.go` |
-| Self-update release source/logic | `internal/selfupdate/selfupdate.go`, `.github/workflows/runner-release.yml` |
-| Own-MAC detection for pairing QR | `internal/wol/localmac.go` (`LocalMAC`, `virtualIfacePrefixes`) |
-| Same-LAN subnet detection for wake-via auto-match | `internal/wol/localmac.go` (`LocalSubnet`, `pickLANInterface`), `internal/api/api.go` (`runnerInfo.LocalSubnet`) |
-| Uptime interval recording / buffer window | `internal/uptime/uptime.go` (`Open`, `Close`, `MaxAge`) |
-| Uptime endpoint | `internal/api/api.go` (`handleUptime`) |
 | Best-effort "runner suspending" push | `cmd/runnerd/main.go` (`Monitor.BeforeShutdown` wiring), `internal/notify/fcm.go` (`NotifyRunnerSuspending`) |
 | Manual suspend endpoint / busy refusal / enable gate | `internal/api/api.go` (`handleSuspend`, `anyBusy`, `Server.Suspend`), `cmd/runnerd/main.go` (`srv.Suspend` wiring) |
 | Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
@@ -576,6 +392,4 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Register existing folder as a project | `internal/project/project.go` (`RegisterExisting`), `internal/api/api.go` (`handleCreateProject`) |
 | Unscoped directory browse (project picking) | `internal/project/project.go` (`BrowseDir`), `internal/api/api.go` (`handleBrowse`) |
 | Filesystem roots listing | `internal/project/roots_unix.go`, `roots_windows.go` (`listRoots`) |
-| Auth-login pseudo-session / command | `internal/session/session.go` (`StartAuthLogin`, `defaultAuthLoginCommand`) — env `RELAY_PROVIDER_AUTH_LOGIN` |
-| Auth-login endpoint | `internal/api/api.go` (`handleAuthLogin`) |
 | Laptop auto-start at logon | `install/start-relay-runner.ps1` + Startup-folder `.lnk` (see "Auto-restart on machine restart") |
