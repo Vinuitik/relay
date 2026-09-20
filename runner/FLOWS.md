@@ -29,11 +29,36 @@ POST /v1/projects/{id}/sessions → session.Manager.Start(projectID, provider)
   **auto-detect**: for `"claude"`/`"codex"` specifically, `exec.LookPath` on PATH right now - no
   env var needed at all if the CLI is installed where the runner's user can see it (see
   `autoDetectProviders`) → os/exec.Command spawned, scoped to project dir
-→ stdout/stderr scanner goroutine appends to in-memory transcript (role "agent")
-→ state: busy → idle/finished/error
+→ stdout/stderr scanner goroutine (`session.Manager.pump`) appends to in-memory transcript (role "agent")
+→ initial state depends on codec: raw-codec providers start `busy` (process spawned, no
+  per-turn signal, so busy until it exits - unchanged, original behavior); a claude-stream-json
+  provider starts `idle` (long-lived process, waiting for the first message)
 
-POST /v1/sessions/{id}/message → session.Manager.SendMessage → io.WriteString to subprocess stdin
-POST /v1/sessions/{id}/stop → session.Manager.Stop → kill process, state → finished
+**Per-turn busy/idle (claude-stream-json only).** The claude CLI process stays alive across
+many turns, so "busy" can't mean "process running" the way it does for a raw-codec provider -
+it has to track *this turn*:
+POST /v1/sessions/{id}/message → session.Manager.SendMessage → io.WriteString to subprocess
+stdin, state → `busy` (a no-op for raw-codec, which is already busy)
+→ agent replies, then emits a stream-json `"result"` event on stdout - the wire format's
+  end-of-turn marker (previously dropped/ignored entirely, see `decodeClaudeStreamJSONLine`'s
+  history) - `pump` detects it via `decodeClaudeStreamJSONEventType` and calls
+  `session.Manager.finishTurn`: state → `idle`, and `OnFinished` fires once for that turn (this
+  is what actually sends the job-done push - see "Device registration + notify-on-finish" below;
+  before this, OnFinished only fired on process exit, which for a long-lived claude session could
+  be never)
+→ raw-codec providers have no such signal and are unaffected: still busy until the process exits
+
+POST /v1/sessions/{id}/stop → session.Manager.Stop → kill process, state → `finished`
+(both codecs)
+Process exit on its own (not via Stop) → `session.Manager.awaitExit` → state → `finished` (clean
+exit) or `error` (non-zero exit) - unchanged for both codecs; `OnFinished` fires again here too,
+but only on `finished`, never `error`
+
+`session.Manager.IdleStatus()` (used by `internal/idle` and `api.anyBusy`) reads this per-record
+state: a session is busy only while `StateBusy`; `StateIdle` (between turns, process still alive)
+never counts as busy, and each record's `idleSince` (the most recent moment it stopped being
+busy - a completed turn, an exit, or Stop) feeds the runner-wide idle-since calculation used to
+decide when to auto-suspend.
 
 **No manual setup needed for claude/codex** as long as the CLI is on PATH - confirmed this is
 exactly how `os/exec.Command` already resolves a bare name with no path separators, the same
@@ -55,39 +80,55 @@ history if you need the exact request/response). `autoDetectProviders["claude"]`
 the flags and `ProviderCommand.Codec = codecClaudeStreamJSON`; `SendMessage` encodes outgoing
 text via `encodeClaudeStreamJSONUserMessage`, `pump` decodes incoming lines via
 `decodeClaudeStreamJSONLine` (only `"assistant"`-type events' text content survives into the
-transcript - `"system"`/`"rate_limit_event"`/`"result"` events and anything that fails to parse
-as JSON are dropped, never shown as raw JSON on the phone). `[NOT IMPLEMENTED]`: surfacing
+transcript - `"system"`/`"rate_limit_event"` events and anything that fails to parse as JSON are
+dropped, never shown as raw JSON on the phone; `"result"` is handled separately, not dropped -
+see "Per-turn busy/idle" above). `[NOT IMPLEMENTED]`: surfacing
 tool-use/tool-result content blocks in the transcript - only assistant text is shown for v1.
 "codex" has no confirmed equivalent wire format yet and stays raw text/no-args - **untested
 end-to-end**, likely to hit the same one-shot-vs-persistent problem claude did until someone
 actually runs it and checks.
 
-## Idle-suspend (S5) - the other half of the sleep path
+## Idle-suspend (sleep) - the other half of the sleep path
 
 **This is the missing half of ARCHITECTURE.md's "Sleep path" line** - `internal/idle` is what
-puts the machine to sleep (S5, full poweroff); there is no self-wake. Waking it back up is a
-Wake-on-LAN magic packet sent from some other LAN-local device - **no longer the runner's job**
-(runners no longer wake each other; that moves to a separate Pi daemon). `internal/wol` still
-holds the magic-packet/broadcast primitives, but nothing in the runner's API calls them.
+puts the machine to sleep (S3 suspend-to-RAM on Linux, Modern Standby on Windows - **not** S5
+full poweroff; the project switched from S5 because the power delta vs. S3 is only ~1W, while
+S5 costs a ~60s boot back and is far more fragile to wake reliably); there is no self-wake.
+Waking it back up is a Wake-on-LAN magic packet sent from some other LAN-local device - **no
+longer the runner's job** (runners no longer wake each other; that moves to a separate Pi
+daemon). `internal/wol` still holds the magic-packet/broadcast primitives, but nothing in the
+runner's API calls them.
 
 main() → `idle.LoadConfig()` (env `RELAY_IDLE_SUSPEND_ENABLED`, `RELAY_IDLE_TIMEOUT`,
 `RELAY_IDLE_CHECK_INTERVAL`) → only if `Enabled` → goroutine: `idle.NewMonitor(sessions,
 idle.DefaultShutdowner, cfg).Run()` (ticker at `cfg.CheckInterval`, conditionally started)
 
 Each tick → `session.Manager.IdleStatus()` (busy bool, idleSince time.Time - computed from
-existing session state, not separately tracked; see its doc comment in session.go for why the
-max `FinishedAt` across sessions is equivalent to "when did busy-count last hit zero") → if
-busy, skip → if `time.Since(idleSince) < cfg.Timeout`, skip → else `idle.Shutdowner.Shutdown()`
+existing session state, not separately tracked; see its doc comment in session.go - each
+session record now tracks its own `idleSince`, since a claude-stream-json session goes
+busy→idle→busy per turn rather than only busy→terminal, so the runner-wide idle-since is the max
+of all records' idleSince, not simply the latest `FinishedAt`) → if busy, skip → if
+`time.Since(idleSince) < cfg.Timeout`, skip → else `idle.Shutdowner.Shutdown()`
 
-Shutdowner is build-tagged like `wol.PacketSender`: `shutdown_unix.go` (`systemctl poweroff`,
-falling back to `shutdown -h now` if systemctl isn't on PATH) / `shutdown_windows.go`
-(`shutdown /s /t 0`). Real impl is `idle.DefaultShutdowner`; tests inject a fake that just
-counts calls - **a test must never invoke a real Shutdowner**.
+Shutdowner is build-tagged like `wol.PacketSender`: `shutdown_unix.go` (`systemctl suspend`) /
+`shutdown_windows.go` (`rundll32.exe powrprof.dll,SetSuspendState 0,1,0` - hibernates instead of
+suspending if hibernation is enabled on that machine). Real impl is `idle.DefaultShutdowner`;
+tests inject a fake that just counts calls - **a test must never invoke a real Shutdowner**.
+
+**Linux `systemctl suspend` needs polkit permission the runner doesn't have by default.**
+Confirmed on the real target: the runner runs as a systemd *system* service with no login
+session/logind seat, and its service user has no passwordless sudo - polkit refuses the suspend
+outright. `shutdown_unix.go`'s `Shutdown` surfaces this as a specific error naming exactly what's
+missing (a polkit rule granting `org.freedesktop.login1.suspend`, or a sudoers entry) rather than
+a bare exit status, and it never falls back to `systemctl poweroff` - that would silently
+escalate to the more disruptive S5 action this feature deliberately moved away from. Until that
+polkit rule/sudoers entry is provisioned on a deployment, every real suspend attempt there will
+fail loudly (logged by `Monitor.tick`) rather than actually suspending.
 
 Once `Shutdown()` succeeds, the Monitor sets an internal `triggered` flag and never calls it
-again for that process's lifetime (a poweroff should end the process anyway). If `Shutdown()`
-itself errors (command failed to run), `triggered` stays false and the next tick retries -
-see `Monitor.tick`'s doc comment in idle.go.
+again for that process's lifetime. If `Shutdown()` itself errors (command failed to run, e.g.
+the polkit gap above), `triggered` stays false and the next tick retries - see `Monitor.tick`'s
+doc comment in idle.go.
 
 Right before calling `Shutdown()`, `tick` invokes `Monitor.BeforeShutdown` if set - wired in
 main.go to a best-effort `notifier.NotifyRunnerSuspending` push to every registered device (data
@@ -104,10 +145,14 @@ from the API instead of through `Monitor`'s ticker. Two independent refusals, ch
 anything happens: `anyBusy()` (never suspend out from under a running session, `409` if busy -
 this check applies regardless of the flag below) and `srv.Suspend == nil` (`503`) - `main.go` only
 sets `srv.Suspend` when `idleCfg.Enabled` is true, deliberately reusing idle-suspend's own opt-in
-gate rather than making a manual trigger always available. Reasoning: it's still "run `systemctl
-poweroff` on this host" either way, the same real action the idle package's doc comment already
-warns never to enable outside an intentional deployment - a manual button doesn't change that
-risk, so it shouldn't get its own, looser gate.
+gate rather than making a manual trigger always available. Reasoning: it's still "suspend this
+host" either way, the same real action the idle package's doc comment already warns never to
+enable outside an intentional deployment - a manual button doesn't change that risk, so it
+shouldn't get its own, looser gate.
+
+`api.anyBusy()` (shared by `handleRunnerInfo`'s `busy` field and `handleSuspend`'s refusal) only
+counts `session.StateBusy` - a claude-stream-json session sitting `StateIdle` between turns
+(process still alive, waiting for the next message) never blocks a suspend.
 
 To change the idle threshold: env `RELAY_IDLE_TIMEOUT` (Go duration string, e.g. "45m";
 default `idle.DefaultTimeout` = 3m — a starting heuristic, tune once real usage data exists)
@@ -270,7 +315,9 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 - **Sessions are in-memory only** (a `sync.Mutex`-guarded map in session.Manager). A runner
   restart loses all session state and transcripts — no disk persistence. Acceptable for this
-  milestone; revisit if restarts become common (e.g. after S5 suspend/resume cycles).
+  milestone; revisit if restarts become common. Note this is a *process* restart, not a suspend
+  cycle — idle-suspend now sleeps (S3/Modern Standby) rather than powering off, so RAM (and this
+  in-memory state) survives a normal idle-suspend/wake round-trip; only an actual reboot loses it.
 - **Project registry persists to disk** (`projects.json`), sessions do not — asymmetric by
   design for this milestone, not an oversight.
 - **compose.Runner is an interface** specifically so `docker compose` calls are fakeable in
@@ -312,18 +359,19 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   path (env unset / file missing / malformed) is covered by `internal/notify`'s tests.
 - **Idle-suspend is disabled by default and MUST stay that way unless a deployment explicitly
   wants it.** Setting `RELAY_IDLE_SUSPEND_ENABLED=true` on a dev machine, in CI, or in any
-  Docker container running `runnerd` will genuinely try to run `systemctl poweroff` /
-  `shutdown -h now` / `shutdown /s /t 0` against whatever host/container can reach that
-  command — there is no sandboxing inside `internal/idle` itself, the env-var gate in
-  `cmd/runnerd/main.go` is the only thing standing between "idle" and "machine off." Never
-  enable it outside a real, intentional bare-metal-or-VM runner deployment.
-- **S5 means fully powered off, not sleep/hibernate (S3).** ARCHITECTURE.md's "Open questions"
-  section explicitly resolved this: true near-zero power was the motivating pain, at the cost
-  of a ~30-60s boot to come back — and per that doc, containers on the box need
-  `restart: always` so they come back up automatically after boot. `internal/idle` has no way
-  to bring the machine back itself once it's off - that needs an external WoL magic packet from
-  a LAN-local device (a separate Pi daemon, not another runner). **Until that daemon exists,
-  enabling idle-suspend means the machine stays off until someone powers it on by hand.**
+  Docker container running `runnerd` will genuinely try to run `systemctl suspend` /
+  `rundll32.exe powrprof.dll,SetSuspendState 0,1,0` against whatever host/container can reach
+  that command — there is no sandboxing inside `internal/idle` itself, the env-var gate in
+  `cmd/runnerd/main.go` is the only thing standing between "idle" and the machine actually
+  suspending. Never enable it outside a real, intentional bare-metal-or-VM runner deployment.
+- **Suspend means S3/Modern Standby (sleep), not S5 poweroff.** The project switched away from
+  S5 — the power delta between S3 and S5 is only ~1W, while S5 costs a ~30-60s boot to come back
+  and is far more fragile to wake reliably. `internal/idle` has no way to bring the machine
+  back itself once asleep — that needs an external WoL magic packet from a LAN-local device (a
+  separate Pi daemon, not another runner). On Linux, the runner's systemd service user needs a
+  polkit rule or sudoers entry granting `systemctl suspend` (no passwordless sudo means suspend
+  fails loudly, not silently — see "Idle-suspend" above); on Windows, if hibernation is enabled
+  the machine hibernates (S4) instead of sleeping (S3) — see `shutdown_windows.go`.
 - **The idle check interval and threshold are both plain durations, not adaptive.** No
   backoff, no jitter, no "only check when otherwise idle anyway" optimization — a 1-minute
   ticker forever once enabled. Fine given how cheap `session.Manager.IdleStatus()` is (just
@@ -384,7 +432,8 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Best-effort "runner suspending" push | `cmd/runnerd/main.go` (`Monitor.BeforeShutdown` wiring), `internal/notify/fcm.go` (`NotifyRunnerSuspending`) |
 | Manual suspend endpoint / busy refusal / enable gate | `internal/api/api.go` (`handleSuspend`, `anyBusy`, `Server.Suspend`), `cmd/runnerd/main.go` (`srv.Suspend` wiring) |
 | Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
-| Shutdown command (S5) | `internal/idle/shutdown_unix.go` (`systemctl poweroff` / `shutdown -h now` fallback), `internal/idle/shutdown_windows.go` (`shutdown /s /t 0`) |
+| Shutdown/suspend command (sleep, S3/Modern Standby) | `internal/idle/shutdown_unix.go` (`systemctl suspend`), `internal/idle/shutdown_windows.go` (`rundll32.exe powrprof.dll,SetSuspendState 0,1,0`) |
+| Per-turn busy/idle tracking, turn-end detection | `internal/session/session.go` (`Manager.finishTurn`, `decodeClaudeStreamJSONEventType`, `record.idleSince`) |
 | Idle-suspend ticker wiring | `cmd/runnerd/main.go` (`idle.NewMonitor(...).Run()`, gated on `idleCfg.Enabled`) |
 | File listing / content endpoints | `internal/api/api.go` (`handleListFiles`, `handleFileContent`) |
 | Project-path escape guard | `internal/project/project.go` (`Registry.ResolvePath`) |
