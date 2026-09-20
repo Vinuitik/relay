@@ -136,14 +136,6 @@ func main() {
 	}
 }
 
-// printPairingQR renders a relay://host:port?key=... QR code to stdout as
-// terminal Unicode blocks - no image, no display server, just the SSH
-// session's own terminal. cfg.ListenAddr is whatever RELAY_LISTEN_ADDR
-// resolved to (install.sh sets it to the Tailscale IP once logged in); if
-// Tailscale isn't up yet this still prints, just with the useless loopback
-// default - the caller (install.sh) only invokes -qr after Tailscale login
-// succeeds, so that's a manual `relay-runner -qr` misuse case, not a normal
-// path.
 // pairingURI builds the relay:// URI both -qr and -qr-png encode, refusing
 // addresses the phone could never reach. See printPairingQR.
 func pairingURI(cfg *config.Config) string {
@@ -167,6 +159,8 @@ func pairingURI(cfg *config.Config) string {
 	return fmt.Sprintf("relay://%s?key=%s", cfg.ListenAddr, cfg.Key)
 }
 
+// printPairingQR renders the pairing URI to stdout as terminal Unicode
+// blocks - no image, no display server, just the SSH session's own terminal.
 func printPairingQR(cfg *config.Config) {
 	uri := pairingURI(cfg)
 	fmt.Println("Scan this in the Relay Android app (Add Runner -> Scan QR):")
