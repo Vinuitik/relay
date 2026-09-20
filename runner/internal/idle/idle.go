@@ -1,14 +1,16 @@
 // Package idle implements the runner's half of the "Sleep path" described in
 // ARCHITECTURE.md: a ticker that checks this runner's own busy/idle state
 // and, once idle past a threshold with no active agent task, suspends the
-// machine to S5 (full poweroff - not S3 sleep; see ARCHITECTURE.md's "Open
-// questions" section for why S5 was chosen).
+// machine to sleep (S3 on Linux via `systemctl suspend`, Modern Standby on
+// Windows via SetSuspendState - not S5/full poweroff; the power delta
+// between S3 and S5 is only ~1W, while S5 costs a ~60s boot and is far more
+// fragile to wake than a machine already sitting in S3).
 //
 // SAFETY: this is disabled by default (see LoadConfig / RELAY_IDLE_SUSPEND_ENABLED).
 // Do not enable it in local dev or in a container/CI - it will genuinely try
-// to power off whatever host it can reach a shutdown command on. It's a
+// to suspend whatever host it can reach a shutdown command on. It's a
 // separate opt-in gate from the idle timeout itself, so an accidental short
-// RELAY_IDLE_TIMEOUT can't cause a surprise shutdown either.
+// RELAY_IDLE_TIMEOUT can't cause a surprise suspend either.
 package idle
 
 import (
@@ -18,7 +20,7 @@ import (
 )
 
 // DefaultTimeout is how long the runner must be continuously idle (no busy
-// session) before it suspends to S5, unless overridden by RELAY_IDLE_TIMEOUT.
+// session) before it suspends to sleep, unless overridden by RELAY_IDLE_TIMEOUT.
 // This is a starting heuristic, not a measured value - kept as a named
 // constant (and overridable via env) specifically so it's easy to tune once
 // real usage shows whether 3 minutes is too eager or too lax.
@@ -133,12 +135,14 @@ func (mon *Monitor) Run() {
 // tick runs one idle check.
 //
 // Behavior after Shutdown() is called once: if it succeeds, Monitor marks
-// itself triggered and never calls Shutdown again - a successful S5
-// poweroff should end this process shortly afterward anyway, so a repeat
-// call would at best be a no-op and at worst race a machine that's already
-// mid-shutdown. If Shutdown() itself returns an error (the command failed
-// to even run), triggered is left false so the next tick retries - the
-// machine demonstrably didn't power off, so there's nothing unsafe about
+// itself triggered and never calls Shutdown again - a successful suspend
+// should freeze this process shortly afterward anyway (and it resumes from
+// exactly where it left off on wake, still triggered, which is correct -
+// the runner shouldn't immediately re-suspend itself the instant it wakes
+// and ticks again). If Shutdown() itself returns an error (the command
+// failed to even run - e.g. the polkit/sudoers gap shutdown_unix.go's
+// Shutdown documents), triggered is left false so the next tick retries -
+// the machine demonstrably didn't suspend, so there's nothing unsafe about
 // trying again. This is the simplest behavior that avoids a shutdown-retry
 // storm without silently giving up on a real failure.
 func (mon *Monitor) tick() {
@@ -154,7 +158,7 @@ func (mon *Monitor) tick() {
 		return
 	}
 
-	log.Printf("idle: no active session for >= %s, suspending to S5", mon.cfg.Timeout)
+	log.Printf("idle: no active session for >= %s, suspending to sleep", mon.cfg.Timeout)
 	if mon.BeforeShutdown != nil {
 		mon.BeforeShutdown()
 	}

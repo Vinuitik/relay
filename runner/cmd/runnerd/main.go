@@ -56,10 +56,10 @@ func main() {
 		}
 	}
 
-	// Idle-suspend (S5) is opt-in only - see internal/idle's package doc.
-	// Never starts unless RELAY_IDLE_SUSPEND_ENABLED=true is explicitly set,
-	// so a plain local run (or a container running runnerd without that env
-	// var) never tries to power its host off.
+	// Idle-suspend (sleep, not poweroff) is opt-in only - see internal/idle's
+	// package doc. Never starts unless RELAY_IDLE_SUSPEND_ENABLED=true is
+	// explicitly set, so a plain local run (or a container running runnerd
+	// without that env var) never tries to suspend its host.
 	// beforeShutdown fires a best-effort "going down" push, shared by both
 	// the automatic idle-suspend path (idle.Monitor.BeforeShutdown, called
 	// right before it invokes Shutdowner.Shutdown itself) and the manual
@@ -84,7 +84,7 @@ func main() {
 	}, devices)
 
 	if idleCfg.Enabled {
-		log.Printf("idle: suspend-to-S5 enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)
+		log.Printf("idle: suspend-to-sleep enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)
 		mon := idle.NewMonitor(sessions, idle.DefaultShutdowner, idleCfg)
 		mon.BeforeShutdown = beforeShutdown
 		go mon.Run()

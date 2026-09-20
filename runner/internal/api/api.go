@@ -31,15 +31,15 @@ type Server struct {
 	Sessions *session.Manager
 	Compose  ComposeFuncs
 	Devices  *notify.Registry
-	// Suspend, if set, powers this machine off immediately on
+	// Suspend, if set, suspends this machine to sleep immediately on
 	// POST /v1/suspend (see handleSuspend) - a manual counterpart to
 	// idle.Monitor's automatic timeout, for "I'm done, don't wait 3
 	// minutes." Left nil (not wired in cmd/runnerd/main.go) unless
 	// RELAY_IDLE_SUSPEND_ENABLED=true, deliberately reusing idle-suspend's
 	// existing opt-in gate rather than inventing a second one - a manual
-	// trigger is still "run systemctl poweroff on this host," the same
-	// real, hard-to-undo action the idle package's doc comment already
-	// warns never to enable outside an intentional deployment.
+	// trigger is still "suspend this host" (systemctl suspend / Windows
+	// SetSuspendState), the same real action the idle package's doc comment
+	// already warns never to enable outside an intentional deployment.
 	Suspend func() error
 }
 
@@ -97,7 +97,9 @@ type runnerInfo struct {
 
 // anyBusy reports whether any session across any project is currently
 // busy - shared by handleRunnerInfo's `busy` field and handleSuspend's
-// refusal to power off out from under a running agent.
+// refusal to suspend out from under a running agent. Only session.StateBusy
+// counts: session.StateIdle (a claude-stream-json session between turns,
+// process still alive) must never block a suspend.
 func (s *Server) anyBusy() bool {
 	for _, p := range s.Projects.List() {
 		for _, sess := range s.Sessions.ListByProject(p.ID) {
@@ -118,7 +120,7 @@ func (s *Server) handleRunnerInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, runnerInfo{Hostname: hostname, Busy: s.anyBusy(), Version: Version})
 }
 
-// handleSuspend powers this machine off immediately (POST /v1/suspend) - see
+// handleSuspend suspends this machine to sleep immediately (POST /v1/suspend) - see
 // Server.Suspend's doc comment for why it's gated behind the same
 // RELAY_IDLE_SUSPEND_ENABLED flag as automatic idle-suspend, and never
 // fires while a session is busy regardless of that flag.

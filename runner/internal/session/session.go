@@ -95,6 +95,13 @@ type record struct {
 	// background reader goroutine (which observes process exit
 	// independently) must not overwrite that final state.
 	stopped bool
+	// idleSince is the most recent moment this record stopped being busy -
+	// a completed turn (claude-stream-json "result" event, see finishTurn),
+	// a clean/errored process exit (awaitExit), or Stop() - whichever
+	// happened most recently. Zero value means "still busy, never yet gone
+	// idle." Read by Manager.IdleStatus; guarded by mu like the rest of the
+	// record.
+	idleSince time.Time
 }
 
 // ResolveProjectDir resolves a project id to its working directory.
@@ -113,11 +120,17 @@ type Manager struct {
 
 	// OnFinished, if set, is called (in its own goroutine, so it never
 	// blocks or can fail the state transition itself) whenever a session
-	// transitions to StateFinished - either because its subprocess exited
-	// cleanly (awaitExit) or because it was stopped via Stop. This is how
-	// runner/internal/notify gets wired in to notify registered devices;
-	// session deliberately doesn't import notify to avoid a dependency
-	// cycle/coupling - it just reports the fact via this hook.
+	// either completes a turn (a claude-stream-json "result" event - see
+	// finishTurn, called once per turn, not once per process lifetime) or
+	// reaches StateFinished (its subprocess exited cleanly via awaitExit, or
+	// it was stopped via Stop). This is how runner/internal/notify gets
+	// wired in to notify registered devices of "your job is done"; session
+	// deliberately doesn't import notify to avoid a dependency
+	// cycle/coupling - it just reports the fact via this hook. For a
+	// persistent claude-stream-json session the per-turn firing is the
+	// meaningful one, since the subprocess stays alive across turns and may
+	// never reach StateFinished at all; a raw-codec provider has no notion
+	// of turns, so it only ever fires once, at process exit.
 	OnFinished func(Session)
 }
 
@@ -234,18 +247,34 @@ func (m *Manager) start(projectID, provider, dir string) (Session, error) {
 		return Session{}, fmt.Errorf("start provider %q: %w", provider, err)
 	}
 
+	// A claude-stream-json process is long-lived across turns: once spawned
+	// it sits waiting for the first stdin message, so it starts idle, not
+	// busy - only SendMessage (a turn starting) makes it busy. A raw-codec
+	// provider (e.g. echo-agent, or an unconfigured CLI) keeps the original
+	// behavior: busy from the moment it's spawned until the process exits,
+	// since there's no per-turn signal (like the "result" event) to know it
+	// ever goes idle in between.
+	startTime := nowT()
+	initialState := StateBusy
+	if pc.Codec == codecClaudeStreamJSON {
+		initialState = StateIdle
+	}
+
 	rec := &record{
 		data: Session{
 			ID:        id,
 			ProjectID: projectID,
 			Provider:  provider,
-			State:     StateBusy,
-			CreatedAt: now(),
+			State:     initialState,
+			CreatedAt: startTime.Format(time.RFC3339),
 			Messages:  []Message{},
 		},
 		cmd:   cmd,
 		stdin: stdinPipe,
 		codec: pc.Codec,
+	}
+	if initialState != StateBusy {
+		rec.idleSince = startTime
 	}
 
 	m.mu.Lock()
@@ -263,15 +292,22 @@ func (m *Manager) start(projectID, provider, dir string) (Session, error) {
 // codec (default) appends the line as-is; codecClaudeStreamJSON parses each
 // line as a claude-cli stream-json event and only surfaces assistant text
 // (see decodeClaudeStreamJSONLine) - a line that doesn't decode to visible
-// text (e.g. the "system"/"result" event types, or malformed JSON) is
-// dropped from the transcript rather than shown raw, so the phone doesn't
-// get an unreadable JSON blob in the chat.
+// text (e.g. the "system" event type, or malformed JSON) is dropped from
+// the transcript rather than shown raw, so the phone doesn't get an
+// unreadable JSON blob in the chat. The "result" event is handled
+// separately, not dropped: it's the wire format's end-of-turn marker, so it
+// drives finishTurn (busy -> idle, plus the per-turn OnFinished/job-done
+// signal) instead of ever being appended to the transcript.
 func (m *Manager) pump(rec *record, r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if rec.codec == codecClaudeStreamJSON {
+			if eventType, ok := decodeClaudeStreamJSONEventType(line); ok && eventType == "result" {
+				m.finishTurn(rec)
+				continue
+			}
 			if text, ok := decodeClaudeStreamJSONLine(line); ok {
 				rec.appendMessage(Message{Role: "agent", Text: text, At: now()})
 			}
@@ -279,6 +315,27 @@ func (m *Manager) pump(rec *record, r io.Reader) {
 		}
 		rec.appendMessage(Message{Role: "agent", Text: line, At: now()})
 	}
+}
+
+// finishTurn marks a claude-stream-json session idle again after a
+// completed agent turn (a "result" event - see pump) and fires the
+// OnFinished hook once for that turn - this is what actually sends the
+// job-done push, see OnFinished's doc comment. Guarded on the record still
+// being StateBusy, so a stray/duplicate "result" line (already idle) or one
+// that races the process exiting (already finished/error) never re-fires
+// the hook or clobbers a terminal state.
+func (m *Manager) finishTurn(rec *record) {
+	rec.mu.Lock()
+	if rec.data.State != StateBusy {
+		rec.mu.Unlock()
+		return
+	}
+	rec.data.State = StateIdle
+	rec.idleSince = nowT()
+	snapshot := cloneSession(rec.data)
+	rec.mu.Unlock()
+
+	m.notifyFinished(snapshot)
 }
 
 // claudeStreamJSONContentBlock is one entry of a stream-json message's
@@ -314,12 +371,28 @@ func encodeClaudeStreamJSONUserMessage(text string) (string, error) {
 	return string(b), nil
 }
 
+// decodeClaudeStreamJSONEventType extracts just the top-level "type" field
+// from a `claude --output-format=stream-json` line - used by pump to detect
+// the "result" event (the wire format's end-of-turn marker) before falling
+// through to decodeClaudeStreamJSONLine's assistant-text-only parsing.
+// ok=false means the line isn't valid JSON at all.
+func decodeClaudeStreamJSONEventType(line string) (eventType string, ok bool) {
+	var event struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return "", false
+	}
+	return event.Type, true
+}
+
 // decodeClaudeStreamJSONLine parses one `claude --output-format=stream-json`
 // output line and, if it's an "assistant" event, returns its text content
 // blocks concatenated. Every other observed event type ("system" init,
-// "rate_limit_event", the final "result" summary) and any line that fails
-// to parse as JSON at all return ok=false - dropped from the transcript
-// rather than shown as raw JSON (see pump's doc comment).
+// "rate_limit_event", the final "result" summary - handled separately by
+// decodeClaudeStreamJSONEventType/finishTurn, not here) and any line that
+// fails to parse as JSON at all return ok=false - dropped from the
+// transcript rather than shown as raw JSON (see pump's doc comment).
 func decodeClaudeStreamJSONLine(line string) (text string, ok bool) {
 	var event struct {
 		Type    string `json:"type"`
@@ -355,13 +428,15 @@ func (m *Manager) awaitExit(rec *record) {
 		rec.mu.Unlock()
 		return
 	}
-	ts := now()
-	rec.data.FinishedAt = &ts
+	ts := nowT()
+	tsStr := ts.Format(time.RFC3339)
+	rec.data.FinishedAt = &tsStr
 	if err != nil {
 		rec.data.State = StateError
 	} else {
 		rec.data.State = StateFinished
 	}
+	rec.idleSince = ts
 	rec.stdin = nil
 	finished := cloneSession(rec.data)
 	rec.mu.Unlock()
@@ -373,7 +448,9 @@ func (m *Manager) awaitExit(rec *record) {
 
 // notifyFinished invokes OnFinished (if set) in its own goroutine, so a
 // slow or failing notification path can never block session lifecycle
-// transitions.
+// transitions. Called both for a completed turn (finishTurn) and for a
+// terminal StateFinished transition (awaitExit, Stop) - see OnFinished's
+// doc comment for the full picture of when each fires.
 func (m *Manager) notifyFinished(sess Session) {
 	if m.OnFinished == nil {
 		return
@@ -411,16 +488,22 @@ func (m *Manager) ListByProject(projectID string) []Session {
 
 // IdleStatus reports whether any session is currently busy and, if not, the
 // time since which the runner has had no busy session at all. It's the read
-// only hook runner/internal/idle uses to decide when to suspend to S5 (see
-// ARCHITECTURE.md "Sleep path") - deliberately computed from existing
+// only hook runner/internal/idle uses to decide when to suspend to sleep
+// (see ARCHITECTURE.md "Sleep path") - deliberately computed from existing
 // session state rather than tracked as separate counters, so there's only
 // one place session busy/idle/finished state lives.
 //
-// A session's State only ever moves busy -> {finished, error} (never back to
-// busy - see the state constants above), so the moment the whole runner most
-// recently became idle is exactly the latest FinishedAt among all known
-// sessions, or, if no session has ever been created, the time this Manager
-// was constructed.
+// State is NOT monotonic busy -> {finished, error} for a claude-stream-json
+// session: it goes busy -> idle -> busy -> idle ... once per turn (see
+// SendMessage and pump's "result"-event handling), and may only ever reach
+// finished/error when the subprocess itself exits or Stop is called - which,
+// for a long-lived provider process, can be much later than its last busy
+// period. So the moment the whole runner most recently stopped being busy
+// isn't simply the latest FinishedAt among known sessions; each record
+// tracks its own idleSince (updated on every busy exit - a completed turn,
+// a clean/errored exit, or Stop; see record.idleSince), and the runner-wide
+// idleSince is the max of those, or the time this Manager was constructed
+// if no session has ever been created.
 func (m *Manager) IdleStatus() (busy bool, idleSince time.Time) {
 	m.mu.Lock()
 	recs := make([]*record, 0, len(m.sessions))
@@ -433,16 +516,14 @@ func (m *Manager) IdleStatus() (busy bool, idleSince time.Time) {
 	for _, rec := range recs {
 		rec.mu.Lock()
 		state := rec.data.State
-		finishedAt := rec.data.FinishedAt
+		recIdleSince := rec.idleSince
 		rec.mu.Unlock()
 
 		if state == StateBusy {
 			return true, time.Time{}
 		}
-		if finishedAt != nil {
-			if t, err := time.Parse(time.RFC3339, *finishedAt); err == nil && t.After(idleSince) {
-				idleSince = t
-			}
+		if recIdleSince.After(idleSince) {
+			idleSince = recIdleSince
 		}
 	}
 	return false, idleSince
@@ -463,6 +544,16 @@ func (m *Manager) SendMessage(sessionID, text string) error {
 	}
 	stdin := rec.stdin
 	codec := rec.codec
+	// A turn is starting: mark busy now, before writing to stdin - not
+	// after. A fast-replying subprocess could otherwise have pump observe
+	// the matching "result" event (finishTurn) before this goroutine gets
+	// back around to flipping the state post-write; finishTurn's StateBusy
+	// guard would then see "not busy yet" and silently no-op, and this
+	// write's later Busy transition would land *after* that, leaving the
+	// session stuck busy forever for a turn that already finished. Setting
+	// it first closes that race. No-op for raw-codec providers, which are
+	// already busy from Start.
+	rec.data.State = StateBusy
 	rec.mu.Unlock()
 
 	payload := text
@@ -477,6 +568,7 @@ func (m *Manager) SendMessage(sessionID, text string) error {
 	if _, err := io.WriteString(stdin, payload+"\n"); err != nil {
 		return fmt.Errorf("write to session stdin: %w", err)
 	}
+
 	// The transcript always stores the plain text the user typed, never the
 	// wire-format envelope - the phone should never see raw stream-json.
 	rec.appendMessage(Message{Role: "user", Text: text, At: now()})
@@ -497,9 +589,11 @@ func (m *Manager) Stop(sessionID string) (Session, error) {
 		return cloneSession(s), nil
 	}
 	rec.stopped = true
-	ts := now()
+	ts := nowT()
+	tsStr := ts.Format(time.RFC3339)
 	rec.data.State = StateFinished
-	rec.data.FinishedAt = &ts
+	rec.data.FinishedAt = &tsStr
+	rec.idleSince = ts
 	proc := rec.cmd.Process
 	rec.stdin = nil
 	snapshot := cloneSession(rec.data)
@@ -549,6 +643,14 @@ func isTerminal(state string) bool {
 	return state == StateFinished || state == StateError
 }
 
+// nowT is the time.Time counterpart to now() - used wherever a value needs
+// to be both stored as a time.Time (e.g. record.idleSince, for comparisons)
+// and formatted as an RFC3339 string (e.g. Session.CreatedAt/FinishedAt) from
+// the exact same instant.
+func nowT() time.Time {
+	return time.Now().UTC()
+}
+
 func now() string {
-	return time.Now().UTC().Format(time.RFC3339)
+	return nowT().Format(time.RFC3339)
 }
