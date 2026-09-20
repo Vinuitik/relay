@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 
@@ -119,6 +120,23 @@ func main() {
 // succeeds, so that's a manual `relay-runner -qr` misuse case, not a normal
 // path.
 func printPairingQR(cfg *config.Config) {
+	// Refuse to encode an address the phone can never reach. RELAY_LISTEN_ADDR
+	// defaults to 127.0.0.1:7777, so running `-qr` without setting it would
+	// otherwise print a perfectly valid QR code pointing at the phone's own
+	// loopback - the app stores it happily and every later call fails with a
+	// connection error that looks like a firewall or Tailscale problem. Fail
+	// loudly here instead of handing over a broken pairing.
+	host, _, err := net.SplitHostPort(cfg.ListenAddr)
+	if err != nil {
+		log.Fatalf("qr: cannot parse RELAY_LISTEN_ADDR %q: %v", cfg.ListenAddr, err)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		log.Fatalf("qr: RELAY_LISTEN_ADDR %q has no specific host - set it to this machine's Tailscale IP (tailscale ip -4) so the phone has something to connect to", cfg.ListenAddr)
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		log.Fatalf("qr: RELAY_LISTEN_ADDR %q is loopback - the phone would try to connect to itself. Set it to this machine's Tailscale IP (tailscale ip -4) and restart the runner before pairing", cfg.ListenAddr)
+	}
+
 	uri := fmt.Sprintf("relay://%s?key=%s", cfg.ListenAddr, cfg.Key)
 	fmt.Println("Scan this in the Relay Android app (Add Runner -> Scan QR):")
 	fmt.Println()

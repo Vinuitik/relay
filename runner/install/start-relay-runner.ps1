@@ -18,4 +18,13 @@ $env:RELAY_FCM_CREDENTIALS = Join-Path $PSScriptRoot "fcm-service-account.json"
 # actually put to sleep - see runner/FLOWS.md "Idle-suspend (S5)".
 $env:RELAY_IDLE_SUSPEND_ENABLED = "true"
 
+# Deliberately long on THIS machine. Idle-suspend measures Relay session
+# activity only - internal/session.Manager.IdleStatus() has no idea whether a
+# human is sat at the keyboard. On the server that is fine; on this laptop,
+# which is also used directly, the 3-minute default would suspend the machine
+# mid-work simply because no phone session was open. Until suspend also
+# considers real user input (Win32 GetLastInputInfo), keep this long and use
+# the phone's Sleep button for "I'm done" instead.
+$env:RELAY_IDLE_TIMEOUT = "12h"
+
 Start-Process -FilePath "C:\Users\sizon\OneDrive\Documents\Relay\runner\install\relay-runner-windows-amd64.exe" -WindowStyle Hidden
