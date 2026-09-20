@@ -1,14 +1,12 @@
 package com.relay.app.network
 
 import com.relay.app.model.BrowseResult
-import com.relay.app.model.ContainerActionResult
 import com.relay.app.model.Device
 import com.relay.app.model.FileContent
 import com.relay.app.model.FileEntry
 import com.relay.app.model.Project
 import com.relay.app.model.RunnerInfo
 import com.relay.app.model.Session
-import com.relay.app.model.UptimeInterval
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
@@ -21,7 +19,6 @@ data class HealthResponse(val ok: Boolean)
 data class NewProjectRequest(val name: String, val path: String? = null)
 data class NewSessionRequest(val provider: String)
 data class MessageRequest(val text: String)
-data class WakeRequest(val mac: String)
 data class DeviceRegistrationRequest(val fcmToken: String)
 
 /**
@@ -60,12 +57,6 @@ interface RelayApiService {
         @Body request: NewSessionRequest,
     ): Session
 
-    /** Starts the `claude`/`codex` CLI's OAuth login as a session with no associated project —
-     * see shared/API.md and [com.relay.app.ui.screens.AuthLoginScreen]. The OAuth URL shows up
-     * as an "agent" message in the returned session; paste the code back via [sendMessage]. */
-    @POST("v1/auth/login")
-    suspend fun startAuthLogin(): Session
-
     @GET("v1/sessions/{sessionId}")
     suspend fun getSession(@Path("sessionId") sessionId: String): Session
 
@@ -84,36 +75,14 @@ interface RelayApiService {
     @POST("v1/projects/{projectId}/containers/stop")
     suspend fun stopContainers(@Path("projectId") projectId: String): Response<ResponseBody>
 
-    /** Starts/stops docker compose across every project this runner knows about, best-effort
-     * per project — see shared/API.md and [com.relay.app.widget.ContainersAllWorker]. */
-    @POST("v1/containers/start-all")
-    suspend fun startAllContainers(): List<ContainerActionResult>
-
-    @POST("v1/containers/stop-all")
-    suspend fun stopAllContainers(): List<ContainerActionResult>
-
-    /**
-     * Broadcasts a WoL magic packet on THIS runner's local network. Only meaningful when called
-     * on a runner that is on the same LAN as the (possibly fully-off) wake target — see
-     * ARCHITECTURE.md "Relay device" and [com.relay.app.widget.WakeRunnerWorker].
-     */
-    @POST("v1/wake")
-    suspend fun wake(@Body request: WakeRequest): Response<ResponseBody>
-
     /** Registers/updates this phone's FCM push token with this runner. Response body carries a
      * typed [Device] per shared/API.md, but no current caller needs it beyond success/failure. */
     @POST("v1/devices")
     suspend fun registerDevice(@Body request: DeviceRegistrationRequest): Device
 
-    /** This runner's short-term up/down interval buffer — see shared/API.md and
-     * [com.relay.app.data.UptimeSyncWorker], which pulls this into the app's own long-term Room
-     * history. */
-    @GET("v1/uptime")
-    suspend fun uptime(): List<UptimeInterval>
-
     /** Manual "suspend now" — see shared/API.md: `409` if a session is busy, `503` if the runner
-     * wasn't started with RELAY_IDLE_SUSPEND_ENABLED=true. See
-     * [com.relay.app.widget.SuspendRunnerWorker]. */
+     * wasn't started with RELAY_IDLE_SUSPEND_ENABLED=true. Called straight from
+     * [com.relay.app.ui.screens.RunnerListScreen]'s "Sleep" button. */
     @POST("v1/suspend")
     suspend fun suspend(): Response<ResponseBody>
 

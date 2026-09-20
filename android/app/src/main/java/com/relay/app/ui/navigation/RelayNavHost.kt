@@ -14,9 +14,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.relay.app.data.KnownRunnersRepository
-import com.relay.app.data.WidgetConfigRepository
 import com.relay.app.ui.screens.ChatScreen
-import com.relay.app.ui.screens.DashboardScreen
 import com.relay.app.ui.screens.FileBrowserScreen
 import com.relay.app.ui.screens.FolderPickerScreen
 import com.relay.app.ui.screens.ProjectListScreen
@@ -26,30 +24,22 @@ import com.relay.app.ui.screens.SessionListScreen
 /** Route templates, kept next to their builder functions so a nav arg never gets typo'd. */
 object Routes {
     const val RUNNER_LIST = "runners"
-    const val DASHBOARD = "dashboard"
     const val PROJECT_LIST = "runners/{hostname}/projects"
     const val FOLDER_PICKER = "runners/{hostname}/projects/pick-folder"
     const val SESSION_LIST = "runners/{hostname}/projects/{projectId}/sessions"
     const val CHAT = "runners/{hostname}/projects/{projectId}/sessions/{sessionId}/chat"
     const val FILES = "runners/{hostname}/projects/{projectId}/files"
-    // Auth-login is a session with no associated project (see shared/API.md POST
-    // /v1/auth/login) - its own route rather than reusing CHAT, since there's no real
-    // projectId to put in the path.
-    const val AUTH_LOGIN_CHAT = "runners/{hostname}/auth-login/{sessionId}/chat"
-
     fun projectList(hostname: String) = "runners/$hostname/projects"
     fun folderPicker(hostname: String) = "runners/$hostname/projects/pick-folder"
     fun sessionList(hostname: String, projectId: String) = "runners/$hostname/projects/$projectId/sessions"
     fun chat(hostname: String, projectId: String, sessionId: String) =
         "runners/$hostname/projects/$projectId/sessions/$sessionId/chat"
     fun files(hostname: String, projectId: String) = "runners/$hostname/projects/$projectId/files"
-    fun authLoginChat(hostname: String, sessionId: String) = "runners/$hostname/auth-login/$sessionId/chat"
 }
 
 @Composable
 fun RelayNavHost(
     runnersRepository: KnownRunnersRepository,
-    widgetConfigRepository: WidgetConfigRepository,
 ) {
     val navController = rememberNavController()
     val runners by runnersRepository.runners.collectAsState(initial = emptyList())
@@ -59,15 +49,7 @@ fun RelayNavHost(
             RunnerListScreen(
                 repository = runnersRepository,
                 onRunnerSelected = { runner -> navController.navigate(Routes.projectList(runner.hostname)) },
-                onDashboard = { navController.navigate(Routes.DASHBOARD) },
-                onAuthLoginStarted = { runner, sessionId ->
-                    navController.navigate(Routes.authLoginChat(runner.hostname, sessionId))
-                },
             )
-        }
-
-        composable(Routes.DASHBOARD) {
-            DashboardScreen(onBack = { navController.popBackStack() })
         }
 
         composable(
@@ -81,7 +63,6 @@ fun RelayNavHost(
             } else {
                 ProjectListScreen(
                     runner = runner,
-                    widgetConfigRepository = widgetConfigRepository,
                     onProjectSelected = { project ->
                         navController.navigate(Routes.sessionList(hostname, project.id))
                     },
@@ -185,29 +166,6 @@ fun RelayNavHost(
             }
         }
 
-        composable(
-            route = Routes.AUTH_LOGIN_CHAT,
-            arguments = listOf(
-                navArgument("hostname") { type = NavType.StringType },
-                navArgument("sessionId") { type = NavType.StringType },
-            ),
-        ) { backStackEntry ->
-            val hostname = backStackEntry.arguments?.getString("hostname").orEmpty()
-            val sessionId = backStackEntry.arguments?.getString("sessionId").orEmpty()
-            val runner = runners.find { it.hostname == hostname }
-            if (runner == null) {
-                UnknownRunnerPlaceholder()
-            } else {
-                // Same ChatScreen as a project session - it only needs a runner + sessionId,
-                // never a projectId, and an auth-login session polls/messages identically (see
-                // shared/API.md POST /v1/auth/login).
-                ChatScreen(
-                    runner = runner,
-                    sessionId = sessionId,
-                    onBack = { navController.popBackStack() },
-                )
-            }
-        }
     }
 }
 

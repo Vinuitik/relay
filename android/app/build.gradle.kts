@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("com.google.devtools.ksp")
 }
 
 // Applied only if google-services.json exists (gitignored - see runner/README.md for how to
@@ -90,16 +89,7 @@ dependencies {
     // Persistence for the known-runners list.
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
-    // On-device cache: mirrors runner-side sessions/messages (so chats are readable offline or
-    // while a runner is asleep) and the phone's own merged uptime history (the runner only keeps
-    // a short-term buffer - see runner/FLOWS.md "Uptime tracking"). Room over raw SQLite for
-    // typed DAOs/Flow queries with compile-time-checked SQL - the natural fit given Retrofit
-    // already gives typed models to store.
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
-
-    // Background work for the widget's stop-containers action.
+    // Background work for FCM device registration (fcm/RegisterDeviceWorker.kt).
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     // Firebase BoM: keeps every com.google.firebase:* artifact below on mutually-compatible
@@ -109,17 +99,6 @@ dependencies {
     // Push notifications (job-done). No google-services.json yet — see [NOT IMPLEMENTED] above
     // and in RelayFirebaseMessagingService. The dependency alone does not require the plugin.
     implementation("com.google.firebase:firebase-messaging")
-
-    // In-app "update available" prompt (MainActivity.checkForUpdate) - same Firebase project as
-    // distribution itself, no new infra. Fine to ship since this app was never headed for the
-    // Play Store anyway (see ARCHITECTURE.md) - that's the only reason this SDK is normally
-    // discouraged in a production build.
-    //
-    // Not managed by the BoM above (App Distribution isn't part of its version set), so pinned
-    // directly to the latest version actually published to Google's Maven repo (checked via
-    // dl.google.com's maven-metadata.xml, not the SDK source repo - that had an unreleased
-    // beta21 ahead of what's actually published).
-    implementation("com.google.firebase:firebase-appdistribution:16.0.0-beta20")
 
     // In-app QR scanning for pairing a runner (see ui/screens/QrScanScreen.kt) — CameraX for the
     // preview/frame pipeline, ML Kit for on-device barcode decoding (no network call, no

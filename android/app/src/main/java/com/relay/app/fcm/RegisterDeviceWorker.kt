@@ -16,8 +16,8 @@ import kotlinx.coroutines.flow.first
  * startup with the current token (so a runner added after the token was already issued still
  * gets registered without waiting for a refresh — see MainActivity).
  *
- * WorkManager for the same reason as [com.relay.app.widget.StopContainersWorker]: this can be
- * triggered from a background FCM callback, not just while the UI is in the foreground.
+ * WorkManager because this can be triggered from a background FCM callback, not just while the
+ * UI is in the foreground.
  *
  * A single unreachable runner logs and is skipped — it must not block registering the rest.
  */

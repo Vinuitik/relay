@@ -33,11 +33,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.relay.app.data.db.CachedMessageEntity
-import com.relay.app.data.db.CachedSessionEntity
-import com.relay.app.data.db.RelayDatabase
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Message
 import com.relay.app.model.Session
@@ -45,7 +41,6 @@ import com.relay.app.network.MessageRequest
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.friendlyErrorMessage
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 private const val POLL_INTERVAL_MS = 3000L
@@ -58,32 +53,12 @@ fun ChatScreen(
 ) {
     val api = remember(runner) { RelayApiClient.forRunner(runner) }
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    val sessionDao = remember(context) { RelayDatabase.get(context).sessionCacheDao() }
 
     var session by remember { mutableStateOf<Session?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    var offline by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
-
-    // Show whatever's cached immediately - lets the transcript render instantly, and stays as
-    // the fallback view if the live poll below fails (runner asleep/unreachable).
-    suspend fun loadFromCache() {
-        val cached = sessionDao.observeSession(runner.hostname, sessionId).first() ?: return
-        val messages = sessionDao.observeMessages(runner.hostname, sessionId).first()
-        session = Session(
-            id = cached.sessionId,
-            projectId = cached.projectId,
-            provider = cached.provider,
-            state = cached.state,
-            createdAt = cached.createdAt,
-            finishedAt = cached.finishedAt,
-            messages = messages.map { Message(role = it.role, text = it.text, at = it.at) },
-        )
-        loading = false
-    }
 
     suspend fun pollUntilIdle() {
         while (true) {
@@ -91,29 +66,9 @@ fun ChatScreen(
                 val fetched = api.getSession(sessionId)
                 session = fetched
                 error = null
-                offline = false
-                sessionDao.replaceSession(
-                    CachedSessionEntity(
-                        runnerHostname = runner.hostname,
-                        sessionId = fetched.id,
-                        projectId = fetched.projectId,
-                        provider = fetched.provider,
-                        state = fetched.state,
-                        createdAt = fetched.createdAt,
-                        finishedAt = fetched.finishedAt,
-                    ),
-                    fetched.messages.map {
-                        CachedMessageEntity(runnerHostname = runner.hostname, sessionId = fetched.id, role = it.role, text = it.text, at = it.at)
-                    },
-                )
             } catch (e: Exception) {
-                if (session == null) {
-                    error = friendlyErrorMessage(e, runner)
-                } else {
-                    // Already have cached/last-known data on screen - keep showing it rather
-                    // than replacing the transcript with an error.
-                    offline = true
-                }
+                error = friendlyErrorMessage(e, runner)
+                loading = false
                 return
             }
             loading = false
@@ -123,7 +78,6 @@ fun ChatScreen(
     }
 
     LaunchedEffect(sessionId) {
-        loadFromCache()
         pollUntilIdle()
     }
 
@@ -140,13 +94,6 @@ fun ChatScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            if (offline) {
-                Text(
-                    text = "Offline — showing last known data",
-                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer).padding(8.dp),
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                )
-            }
             when {
                 loading -> Box(modifier = Modifier.weight(1f).fillMaxSize()) {
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
