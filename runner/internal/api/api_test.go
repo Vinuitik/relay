@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"relay/runner/internal/activity"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
@@ -84,6 +85,40 @@ func TestMissingKeyIs401(t *testing.T) {
 	rec := doRequest(t, s.Routes(), "GET", "/v1/projects", "", nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestActivityRecordsPing(t *testing.T) {
+	s := newTestServer(t)
+	s.Activity = activity.NewTracker()
+
+	before := time.Now()
+	rec := doRequest(t, s.Routes(), "POST", "/v1/activity", testKey, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rec.Code)
+	}
+
+	last := s.Activity.LastActive()
+	if last.Before(before) {
+		t.Fatalf("LastActive = %v, want >= %v", last, before)
+	}
+}
+
+func TestActivityRequiresAuth(t *testing.T) {
+	s := newTestServer(t)
+	rec := doRequest(t, s.Routes(), "POST", "/v1/activity", "", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestActivityWithoutTrackerStillAccepts(t *testing.T) {
+	// s.Activity is left nil, as it is whenever idle-suspend hasn't wired
+	// one - the ping must still be accepted, not error.
+	s := newTestServer(t)
+	rec := doRequest(t, s.Routes(), "POST", "/v1/activity", testKey, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rec.Code)
 	}
 }
 

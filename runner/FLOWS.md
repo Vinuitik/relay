@@ -90,6 +90,10 @@ actually runs it and checks.
 
 ## Idle-suspend (sleep) - the other half of the sleep path
 
+Files: internal/idle/idle.go, internal/idle/shutdown_unix.go, internal/idle/shutdown_windows.go,
+internal/activity/activity.go, internal/activity/local_windows.go, internal/activity/local_unix.go,
+internal/api/api.go (`handleActivity`), cmd/runnerd/main.go
+
 **This is the missing half of ARCHITECTURE.md's "Sleep path" line** - `internal/idle` is what
 puts the machine to sleep (S3 suspend-to-RAM on Linux, Modern Standby on Windows - **not** S5
 full poweroff; the project switched from S5 because the power delta vs. S3 is only ~1W, while
@@ -99,16 +103,58 @@ longer the runner's job** (runners no longer wake each other; that moves to a se
 daemon). `internal/wol` still holds the magic-packet/broadcast primitives, but nothing in the
 runner's API calls them.
 
-main() → `idle.LoadConfig()` (env `RELAY_IDLE_SUSPEND_ENABLED`, `RELAY_IDLE_TIMEOUT`,
-`RELAY_IDLE_CHECK_INTERVAL`) → only if `Enabled` → goroutine: `idle.NewMonitor(sessions,
-idle.DefaultShutdowner, cfg).Run()` (ticker at `cfg.CheckInterval`, conditionally started)
+**The suspend rule: never suspend while (a) any session is busy, OR (b) the phone app is open
+and in the foreground, OR (c) someone is physically using this machine.** Suspend only fires
+once all three have been quiet for `cfg.Timeout`. This replaced an earlier version that decided
+purely from (a) - wrong on a dual-use laptop, where the owner can be sat typing with no phone
+session open and get suspended mid-work out from under them. (As a stopgap before this fix,
+that laptop ran with `RELAY_IDLE_TIMEOUT` pinned to 12h, effectively disabling the feature -
+that pin should come back down to minutes now that (b)/(c) exist.)
 
-Each tick → `session.Manager.IdleStatus()` (busy bool, idleSince time.Time - computed from
-existing session state, not separately tracked; see its doc comment in session.go - each
-session record now tracks its own `idleSince`, since a claude-stream-json session goes
-busy→idle→busy per turn rather than only busy→terminal, so the runner-wide idle-since is the max
-of all records' idleSince, not simply the latest `FinishedAt`) → if busy, skip → if
-`time.Since(idleSince) < cfg.Timeout`, skip → else `idle.Shutdowner.Shutdown()`
+main() → `idle.LoadConfig()` (env `RELAY_IDLE_SUSPEND_ENABLED`, `RELAY_IDLE_TIMEOUT`,
+`RELAY_IDLE_CHECK_INTERVAL`) → `activity.NewTracker()` created unconditionally and wired to
+`srv.Activity` (so `POST /v1/activity` always works) → only if `Enabled` → goroutine:
+`idle.NewMonitor(sessions, idle.DefaultShutdowner, cfg)`, with `mon.Activity` = that same
+tracker and `mon.LocalInput` = `activity.LocalIdleTime`, then `.Run()` (ticker at
+`cfg.CheckInterval`, conditionally started)
+
+Each tick computes an effective idle-since as the **latest** of:
+- (a) `session.Manager.IdleStatus()` (busy bool, idleSince time.Time - computed from existing
+  session state, not separately tracked; see its doc comment in session.go - each session
+  record tracks its own `idleSince`, since a claude-stream-json session goes busy→idle→busy per
+  turn rather than only busy→terminal, so the runner-wide idle-since is the max of all records'
+  idleSince, not simply the latest `FinishedAt`). If busy, skip immediately - the newer inputs
+  below never override a busy session.
+- (b) `Monitor.Activity.LastActive()` (source: `POST /v1/activity`, see below) - only counted if
+  the most recent ping is within `Monitor.ActivityWindow` (or `activity.DefaultWindow` = 90s if
+  unset); a fresh ping pushes idle-since forward to "now" (i.e. blocks suspend), a stale one
+  (older than the window) contributes nothing.
+- (c) `Monitor.LocalInput()` (source: `activity.LocalIdleTime`, Windows-only Win32
+  `GetLastInputInfo`) - contributes `now - (time since last input)`. `activity.ErrUnsupported`
+  (always returned on Linux/unix, see `local_unix.go`) is treated as "no signal", not an error,
+  and logged only if it's some other failure.
+- `resumeFloor` (existing resume-re-arm logic, unchanged - see below)
+
+→ if `time.Since(idleSince) < cfg.Timeout`, skip → else `idle.Shutdowner.Shutdown()`
+
+**Source (b): phone-app foreground ping.** `POST /v1/activity` (`api.handleActivity`, auth'd
+like every other endpoint) → `activity.Tracker.Mark()` → `202 {}`. The Android app calls this
+every 30s while, and only while, it is in the foreground - it must stop calling the instant it's
+backgrounded, since a stale-but-still-arriving ping would defeat the whole point of source (b).
+`activity.Tracker` is in-memory only, mutex-guarded, shared between the API handler goroutine
+and the Monitor's ticker goroutine - liveness only, not worth persisting across a runner
+restart (no recent ping after a restart is exactly "nobody's around right now", the correct
+default).
+
+**Source (c): local keyboard/mouse input.** `activity.LocalIdleTime()` is per-OS:
+`local_windows.go` calls Win32 `GetLastInputInfo` (via `golang.org/x/sys/windows`'s
+`NewLazySystemDLL`, no cgo) compared against `GetTickCount`; `local_unix.go` always returns
+`activity.ErrUnsupported` - there is no portable, dependency-free way to read local input on
+Linux for a headless/sessionless systemd service (no X11/Wayland session to read from, and
+shelling out to something like `xprintidle` was deliberately rejected as fragile/an extra
+runtime dependency). This is a documented gap, not a bug: the real Linux deployment target is a
+system service with no console user in the first place, which is exactly the case where source
+(c) doesn't matter - it falls back to (a) and (b) alone.
 
 Shutdowner is build-tagged like `wol.PacketSender`: `shutdown_unix.go` (`systemctl suspend`) /
 `shutdown_windows.go` (`rundll32.exe powrprof.dll,SetSuspendState 0,1,0` - hibernates instead of
@@ -159,6 +205,10 @@ default `idle.DefaultTimeout` = 3m — a starting heuristic, tune once real usag
 To change the poll interval: env `RELAY_IDLE_CHECK_INTERVAL` (default `idle.DefaultCheckInterval` = 1m)
 To enable this feature at all: env `RELAY_IDLE_SUSPEND_ENABLED=true` - **disabled by default,
 see Technology notes below before ever setting this locally.**
+To change the phone-activity freshness window: `internal/activity/activity.go`
+(`activity.DefaultWindow` = 90s), or per-Monitor via `idle.Monitor.ActivityWindow`.
+To change how local input is read (Windows): `internal/activity/local_windows.go`
+(`LocalIdleTime`).
 
 ## Register an existing project folder + unscoped browse
 
@@ -388,6 +438,21 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   polkit rule or sudoers entry granting `systemctl suspend` (no passwordless sudo means suspend
   fails loudly, not silently — see "Idle-suspend" above); on Windows, if hibernation is enabled
   the machine hibernates (S4) instead of sleeping (S3) — see `shutdown_windows.go`.
+- **Phone-app activity (source b) and local input (source c) are both liveness signals, not
+  persisted state.** `activity.Tracker` is a mutex-guarded in-memory timestamp; a runner restart
+  forgets the last ping, which is correct (no recent ping is exactly "nobody's confirmed
+  present"). Source (b) depends entirely on the Android app actually pinging every 30s while
+  foregrounded and going silent when backgrounded — a client bug that keeps pinging from the
+  background would make this signal lie and block suspend indefinitely. `activity.DefaultWindow`
+  (90s) is a generous multiple of that 30s interval specifically so one dropped ping on a flaky
+  mobile connection doesn't look like the app closed.
+- **Local input detection (source c) is Windows-only by design, not an oversight.** There is no
+  portable, dependency-free way to read keyboard/mouse activity on headless Linux — X11/Wayland
+  both assume a logged-in graphical session, which the real systemd-service deployment target
+  doesn't have, and shelling out to `xprintidle` was rejected as a fragile extra runtime
+  dependency. `local_unix.go` always returns `activity.ErrUnsupported`; `idle.Monitor` treats
+  that as "no signal available" and falls back to sources (a) and (b) alone — this is
+  intentionally a no-op on Linux, not a broken feature.
 - **The idle check interval and threshold are both plain durations, not adaptive.** No
   backoff, no jitter, no "only check when otherwise idle anyway" optimization — a 1-minute
   ticker forever once enabled. Fine given how cheap `session.Manager.IdleStatus()` is (just
@@ -453,6 +518,11 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Shutdown/suspend command (sleep, S3/Modern Standby) | `internal/idle/shutdown_unix.go` (`systemctl suspend`), `internal/idle/shutdown_windows.go` (`rundll32.exe powrprof.dll,SetSuspendState 0,1,0`) |
 | Per-turn busy/idle tracking, turn-end detection | `internal/session/session.go` (`Manager.finishTurn`, `decodeClaudeStreamJSONEventType`, `record.idleSince`) |
 | Idle-suspend ticker wiring | `cmd/runnerd/main.go` (`idle.NewMonitor(...).Run()`, gated on `idleCfg.Enabled`) |
+| Phone-app activity endpoint / tracker | `internal/api/api.go` (`handleActivity`), `internal/activity/activity.go` (`Tracker.Mark`, `Tracker.LastActive`) |
+| Phone-app activity freshness window | `internal/activity/activity.go` (`DefaultWindow` = 90s), `internal/idle/idle.go` (`Monitor.ActivityWindow`) |
+| Local keyboard/mouse input detection (Windows) | `internal/activity/local_windows.go` (`LocalIdleTime`, Win32 `GetLastInputInfo`) |
+| Local input detection unsupported on Linux | `internal/activity/local_unix.go` (`ErrUnsupported`) |
+| Idle decision combining sources (a)/(b)/(c) + resumeFloor | `internal/idle/idle.go` (`Monitor.tick`) |
 | File listing / content endpoints | `internal/api/api.go` (`handleListFiles`, `handleFileContent`) |
 | Project-path escape guard | `internal/project/project.go` (`Registry.ResolvePath`) |
 | Viewable file size cap | `internal/api/api.go` (`maxViewableFileSize`) |

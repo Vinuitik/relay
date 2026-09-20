@@ -1,10 +1,29 @@
 // Package idle implements the runner's half of the "Sleep path" described in
 // ARCHITECTURE.md: a ticker that checks this runner's own busy/idle state
-// and, once idle past a threshold with no active agent task, suspends the
-// machine to sleep (S3 on Linux via `systemctl suspend`, Modern Standby on
-// Windows via SetSuspendState - not S5/full poweroff; the power delta
-// between S3 and S5 is only ~1W, while S5 costs a ~60s boot and is far more
-// fragile to wake than a machine already sitting in S3).
+// and, once idle past a threshold, suspends the machine to sleep (S3 on
+// Linux via `systemctl suspend`, Modern Standby on Windows via
+// SetSuspendState - not S5/full poweroff; the power delta between S3 and S5
+// is only ~1W, while S5 costs a ~60s boot and is far more fragile to wake
+// than a machine already sitting in S3).
+//
+// The idle decision considers three independent "someone's using this"
+// signals, and never suspends while any of them is live:
+//
+//	(a) Relay session state - SessionStatus.IdleStatus(), an agent session
+//	    actually busy on a turn.
+//	(b) phone-app foreground activity - Monitor.Activity, a heartbeat POSTed
+//	    to /v1/activity every 30s while the Android app is in the
+//	    foreground (internal/activity.Tracker).
+//	(c) local keyboard/mouse input - Monitor.LocalInput, Windows-only
+//	    (internal/activity.LocalIdleTime); unsupported on Linux, where a
+//	    headless system-service deployment has no console user to detect in
+//	    the first place, so that absence is a no-op, not a gap.
+//
+// This exists because deciding "in use" from Relay session state alone is
+// wrong on a dual-use laptop: the owner can be sat typing at the machine
+// with no phone session open, and the runner would happily suspend it
+// mid-work. (a) OR (b) OR (c) being recent blocks suspend; only when all
+// three are quiet for cfg.Timeout does it fire.
 //
 // SAFETY: this is disabled by default (see LoadConfig / RELAY_IDLE_SUSPEND_ENABLED).
 // Do not enable it in local dev or in a container/CI - it will genuinely try
@@ -14,9 +33,12 @@
 package idle
 
 import (
+	"errors"
 	"log"
 	"os"
 	"time"
+
+	"relay/runner/internal/activity"
 )
 
 // DefaultTimeout is how long the runner must be continuously idle (no busy
@@ -92,6 +114,22 @@ type Shutdowner interface {
 	Shutdown() error
 }
 
+// ActivitySource is the read-only view of phone-app foreground activity
+// (source b, POST /v1/activity) the Monitor needs. Satisfied by
+// *activity.Tracker - defined here as an interface, like SessionStatus,
+// purely so tests can fake it.
+type ActivitySource interface {
+	// LastActive returns the last time the phone app confirmed it was in
+	// the foreground, or the zero Time if it never has.
+	LastActive() time.Time
+}
+
+// LocalInputFunc reports how long since local keyboard/mouse input on this
+// machine (source c), or activity.ErrUnsupported if this OS has no signal
+// for it (see internal/activity/local_unix.go). Matches
+// activity.LocalIdleTime's signature so it can be wired in directly.
+type LocalInputFunc func() (time.Duration, error)
+
 // Monitor periodically checks SessionStatus and calls Shutdowner.Shutdown
 // once the runner has been continuously idle for cfg.Timeout.
 type Monitor struct {
@@ -106,6 +144,30 @@ type Monitor struct {
 	// nothing here blocks or cancels the shutdown itself, and a failure
 	// inside it should never stop the machine from actually suspending.
 	BeforeShutdown func()
+
+	// Activity, if set, is consulted alongside SessionStatus for source
+	// (b): a phone app foreground ping within ActivityWindow (or
+	// activity.DefaultWindow, if ActivityWindow is zero) counts as "in use
+	// right now" and pushes the effective idle-since forward to the
+	// current tick, regardless of how idle the session state itself looks.
+	// Left nil in tests that don't care about this input (the phone-blind
+	// existing behavior).
+	Activity ActivitySource
+
+	// ActivityWindow overrides activity.DefaultWindow for how fresh an
+	// Activity ping must be to count. Zero means use the default.
+	ActivityWindow time.Duration
+
+	// LocalInput, if set, is consulted for source (c): local keyboard/mouse
+	// input on this machine. A duration d back from now counts as "in use
+	// since now-d", pushing the effective idle-since forward accordingly.
+	// activity.ErrUnsupported (expected on Linux, see
+	// internal/activity/local_unix.go) is treated as "no signal" and
+	// ignored, not logged as a failure; any other error is logged and
+	// otherwise ignored - a broken local-input check must never itself
+	// block or force a suspend. Left nil in tests that don't care about
+	// this input.
+	LocalInput LocalInputFunc
 
 	// triggered is set once Shutdown has been called successfully, so a
 	// live Monitor never calls it a second time. See tick's doc comment for
@@ -192,6 +254,37 @@ func (mon *Monitor) tick() {
 	if busy {
 		return
 	}
+
+	// Effective idle-since is the LATEST of: session state (above), a
+	// fresh phone-app activity ping (source b), local keyboard/mouse input
+	// (source c), and resumeFloor (already folded in above) - never
+	// suspend while any of them says someone's around. A session going
+	// busy still short-circuits above regardless of these.
+	if mon.Activity != nil {
+		if last := mon.Activity.LastActive(); !last.IsZero() {
+			window := mon.ActivityWindow
+			if window <= 0 {
+				window = activity.DefaultWindow
+			}
+			if now.Sub(last) <= window && now.After(idleSince) {
+				idleSince = now
+			}
+		}
+	}
+	if mon.LocalInput != nil {
+		switch d, err := mon.LocalInput(); {
+		case err == nil:
+			if localSince := now.Add(-d); localSince.After(idleSince) {
+				idleSince = localSince
+			}
+		case errors.Is(err, activity.ErrUnsupported):
+			// Expected on Linux - no local input signal, fall back to (a)
+			// and (b) only. Not logged; this isn't a failure.
+		default:
+			log.Printf("idle: local input check failed: %v", err)
+		}
+	}
+
 	if time.Since(idleSince) < mon.cfg.Timeout {
 		return
 	}

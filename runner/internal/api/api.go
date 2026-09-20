@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 
+	"relay/runner/internal/activity"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
@@ -41,6 +42,13 @@ type Server struct {
 	// SetSuspendState), the same real action the idle package's doc comment
 	// already warns never to enable outside an intentional deployment.
 	Suspend func() error
+	// Activity, if set, records phone-app foreground pings (POST
+	// /v1/activity) so idle.Monitor can fold them into the suspend
+	// decision - see internal/activity and internal/idle's package docs.
+	// Wired unconditionally in cmd/runnerd/main.go (the endpoint always
+	// accepts pings); it's only ever consulted when idle-suspend itself is
+	// enabled, since that's the only thing that reads it.
+	Activity *activity.Tracker
 }
 
 // NewServer builds a Server.
@@ -66,6 +74,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/start", s.auth(s.handleContainersStart))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/stop", s.auth(s.handleContainersStop))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleRegisterDevice))
+	mux.HandleFunc("POST /v1/activity", s.auth(s.handleActivity))
 	mux.HandleFunc("POST /v1/suspend", s.auth(s.handleSuspend))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files", s.auth(s.handleListFiles))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files/content", s.auth(s.handleFileContent))
@@ -136,6 +145,19 @@ func (s *Server) handleSuspend(w http.ResponseWriter, r *http.Request) {
 	if err := s.Suspend(); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{})
+}
+
+// handleActivity records that the phone app confirmed it's in the
+// foreground right now (POST /v1/activity, per shared/API.md) - source (b)
+// of idle.Monitor's suspend decision. The Android app calls this every 30s
+// while, and only while, it is in the foreground. No-op if Activity wasn't
+// wired (idle-suspend entirely disabled) - still returns 202, since a ping
+// that has nothing to record is not an error.
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	if s.Activity != nil {
+		s.Activity.Mark()
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{})
 }
