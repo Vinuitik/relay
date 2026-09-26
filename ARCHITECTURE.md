@@ -6,7 +6,8 @@ wanting to keep a laptop on all day to bridge the gap.
 
 ## Problem
 
-- Server should sit at S5 (soft off, ~0W) between uses, not idle-on or sleeping.
+- Server should sit at near-zero power between uses, not idle-on. (**Resolved to S3 sleep,
+  ~1W** — not S5 soft-off. See "Sleep/wake states" below for why.)
 - Must be wakeable and reachable from a phone on 4G — not home WiFi, no port-forwarding
   (CGNAT/mobile networks usually block inbound anyway).
 - Must not suspend/kill itself mid-task — "is Claude/Codex actually busy" has to be a real
@@ -60,8 +61,8 @@ wanting to keep a laptop on all day to bridge the gap.
   broadcasts the magic packet locally. A WoL broadcast cannot cross a router or be delivered
   by a remote VPS — it only reaches devices on the same LAN segment, so this relay device must
   be local. See "Relay device" below.
-- **Sleep path:** cron/timer on each runner checks its own busy/idle state; suspends to S5
-  only when idle past a threshold AND no active agent task.
+- **Sleep path:** a ticker inside `runnerd` checks its own busy/idle state; suspends to S3
+  only when idle past a threshold AND no active agent task. See "Sleep/wake states".
 - **Android app:** native (not PWA) — chosen specifically for Doze-proof background job-done
   notifications and a home-screen widget for wake/stop-containers without opening the app.
   Not targeting Play Store, so no store review constraints on what it can do.
@@ -73,6 +74,77 @@ wanting to keep a laptop on all day to bridge the gap.
   servers, nothing else. Considered and rejected: an app-held persistent connection per
   runner — real ongoing battery cost (keep-alive pings, foreground service, no Doze
   exemption) and reinventing reconnect/reliability handling FCM already solved.
+
+## Two daemons
+
+The whole system is two Go binaries with no overlap and no direct link between them. Getting
+these two words straight removes most of the confusion about what can wake what:
+
+| Term | Binary | Runs on | Job |
+|---|---|---|---|
+| **runner** | `runnerd` (`runner/cmd/runnerd`) | every work machine (laptop, server) | runs projects, sessions and the agent CLI; **puts its own machine to sleep** |
+| **waker** | `wakerd` (`runner/cmd/wakerd`) | one always-on box on the LAN (Pi Zero 2 W) | **wakes other machines** by LAN broadcast; nothing else |
+
+One sentence to hold it: **sleep is the runner's job, wake is the waker's job, and the two
+never talk to each other.** The phone talks to both, separately.
+
+```
+phone --(tailnet, key auth)--> runnerd   : projects, sessions, POST /v1/suspend
+phone --(tailnet, key auth)--> wakerd    : POST /v1/machines/{id}/wake
+wakerd --(LAN L2 broadcast)--> sleeping NIC --> machine boots --> runnerd starts
+```
+
+There is deliberately **no** "wake agent" on the target machine, and there never can be: while
+the machine is asleep, no software on it is running. Wake is the network card's firmware
+reacting to a magic packet — there is nothing there to write or name.
+
+(`runnerd` and `wakerd` differ by one letter, which is a hazard when speaking rather than
+writing. In prose prefer "the runner" and "the waker".)
+
+## Sleep/wake states
+
+**Resolved: S3 (suspend-to-RAM), not S5 (soft off).** The power delta is only ~1W, while S5
+costs a ~30-60s boot back and is far more fragile to wake reliably.
+
+```
+S0 awake  --runnerd idle timeout, or phone "Sleep" (POST /v1/suspend)-->  S3 sleep
+S3 sleep  --magic packet from wakerd on the LAN-->                        S0 awake
+```
+
+How each OS is actually put into that state (`runner/internal/idle`):
+
+- **Linux:** `systemctl suspend` → S3. Needs the service user to hold suspend rights (a polkit
+  rule for `org.freedesktop.login1.suspend`, or sudoers); without them the call fails loudly.
+- **Windows:** `rundll32.exe powrprof.dll,SetSuspendState 0,1,0`.
+
+### Why LAN is not optional
+
+At S3 the OS is frozen: Tailscale is not running, so the machine is off the tailnet entirely
+and nothing can route to it — not the phone on 4G, not a VPS. Only the NIC stays powered, and
+it listens for exactly one thing: a magic packet on its own LAN segment. Broadcasts do not
+cross routers. That is the entire reason `wakerd` has to exist and has to be local.
+
+The only way to remove the LAN requirement is to never truly sleep — which is the cost this
+project exists to avoid.
+
+### Per-machine caveats that bite in practice
+
+- **Windows Modern Standby machines have no S3 at all.** Check with `powercfg /a`: if it
+  reports "Standby (S0 Low Power Idle)" and lists S3 as unavailable, the machine only does
+  S0ix. Such a machine may stay network-connected while "asleep" (so it can remain reachable
+  over the tailnet and need no WoL), or may drop to a deeper state — verify per machine, do
+  not assume.
+- **Windows hibernation silently overrides S3.** If hibernation is enabled, `SetSuspendState`
+  hibernates (S4 — RAM written to disk, machine powered off) instead of suspending, and
+  Windows treats the "don't hibernate" argument as advisory. Run `powercfg /hibernate off` on
+  any machine where true S3 is required. See `runner/internal/idle/shutdown_windows.go`.
+- **WoL over WiFi is usually unavailable.** WoWLAN requires the NIC to stay associated to the
+  AP while suspended; most laptop WiFi cards and drivers do not. Ethernet is the reliable
+  path. Check the target's wake-armed devices (`powercfg /devicequery wake_armed` on Windows,
+  `ethtool <iface> | grep Wake-on` — needs root — on Linux; `g` in the Wake-on field means
+  magic-packet wake is enabled).
+- **Fast Startup (Windows)** changes what a "shutdown" leaves behind and can break wake
+  assumptions; disable it on any machine being used as a wake target.
 
 ## Data model
 
@@ -107,7 +179,7 @@ Device menu (icons, one per registered runner)
 - **History is cleaned weekly** — finished sessions older than a week are purged rather than
   kept indefinitely. Keeps the per-project history list short and avoids unbounded storage
   growth on the runner. (Exact cutoff/retention length is a config value, not hardcoded —
-  same "plug in/plug out" principle as the S5 idle threshold.)
+  same "plug in/plug out" principle as the sleep idle threshold.)
 
 ## Registration / connection (no Docker for Relay itself)
 
@@ -132,16 +204,25 @@ would only get in the way of.
   HTTPS request to `https://<runner>.<tailnet>.ts.net:<port>/...` with the stored key in a
   header — Tailscale's tunnel is the entire transport, the key is the entire auth.
 
-## Relay device (WoL for a fully-off machine)
+## wakerd (the wake daemon)
+
+`wakerd` is the second of the project's two daemons (see "Two daemons" above). It runs on a
+small always-on box physically on the target's LAN, and does exactly one thing: turn a wake
+request arriving over the tailnet into a magic-packet broadcast on the local segment.
 
 A WoL magic packet is a broadcast — it cannot cross a router or be delivered by a remote VPS,
-only by something physically on the same LAN as the sleeping machine. So waking a fully-off
+only by something physically on the same LAN as the sleeping machine. So waking a sleeping
 machine needs a second always-on device, on that LAN, running Tailscale, that receives the wake
-request over the tailnet and fires the local broadcast.
+request over the tailnet and fires the local broadcast. That device is the one running
+`wakerd`; earlier drafts of this document called it "the relay device".
+
+Implementation: `runner/cmd/wakerd` + `runner/internal/waker` (HTTP API) and
+`runner/internal/wol` (packet construction and directed broadcast). `wakerd` never talks to
+`runnerd` — only the phone talks to `wakerd`.
 
 - **Router ruled out:** it's a Netgear D-series (DSL modem-router). Stock firmware has no
   Tailscale/package support, and the D-series isn't practically flashable to OpenWrt (closed
-  modem chipset). Not usable as the relay.
+  modem chipset). Not usable as the wakerd host.
 - **Phone ruled out:** it's only on the home LAN when you're already home on WiFi — exactly
   the situation this project doesn't need solving. On commute/4G, the phone can't deliver a
   LAN broadcast to a network it isn't on.
@@ -155,7 +236,7 @@ request over the tailnet and fires the local broadcast.
 - **Rollout order:** build the app and runner first, install Tailscale + the runner directly
   on the laptop/server (already-owned hardware) and prove the whole flow — registration, wake,
   sessions — end to end. Only buy the Pi Zero 2 W afterward, once the design is confirmed
-  working, and move the relay role onto it last.
+  working, and move the `wakerd` role onto it last.
 
 ## Status as of 2026-09-16 (pick up here next session)
 
@@ -183,9 +264,20 @@ but the resulting APK had not been re-paired against either runner by the end of
 - Phone successfully pairing with both runners post-fix.
 - Wake-via auto-match actually succeeding now that the underlying HTTP calls work.
 - Chat/session/container flows exercised for real against either runner.
-- S5 suspend + WoL wake-back, actually exercised.
+- S3 suspend + WoL wake-back, actually exercised.
 
 ## Status as of 2026-09-15
+
+> **Superseded — read this first.** Several features listed below were later deliberately
+> removed from `main` in commit `2b78806` ("Remove selfupdate, uptime, history and
+> runner-to-runner wake", ~1500 lines deleted). **Not in the code today:**
+> `internal/uptime` + `GET /v1/uptime`, `internal/history`, `internal/selfupdate`,
+> runner-to-runner wake (`internal/wol/localmac.go`, `internal/api/wake_test.go`),
+> bulk `/v1/containers/start-all` / `stop-all`, and the app's `WakeViaMatcher` /
+> `wakeViaRunnerId` auto-match, Room cache, Dashboard screen and `UptimeSyncWorker`.
+> The only trace left is a vestigial `localSubnet` field in the app's `Models.kt`.
+> The entry below is kept as a dated record of what existed at the time, not as a
+> description of the current tree.
 
 **Built and merged** (runner + app, both compile/test clean - runner via `go test ./...`,
 Android via a Dockerized `./gradlew assembleDebug`, see runner/FLOWS.md and android/FLOWS.md for
@@ -196,7 +288,7 @@ details of each):
 - Runner uptime tracking (`internal/uptime`, 14-day local buffer) + `GET /v1/uptime`.
 - `GET /v1/runner/info` now reports `localSubnet`, used by the app's `WakeViaMatcher` to
   auto-fill `wakeViaRunnerId` on pairing (no more manual Edit step for the common case).
-- Best-effort FCM push (`runner_suspending`) right before an idle-triggered S5 suspend.
+- Best-effort FCM push (`runner_suspending`) right before an idle-triggered suspend.
 - **Manual suspend**: `POST /v1/suspend` (409 if busy, 503 if `RELAY_IDLE_SUSPEND_ENABLED` isn't
   set) + a "Suspend now" action in the app, so you don't have to wait out the idle timer.
 - On-device Room cache for sessions/messages (offline/asleep-runner fallback in ChatScreen and
@@ -232,9 +324,10 @@ commands for the remote server once the laptop path is proven, (4) file viewing.
 
 ## Open questions / not yet decided
 
-- S5 vs S3 per machine — **resolved: S5.** True near-zero power was the actual motivating pain;
-  eats a ~30-60s boot, containers need `restart: always` to come back without manual
-  intervention. Idle-timeout-before-suspend is a config value, not hardcoded.
+- S5 vs S3 per machine — **resolved: S3** (suspend-to-RAM). The power delta vs S5 is only
+  ~1W, while S5 costs a ~30-60s boot back and is far more fragile to wake. Containers still
+  need `restart: always` for the S4/S5 cases. Idle-timeout-before-suspend is a config value,
+  not hardcoded. Implemented in `runner/internal/idle`. See "Sleep/wake states".
 - Auto-register a machine's runner on first Tailscale-up, vs manual add-to-known-list —
   **resolved: manual** (avoids accidentally trusting a rogue machine on the tailnet).
 - ~~Exact runner transport~~ **Resolved:** HTTP API only. SSH+tmux was considered as a

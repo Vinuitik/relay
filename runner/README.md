@@ -50,7 +50,8 @@ See `install/`. Steps:
    `~youruser/.relay/key.txt`) — copy that into the phone app's known-runners list along with
    the Tailscale IP from step 2.
 5. Leave `RELAY_IDLE_SUSPEND_ENABLED` unset/false until you've actually tested wake — enabling
-   it powers this machine off. See `FLOWS.md`'s "Idle-suspend (S5)" section first.
+   it suspends this machine to sleep (S3), and nothing can wake it without a
+   `wakerd` on its LAN. See `FLOWS.md`'s "Idle-suspend" section first.
 
 This does not touch Docker, project directories, or Tailscale itself — those are separate,
 one-time setup steps you do yourself before or after running the installer.

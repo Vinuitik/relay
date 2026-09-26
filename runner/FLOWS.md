@@ -3,6 +3,12 @@
 Files: main.go, config.go, project.go, session.go, compose.go, api.go,
 registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go
 
+This file covers **`runnerd`** only — the per-machine daemon that runs projects/sessions and
+**puts its own machine to sleep**. It has no wake ability and never can: while a machine is
+asleep nothing on it runs. Waking is `wakerd`'s job — a separate daemon on a separate,
+always-on LAN device — documented in `cmd/wakerd/FLOWS.md`. The two never talk to each other;
+the phone talks to each separately. See ARCHITECTURE.md "Two daemons" and "Sleep/wake states".
+
 ## Startup
 
 main() → config.Load() → generates ~/.relay/key.txt + projects.json if absent, prints key once
