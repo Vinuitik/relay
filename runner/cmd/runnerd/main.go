@@ -105,6 +105,19 @@ func main() {
 
 	if idleCfg.Enabled {
 		log.Printf("idle: suspend-to-sleep enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)
+		// Report which sleep state this machine will actually land in, and
+		// whether that state needs a wakerd to come back from. "Suspend"
+		// is not one thing across the fleet - an S3 box is unreachable
+		// until a magic packet arrives, a Modern Standby box has no S3 at
+		// all, and Windows hibernation silently overrides both. Logging it
+		// here means the operator finds out at startup rather than after
+		// suspending a machine nothing can wake. See internal/idle/FLOWS.md
+		// "Per-machine wake matrix".
+		capab := idle.Detect()
+		log.Printf("idle: %s", capab)
+		if capab.Reached == idle.SleepHibernate {
+			log.Printf("idle: WARNING - hibernation makes this a full power-off; wake needs WoL and a ~60s boot")
+		}
 		mon := idle.NewMonitor(sessions, idle.DefaultShutdowner, idleCfg)
 		mon.BeforeShutdown = beforeShutdown
 		// Sources (b) and (c) of the idle decision - see internal/idle's

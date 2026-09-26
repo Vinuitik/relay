@@ -9,6 +9,10 @@ asleep nothing on it runs. Waking is `wakerd`'s job — a separate daemon on a s
 always-on LAN device — documented in `cmd/wakerd/FLOWS.md`. The two never talk to each other;
 the phone talks to each separately. See ARCHITECTURE.md "Two daemons" and "Sleep/wake states".
 
+Sleep is covered in depth in `internal/idle/FLOWS.md` — including the
+**per-machine wake matrix** (which machine can actually be woken, and why),
+suspend-state detection, and the polkit/masked-target/hibernation traps.
+
 ## Startup
 
 main() → config.Load() → generates ~/.relay/key.txt + projects.json if absent, prints key once
