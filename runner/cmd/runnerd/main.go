@@ -8,6 +8,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/mdp/qrterminal/v3"
 	"rsc.io/qr"
@@ -58,6 +62,30 @@ func main() {
 	}
 
 	sessions := session.NewManager(projects.Dir)
+	// Sessions persist to $RELAY_HOME/sessions/ and come back after a
+	// restart - ACP ones resume the same agent conversation on the next
+	// message. See internal/session/store.go.
+	if err := sessions.SetStoreDir(filepath.Join(cfg.RelayHome, "sessions")); err != nil {
+		log.Printf("session persistence disabled: %v", err)
+	} else if err := sessions.LoadPersisted(); err != nil {
+		log.Printf("load saved sessions: %v", err)
+	}
+	stopSaver := make(chan struct{})
+	saverDone := make(chan struct{})
+	go func() { sessions.RunSaver(stopSaver); close(saverDone) }()
+	// On shutdown: kill agent processes (they'd outlive the runner on
+	// Windows), let their sessions go dormant, flush to disk, exit.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigs
+		log.Printf("received %v, shutting down", sig)
+		sessions.Shutdown()
+		time.Sleep(500 * time.Millisecond) // let exit handlers mark sessions dormant
+		close(stopSaver)
+		<-saverDone
+		os.Exit(0)
+	}()
 
 	devices := notify.NewRegistry()
 	notifier := notify.NewNotifier(os.Getenv("RELAY_FCM_CREDENTIALS"))

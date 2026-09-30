@@ -62,6 +62,20 @@ func runFakeAgent() {
 					{"id": "default", "name": "Manual"}, {"id": "bypassPermissions", "name": "Bypass permissions"},
 				}},
 			}})
+		case "session/resume":
+			var r struct {
+				SessionID string `json:"sessionId"`
+			}
+			json.Unmarshal(m.Params, &r)
+			if r.SessionID != "fs1" {
+				send(map[string]any{"id": m.ID, "error": map[string]any{"code": -32602, "message": "unknown session"}})
+				continue
+			}
+			send(map[string]any{"id": m.ID, "result": map[string]any{
+				"modes": map[string]any{"currentModeId": "default", "availableModes": []map[string]string{
+					{"id": "default", "name": "Manual"}, {"id": "bypassPermissions", "name": "Bypass permissions"},
+				}},
+			}})
 		case "session/set_mode":
 			send(map[string]any{"id": m.ID, "result": map[string]any{}})
 		case "session/cancel":
@@ -289,5 +303,74 @@ func TestACP_NotSupportedOnRawProvider(t *testing.T) {
 	defer m.Stop(sess.ID)
 	if _, err := m.Cancel(sess.ID); err == nil {
 		t.Error("Cancel on raw provider succeeded, want ErrNotSupported")
+	}
+}
+
+func TestACP_PersistRestartResume(t *testing.T) {
+	store := t.TempDir()
+	projectDir := t.TempDir()
+
+	m1 := newFakeACPManager(t)
+	m1.resolveDir = testResolver(projectDir)
+	if err := m1.SetStoreDir(store); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := m1.Start("proj", "fake-acp")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := m1.SetMode(sess.ID, "default"); err != nil {
+		t.Fatalf("SetMode: %v", err)
+	}
+	if err := m1.SendMessage(sess.ID, "hi"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	waitForState(t, m1, sess.ID, StateIdle, 5*time.Second)
+	m1.SaveAll()
+	saved, _ := m1.Get(sess.ID)
+	if saved.LastActiveAt == "" {
+		t.Error("LastActiveAt not set after save")
+	}
+	m1.Shutdown()
+	time.Sleep(300 * time.Millisecond)
+
+	// "Restart": a new Manager over the same store.
+	m2 := newFakeACPManager(t)
+	m2.resolveDir = testResolver(projectDir)
+	if err := m2.SetStoreDir(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := m2.LoadPersisted(); err != nil {
+		t.Fatalf("LoadPersisted: %v", err)
+	}
+	got, err := m2.Get(sess.ID)
+	if err != nil {
+		t.Fatalf("restored session missing: %v", err)
+	}
+	if got.State != StateIdle || len(got.Messages) != 3 {
+		t.Fatalf("restored = state %q, %d messages; want idle with the 3 saved messages", got.State, len(got.Messages))
+	}
+	if got.LastActiveAt != saved.LastActiveAt {
+		t.Errorf("LastActiveAt = %q after restore, want the saved %q", got.LastActiveAt, saved.LastActiveAt)
+	}
+
+	// The next message resumes the agent conversation and re-applies the mode.
+	if err := m2.SendMessage(sess.ID, "hi again"); err != nil {
+		t.Fatalf("SendMessage after restore: %v", err)
+	}
+	after := waitForState(t, m2, sess.ID, StateIdle, 5*time.Second)
+	defer m2.Stop(sess.ID)
+	if last := after.Messages[len(after.Messages)-2]; last.Role != "agent" || last.Text != "Hello" {
+		t.Errorf("reply after resume = %+v, want the agent's Hello", last)
+	}
+	if after.Mode != "default" {
+		t.Errorf("Mode after resume = %q, want the saved \"default\"", after.Mode)
+	}
+}
+
+func TestRestore_RawSessionComesBackFinished(t *testing.T) {
+	rec := restoreRecord(persisted{Session: Session{ID: "x", State: StateBusy, Provider: "echo-agent"}})
+	if rec.data.State != StateFinished || rec.dormant {
+		t.Errorf("raw session restored as %q (dormant=%v), want finished", rec.data.State, rec.dormant)
 	}
 }

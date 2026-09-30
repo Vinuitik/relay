@@ -31,6 +31,7 @@ Session {
   // ACP providers only (claude), omitted otherwise:
   mode?: string                         // current permission mode id, e.g. "bypassPermissions"
   modes?: {id, name, description?}[]    // what the agent offers
+  lastActiveAt?: string                 // RFC3339, last change; bumped ~every 30s while busy
   pendingPermission?: {                 // set while state == "waiting"
     title: string, toolKind: string,
     options: {optionId, name, kind}[]   // kind: allow_once | allow_always | reject_once | reject_always

@@ -47,6 +47,22 @@ func (c *Client) NewSession(cwd string) (sessionID string, modes *Modes, err err
 	return res.SessionID, res.Modes, nil
 }
 
+// ResumeSession reattaches to an existing conversation (e.g. after the agent
+// process or the runner restarted) without replaying its history. Checked
+// against claude-agent-acp 0.84.0: params {sessionId, cwd, mcpServers}, the
+// result carries modes like session/new - but the mode is reset to the
+// agent's default, so callers re-apply their own.
+func (c *Client) ResumeSession(sessionID, cwd string) (*Modes, error) {
+	var res struct {
+		Modes *Modes `json:"modes"`
+	}
+	params := map[string]any{"sessionId": sessionID, "cwd": cwd, "mcpServers": []any{}}
+	if err := c.Call("session/resume", params, &res); err != nil {
+		return nil, err
+	}
+	return res.Modes, nil
+}
+
 // SetMode switches the session's mode.
 func (c *Client) SetMode(sessionID, modeID string) error {
 	return c.Call("session/set_mode", map[string]string{"sessionId": sessionID, "modeId": modeID}, nil)

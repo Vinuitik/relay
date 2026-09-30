@@ -37,9 +37,9 @@ type Handlers struct {
 	// OnNotification gets every notification, e.g. "session/update".
 	OnNotification func(method string, params json.RawMessage)
 	// OnRequest gets every agent->client request, e.g.
-	// "session/request_permission". It must eventually answer with Respond
-	// or RespondError using id, or the agent waits forever.
-	OnRequest func(id json.RawMessage, method string, params json.RawMessage)
+	// "session/request_permission". It must eventually answer with c.Respond
+	// or c.RespondError using id, or the agent waits forever.
+	OnRequest func(c *Client, id json.RawMessage, method string, params json.RawMessage)
 }
 
 // Client is one connection to one agent subprocess.
@@ -195,7 +195,7 @@ func (c *Client) readLoop(r io.Reader) {
 		switch {
 		case m.Method != "" && len(m.ID) > 0:
 			if c.handlers.OnRequest != nil {
-				c.handlers.OnRequest(m.ID, m.Method, m.Params)
+				c.handlers.OnRequest(c, m.ID, m.Method, m.Params)
 			} else {
 				_ = c.RespondError(m.ID, -32601, "method not supported: "+m.Method)
 			}

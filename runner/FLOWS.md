@@ -96,6 +96,25 @@ End session: POST …/stop → `Manager.Stop` → kill agent process → `finish
 Process exits on its own → `awaitExit` (waits for `acp.Client.Done()` so stdout is drained, then
 `Wait`) → `finished`/`error`; on error the agent's last stderr lines are added to the transcript.
 
+Agent process dies (crash, or the runner is killed) → `awaitACPExit` → session **dormant**
+(idle, no process). Next message → `runTurn` → `ensureAgent` → spawn agent → `session/resume
+{sessionId, cwd}` (same conversation, no history replay) → re-apply the saved mode (resume resets
+it) → prompt.
+
+### Session persistence
+
+Files: store.go
+
+`main` → `Manager.SetStoreDir($RELAY_HOME/sessions)` → `LoadPersisted` (one JSON file per session:
+transcript, state, mode, `acpSessionId`, `lastActiveAt`) → `RunSaver` goroutine: every 2s writes
+sessions whose content changed (tmp file + rename), stamping `lastActiveAt`; while `busy` also bumps
+`lastActiveAt` every 30s (heartbeat). On load: finished stays finished, ACP sessions come back
+dormant (in-flight turn → "(interrupted - the runner restarted)", running tool rows → failed,
+pending permission dropped), raw sessions come back finished.
+Shutdown (SIGINT/SIGTERM): `Manager.Shutdown` kills agent processes → sessions go dormant →
+final flush.
+To change intervals: `store.go` (`saveInterval`, `heartbeatInterval`).
+
 ### Sessions (raw) - echo-agent, RELAY_PROVIDER_<NAME>
 
 Spawn → `pump` appends each stdout/stderr line as an agent message → `busy` from spawn until the
@@ -415,9 +434,16 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 - **One turn at a time per session**: a message sent while a turn runs gets 409, not queued
   (the adapter supports queueing; not used).
 - **Streaming is polling**: the app polls `GET /v1/sessions/{id}` every 1s while busy. No SSE.
-- **ACP session ids are not persisted**: a runner restart loses the conversation (the agent's
-  own history on disk remains; `session/load` resume is [NOT IMPLEMENTED]).
-- **Sessions are in-memory only** (a `sync.Mutex`-guarded map in session.Manager). A runner
+- **Sessions persist to `$RELAY_HOME/sessions/*.json`** on the runner's own machine and resume
+  after a restart (verified 2026-09-30: hard-killed runner, restarted, the resumed Claude still
+  knew the earlier conversation). The runner's file is the transcript; the agent keeps its own
+  conversation state separately (Claude: `~/.claude/projects/`). Deleting either breaks resume.
+  No cleanup yet - files accumulate [NOT IMPLEMENTED: purge].
+- **A hard kill loses at most ~2s of transcript** (the save interval). Agent processes exit
+  on their own when the runner's pipe closes (observed: 0 orphans after `Stop-Process -Force`).
+- **Graceful shutdown on Windows**: `Stop-Process` is always a hard kill; SIGINT only arrives
+  from a console Ctrl+C. Fine given the above.
+- **Sessions used to be in-memory only** (history) (a `sync.Mutex`-guarded map in session.Manager). A runner
   restart loses all session state and transcripts — no disk persistence. Acceptable for this
   milestone; revisit if restarts become common. Note this is a *process* restart, not a suspend
   cycle — idle-suspend now sleeps (S3/Modern Standby) rather than powering off, so RAM (and this
@@ -552,6 +578,8 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Stop button (cancel turn) | `acp_session.go` (`Cancel`), `POST /v1/sessions/{id}/cancel` |
 | Default permission mode | env `RELAY_DEFAULT_MODE` (default `bypassPermissions`), `session.NewManager` |
 | Which command runs for a provider | `session.autoDetectProviders`, env `RELAY_ACP_<NAME>` / `RELAY_PROVIDER_<NAME>` |
+| Session files, save/heartbeat intervals | `internal/session/store.go` |
+| Resume a dormant session | `acp_session.go` (`ensureAgent`), `acp.Client.ResumeSession` |
 | Needs-input push | `cmd/runnerd/main.go` (`sessions.OnNeedsInput`), `notify.NotifySessionNeedsInput` |
 | Auth header check | `internal/api/api.go` middleware |
 | Docker compose invocation (up/down/ps args) | `internal/compose/compose.go` (`UpWith`, `DownWith`, `StatusWith`) |

@@ -101,6 +101,9 @@ type Session struct {
 	Mode              string             `json:"mode,omitempty"`
 	Modes             []acp.Mode         `json:"modes,omitempty"`
 	PendingPermission *PendingPermission `json:"pendingPermission,omitempty"`
+	// LastActiveAt is when the session last changed, bumped every ~30s
+	// while the agent works (see store.go). RFC3339.
+	LastActiveAt string `json:"lastActiveAt,omitempty"`
 }
 
 // ProviderCommand is the command run for a given provider name.
@@ -126,6 +129,14 @@ type record struct {
 	acpSession string
 	turnActive bool            // a session/prompt call is in flight
 	permID     json.RawMessage // JSON-RPC id of the open permission request, nil if none
+	// dormant: an ACP session restored from disk (or whose agent process
+	// died) with no process; the next message resumes it - see ensureAgent.
+	dormant bool
+
+	// Persistence bookkeeping (store.go).
+	saved        []byte    // last bytes written to disk
+	savedContent []byte    // content() at that save, for change detection
+	lastBeat     time.Time // last lastActiveAt bump
 	// stopped marks that Stop() already finalized this session, so the
 	// background reader goroutine (which observes process exit
 	// independently) must not overwrite that final state.
@@ -152,6 +163,8 @@ type Manager struct {
 	// createdAt is used by IdleStatus as the idle-since time when no
 	// session has ever been created yet.
 	createdAt time.Time
+	// storeDir, if set, is where sessions are persisted (store.go).
+	storeDir string
 
 	// DefaultMode is the ACP mode new sessions are switched to right after
 	// creation, if the agent offers it (env RELAY_DEFAULT_MODE, default
@@ -334,10 +347,6 @@ func (m *Manager) pump(rec *record, r io.Reader) {
 // awaitExit waits for the subprocess to exit and finalizes session state,
 // unless Stop() already finalized it first.
 func (m *Manager) awaitExit(rec *record) {
-	if rec.acp != nil {
-		// Let the reader drain stdout before Wait closes the pipe.
-		<-rec.acp.Done()
-	}
 	err := rec.cmd.Wait()
 
 	rec.mu.Lock()
@@ -345,15 +354,6 @@ func (m *Manager) awaitExit(rec *record) {
 		rec.mu.Unlock()
 		return
 	}
-	if err != nil && rec.acp != nil {
-		msg := "Agent exited: " + err.Error()
-		if tail := rec.acp.StderrTail(); tail != "" {
-			msg += "\n" + tail
-		}
-		rec.data.Messages = append(rec.data.Messages, Message{Role: "agent", Text: msg, At: now()})
-	}
-	rec.data.PendingPermission = nil
-	rec.permID = nil
 	ts := nowT()
 	tsStr := ts.Format(time.RFC3339)
 	rec.data.FinishedAt = &tsStr
@@ -462,7 +462,7 @@ func (m *Manager) SendMessage(sessionID, text string) error {
 	if err != nil {
 		return err
 	}
-	if rec.acp != nil {
+	if rec.isACP() {
 		return m.sendACP(rec, text)
 	}
 
@@ -503,7 +503,11 @@ func (m *Manager) Stop(sessionID string) (Session, error) {
 	rec.data.PendingPermission = nil
 	rec.permID = nil
 	rec.idleSince = ts
-	proc := rec.cmd.Process
+	rec.dormant = false
+	var proc *os.Process
+	if rec.cmd != nil {
+		proc = rec.cmd.Process
+	}
 	rec.stdin = nil
 	snapshot := cloneSession(rec.data)
 	rec.mu.Unlock()
