@@ -65,6 +65,22 @@ BrowseResult {
 }
 ```
 
+### ContainersStatus
+
+```
+{
+  composeFiles: string[],      // file names, sorted
+  activeFile: string,          // "" = several files and none chosen yet
+  hasDockerfile: boolean,
+  containers: { service: string, state: string, composeFile: string }[],
+  operation: "" | "starting" | "switching" | "stopping",
+  lastError: string,           // from the last finished start/stop, "" if it succeeded
+  dockerError: string          // docker itself unreachable (not running, not installed)
+}
+```
+
+`Project` also gains `activeComposeFile?: string`.
+
 ## Endpoints
 
 | Method | Path | Body | Response | Notes |
@@ -79,8 +95,9 @@ BrowseResult {
 | GET | `/v1/sessions/{sessionId}` | - | `200 Session` | full transcript so far |
 | POST | `/v1/sessions/{sessionId}/message` | `{text: string}` | `202 {}` | appends a user message and feeds it to the running agent subprocess's stdin |
 | POST | `/v1/sessions/{sessionId}/stop` | - | `200 Session` | kills the subprocess, marks session `finished` |
-| POST | `/v1/projects/{projectId}/containers/start` | - | `200 {}` | runs `docker compose up -d` in the project dir |
-| POST | `/v1/projects/{projectId}/containers/stop` | - | `200 {}` | runs `docker compose down` in the project dir |
+| GET | `/v1/projects/{projectId}/containers` | - | `200 ContainersStatus` | compose files found at the project's top level (`docker-compose.yml`, `docker-compose.dev.yml`, `compose-prod.yaml`, ...), the active one, and every container compose started from this directory. Only calls docker if a compose file exists; docker failures go in `dockerError`, not an HTTP error. |
+| POST | `/v1/projects/{projectId}/containers/start` | `{file?: string}` (body optional) | `202 ContainersStatus` | turns on `file` (default: the active file) with `docker compose -f <file> up -d`. If a different file was active it's brought down first - a **switch**, so only one compose file runs per project. The choice is persisted. Runs in the background: poll GET until `operation` is `""`, then check `lastError`. `400` if no compose file, `file` isn't one of `composeFiles`, or several exist and none is chosen yet; `409` if an operation is already running. |
+| POST | `/v1/projects/{projectId}/containers/stop` | - | `202 ContainersStatus` | `docker compose -f <active> down --remove-orphans` in the background - removes containers from any of the project's compose files. Same `400`/`409` as start. |
 | POST | `/v1/devices` | `{fcmToken: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner, so the runner can notify it on session-finish (or on suspend, see below). Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
 | POST | `/v1/suspend` | - | `202 {}` | manually suspends this machine to sleep (S3 on Linux, Modern Standby on Windows) right now, instead of waiting for the idle timeout. `409` if any session is currently busy (never kills active work); `503` if the runner wasn't started with `RELAY_IDLE_SUSPEND_ENABLED=true` — this endpoint deliberately reuses that same opt-in gate, see runner/FLOWS.md "Idle-suspend". |
 | POST | `/v1/activity` | - | `202 {}` | tells the runner "the phone app is in the foreground right now" — one of the signals idle-suspend uses to decide whether to suspend the machine, alongside session busy/idle state and local keyboard/mouse input. Call every 30s while, and only while, the app is in the foreground; stop calling when it's backgrounded or closed. Always accepted, even if idle-suspend is disabled on this runner — see runner/FLOWS.md "Idle-suspend". |

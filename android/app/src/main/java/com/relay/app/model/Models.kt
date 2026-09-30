@@ -88,3 +88,21 @@ data class BrowseResult(
     val path: String,
     val entries: List<DirEntry>,
 )
+
+/** Response of every `/v1/projects/{id}/containers` endpoint - see
+ * [com.relay.app.ui.screens.ContainersScreen]. */
+data class ContainersStatus(
+    val composeFiles: List<String>,
+    val activeFile: String, // "" = several files and none chosen yet
+    val hasDockerfile: Boolean,
+    val containers: List<ContainerInfo>,
+    val operation: String, // "" | "starting" | "switching" | "stopping"
+    val lastError: String,
+    val dockerError: String,
+)
+
+data class ContainerInfo(
+    val service: String,
+    val state: String, // docker's state: "running", "exited", ...
+    val composeFile: String,
+)

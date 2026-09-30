@@ -21,7 +21,15 @@ RunnerListScreen → ProjectListScreen(runner) → SessionListScreen(runner, pro
 → ChatScreen(runner, project, session)
 
 Side branches off ProjectListScreen: FileBrowserScreen (read-only, per project) and
-FolderPickerScreen (register an existing folder as a project).
+FolderPickerScreen (register an existing folder as a project). Off SessionListScreen:
+ContainersScreen — its top-bar icon only appears if `GET …/containers` reports compose files or a
+Dockerfile.
+
+ContainersScreen → radio list of compose files (preselected = runner's `activeFile`) → button
+"Start X" / "Switch to X" (switch when another file is active and something is running) →
+`startContainers(file)` → runner answers `202` immediately → screen polls every 2s while
+`operation` is non-empty, 10s otherwise → `lastError`/`dockerError` shown in red.
+To change the labels/polling: ContainersScreen.kt.
 
 To add a screen: RelayNavHost.kt
 
@@ -292,8 +300,8 @@ Removed as premature/broken, so the app is only the core loop. Listed so nobody 
 
 `SuspendRunnerWorker` is also gone, but the **Sleep button stayed** and now calls
 `RelayApiService.suspend()` directly with visible results — see "Manual suspend" above.
-Per-project `startContainers`/`stopContainers` remain on `RelayApiService` (unused by any screen
-today).
+Per-project `startContainers`/`stopContainers` stayed on `RelayApiService` and are now used by
+ContainersScreen (2026-09-30), which also surfaces failures (`lastError`).
 
 ## Change Index
 
@@ -301,6 +309,9 @@ today).
 |---|---|
 | Known runners storage | `data/KnownRunnersRepository.kt`, `model/Models.kt` (`KnownRunner`) |
 | Default runner port (7777) | `model/Models.kt` (`KnownRunner.DEFAULT_PORT`) |
+| Containers screen (compose file picker, start/switch/stop) | `ui/screens/ContainersScreen.kt` |
+| When the Containers icon shows | `ui/screens/SessionListScreen.kt` (`hasDocker`) |
+| Runner error text in error messages | `network/RelayApiClient.kt` (`friendlyErrorMessage`) |
 | QR pairing content parsing | `ui/screens/QrScanScreen.kt` (`parseRelayQrContent`) |
 | Runner display name / blank fallback | `model/Models.kt` (`.displayName`, `.label`), `ui/screens/RunnerListScreen.kt` (`NameRunnerDialog`, `AddRunnerDialog`) |
 | API types (must match shared/API.md) | `model/Models.kt` |

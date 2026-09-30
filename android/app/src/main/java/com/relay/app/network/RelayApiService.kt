@@ -1,6 +1,7 @@
 package com.relay.app.network
 
 import com.relay.app.model.BrowseResult
+import com.relay.app.model.ContainersStatus
 import com.relay.app.model.Device
 import com.relay.app.model.FileContent
 import com.relay.app.model.FileEntry
@@ -20,10 +21,11 @@ data class NewProjectRequest(val name: String, val path: String? = null)
 data class NewSessionRequest(val provider: String)
 data class MessageRequest(val text: String)
 data class DeviceRegistrationRequest(val fcmToken: String)
+data class StartContainersRequest(val file: String)
 
 /**
  * Retrofit mirror of shared/API.md's v1 endpoint table. Endpoints whose response body carries no
- * data worth parsing (message/containers start/stop — `202 {}` / `200 {}`) return
+ * data worth parsing (message — `202 {}`) return
  * `Response<ResponseBody>` rather than a typed/Unit body: Retrofit has no built-in converter for
  * bare `Unit`, and `ResponseBody` is always supported without needing one — callers just check
  * `isSuccessful` and close the body.
@@ -69,11 +71,21 @@ interface RelayApiService {
     @POST("v1/sessions/{sessionId}/stop")
     suspend fun stopSession(@Path("sessionId") sessionId: String): Session
 
+    /** Detected compose files, the active one, and container states. Cheap - safe to poll. */
+    @GET("v1/projects/{projectId}/containers")
+    suspend fun containers(@Path("projectId") projectId: String): ContainersStatus
+
+    /** Turns on [StartContainersRequest.file]; if another file was active the runner brings it
+     * down first (a switch). Returns immediately (`202`) - poll [containers] until `operation`
+     * is empty. */
     @POST("v1/projects/{projectId}/containers/start")
-    suspend fun startContainers(@Path("projectId") projectId: String): Response<ResponseBody>
+    suspend fun startContainers(
+        @Path("projectId") projectId: String,
+        @Body request: StartContainersRequest,
+    ): ContainersStatus
 
     @POST("v1/projects/{projectId}/containers/stop")
-    suspend fun stopContainers(@Path("projectId") projectId: String): Response<ResponseBody>
+    suspend fun stopContainers(@Path("projectId") projectId: String): ContainersStatus
 
     /** Registers/updates this phone's FCM push token with this runner. Response body carries a
      * typed [Device] per shared/API.md, but no current caller needs it beyond success/failure. */

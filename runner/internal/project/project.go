@@ -23,6 +23,11 @@ type Project struct {
 	Name      string `json:"name"`
 	Path      string `json:"path"`
 	CreatedAt string `json:"createdAt"` // RFC3339
+	// ActiveComposeFile is the compose file (name, relative to Path) last
+	// started from the phone - which of docker-compose.dev.yml /
+	// docker-compose.prod.yml / ... this project currently runs. Empty until
+	// one is chosen; see api.handleContainersStart.
+	ActiveComposeFile string `json:"activeComposeFile,omitempty"`
 }
 
 // Registry is a mutex-guarded, disk-persisted list of known projects.
@@ -84,6 +89,19 @@ func (r *Registry) Get(id string) (Project, error) {
 		}
 	}
 	return Project{}, ErrNotFound
+}
+
+// SetActiveComposeFile records which compose file project id now runs.
+func (r *Registry) SetActiveComposeFile(id, file string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.projects {
+		if r.projects[i].ID == id {
+			r.projects[i].ActiveComposeFile = file
+			return r.persistLocked()
+		}
+	}
+	return ErrNotFound
 }
 
 // Dir resolves a project id to its absolute directory path. It's a small

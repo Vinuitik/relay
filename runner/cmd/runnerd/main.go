@@ -92,8 +92,10 @@ func main() {
 
 	idleCfg := idle.LoadConfig()
 	srv := api.NewServer(cfg.Key, projects, sessions, api.ComposeFuncs{
-		Start: compose.Start,
-		Stop:  compose.Stop,
+		Detect: compose.Detect,
+		Status: compose.Status,
+		Up:     compose.Up,
+		Down:   compose.Down,
 	}, devices)
 
 	// tracker records phone-app foreground pings (POST /v1/activity) -

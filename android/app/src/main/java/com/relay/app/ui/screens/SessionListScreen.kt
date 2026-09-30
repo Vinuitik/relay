@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -54,6 +55,7 @@ fun SessionListScreen(
     runner: KnownRunner,
     projectId: String,
     onSessionSelected: (Session) -> Unit,
+    onContainersSelected: () -> Unit,
     onBack: () -> Unit,
 ) {
     val api = remember(runner) { RelayApiClient.forRunner(runner) }
@@ -63,6 +65,9 @@ fun SessionListScreen(
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var showNewSessionDialog by remember { mutableStateOf(false) }
+    // Only offer the Containers screen when the runner found something docker-shaped in the
+    // project. A failed check (old runner without the endpoint, docker trouble) just hides it.
+    var hasDocker by remember { mutableStateOf(false) }
 
     suspend fun refresh() {
         if (sessions.isEmpty()) loading = true
@@ -78,6 +83,9 @@ fun SessionListScreen(
 
     LaunchedEffect(projectId) {
         refresh()
+        hasDocker = runCatching {
+            api.containers(projectId).let { it.composeFiles.isNotEmpty() || it.hasDockerfile }
+        }.getOrDefault(false)
     }
 
     Scaffold(
@@ -87,6 +95,13 @@ fun SessionListScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (hasDocker) {
+                        IconButton(onClick = onContainersSelected) {
+                            Icon(Icons.Default.Dns, contentDescription = "Containers")
+                        }
                     }
                 },
             )

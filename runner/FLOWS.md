@@ -31,6 +31,25 @@ phone app → HTTP + `X-Relay-Key` header → api.go middleware checks key (401 
 exempt) → routed via Go 1.22 ServeMux method+pattern → project.Registry / session.Manager /
 compose.Runner
 
+## Containers (docker compose, dev/prod switch)
+
+GET /v1/projects/{id}/containers → api.handleContainersStatus → compose.Detect (top-level files
+matching `composeFileRe`, e.g. docker-compose.yml / docker-compose.dev.yml / compose-prod.yaml,
+plus Dockerfile) → active file = `Project.ActiveComposeFile` if still present, else
+compose.DefaultFile (the only file, or the plain unsuffixed name) → compose.Status (`docker ps -a
+--filter label=com.docker.compose.project.working_dir=<dir>`, so containers from every file show)
+
+POST …/containers/start `{file?}` → validate file ∈ detected → beginContainerOp (409 if one is
+running) → registry.SetActiveComposeFile → **background goroutine**: if a different file was
+active, compose.Down(prev) first (the switch) → compose.Up(file) → endContainerOp records
+`lastError` → `202` with current status; the app polls GET until `operation` is "".
+
+POST …/containers/stop → compose.Down(active) in the background. `down --remove-orphans` removes
+containers of any file in the project, since all files in one dir share one compose project name.
+
+To change file-name matching: compose.composeFileRe. To change the no-choice default:
+compose.defaultNames. To change what "switch" does: api.handleContainersStart.
+
 ## Session lifecycle
 
 POST /v1/projects/{id}/sessions → session.Manager.Start(projectID, provider)
@@ -397,7 +416,19 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 - **Project registry persists to disk** (`projects.json`), sessions do not — asymmetric by
   design for this milestone, not an oversight.
 - **compose.Runner is an interface** specifically so `docker compose` calls are fakeable in
-  tests — no real compose file has been exercised yet (no test project defines one).
+  tests — no real compose file has been exercised by the tests yet.
+- **Container operation state is in-memory** (`Server.containerOps`): a runner restart mid-`up`
+  forgets it was running (the docker command dies with the runner anyway). The *chosen file*
+  is persisted in `projects.json` (`activeComposeFile`) and survives restarts.
+- **One compose project per directory**: compose names the project after the directory, so dev
+  and prod files in one folder share containers/networks/volumes names. That's why switch = down
+  then up, and why running dev and prod side by side from one folder is not supported. Named
+  volumes are shared between dev and prod unless the files name them differently.
+- **Status matches on the `working_dir` label string**: a stack started by hand from a different
+  path spelling (symlink, different drive-letter case on Windows) won't show up.
+- **Only the top level is scanned**: compose files in subfolders (e.g. `deploy/`) aren't found.
+- **`up` failures surface only as `lastError`** (last 5 lines of docker output), since the
+  request returned `202` long before.
 - **Auth is a single static key**, no rotation, no per-session scoping. Compromise of the key
   compromises the whole runner. Relies entirely on Tailscale for transport-level access control.
 - **HTTP listener defaults to 127.0.0.1** for local dev/testing — deploying it bound to a
@@ -507,7 +538,11 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Provider → command mapping | `internal/session/session.go` (`resolveProvider`, `autoDetectProviders`, env `RELAY_PROVIDER_<NAME>` override) |
 | claude stream-json codec (encode/decode) | `internal/session/session.go` (`encodeClaudeStreamJSONUserMessage`, `decodeClaudeStreamJSONLine`, `codecClaudeStreamJSON`) |
 | Auth header check | `internal/api/api.go` middleware |
-| Docker compose invocation | `internal/compose/compose.go` |
+| Docker compose invocation (up/down/ps args) | `internal/compose/compose.go` (`UpWith`, `DownWith`, `StatusWith`) |
+| Which file names count as compose files | `compose.composeFileRe` |
+| Default file when several and none chosen | `compose.defaultNames` / `compose.DefaultFile` |
+| Switch/start/stop semantics, 409 on concurrent ops | `internal/api/containers.go` |
+| Persisted chosen compose file | `project.Project.ActiveComposeFile`, `Registry.SetActiveComposeFile` |
 | HTTP endpoint routing | `internal/api/api.go` (must match `shared/API.md`) |
 | WoL primitives (unused by the runner API today) | `internal/wol/wol.go` (`BuildMagicPacket`) |
 | WoL broadcast send / SO_BROADCAST | `internal/wol/broadcast_unix.go`, `broadcast_windows.go` |

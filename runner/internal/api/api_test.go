@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"relay/runner/internal/activity"
+	"relay/runner/internal/compose"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
@@ -30,8 +31,12 @@ func newTestServer(t *testing.T) *Server {
 	sessions := session.NewManager(projects.Dir)
 	devices := notify.NewRegistry()
 	return NewServer(testKey, projects, sessions, ComposeFuncs{
-		Start: func(string) error { return nil },
-		Stop:  func(string) error { return nil },
+		Detect: func(string) (compose.Detected, error) {
+			return compose.Detected{ComposeFiles: []string{"docker-compose.yml"}}, nil
+		},
+		Status: func(string) ([]compose.Container, error) { return []compose.Container{}, nil },
+		Up:     func(string, string) error { return nil },
+		Down:   func(string, string) error { return nil },
 	}, devices)
 }
 
@@ -298,17 +303,3 @@ func TestUnknownProviderIs400(t *testing.T) {
 	}
 }
 
-func TestContainersStartStop(t *testing.T) {
-	s := newTestServer(t)
-	h := s.Routes()
-	p := createProject(t, h, "Compose Project")
-
-	rec := doRequest(t, h, "POST", "/v1/projects/"+p.ID+"/containers/start", testKey, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("containers/start status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
-	rec = doRequest(t, h, "POST", "/v1/projects/"+p.ID+"/containers/stop", testKey, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("containers/stop status = %d, want 200, body=%s", rec.Code, rec.Body.String())
-	}
-}

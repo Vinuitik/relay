@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"sync"
 
 	"relay/runner/internal/activity"
 	"relay/runner/internal/notify"
@@ -17,13 +18,6 @@ import (
 
 // Version is reported by GET /v1/runner/info.
 const Version = "v1"
-
-// ComposeFuncs lets the compose package's Start/Stop be injected, so tests
-// don't need real docker/compose files.
-type ComposeFuncs struct {
-	Start func(projectDir string) error
-	Stop  func(projectDir string) error
-}
 
 // Server holds the dependencies needed to serve the v1 API.
 type Server struct {
@@ -49,6 +43,13 @@ type Server struct {
 	// accepts pings); it's only ever consulted when idle-suspend itself is
 	// enabled, since that's the only thing that reads it.
 	Activity *activity.Tracker
+
+	// opsMu guards containerOps: per-project background compose
+	// operations (see containers.go). runSync makes them run inline, for
+	// tests.
+	opsMu        sync.Mutex
+	containerOps map[string]containerOp
+	runSync      bool
 }
 
 // NewServer builds a Server.
@@ -71,6 +72,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{sessionId}", s.auth(s.handleGetSession))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/message", s.auth(s.handleSendMessage))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/stop", s.auth(s.handleStopSession))
+	mux.HandleFunc("GET /v1/projects/{projectId}/containers", s.auth(s.handleContainersStatus))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/start", s.auth(s.handleContainersStart))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/stop", s.auth(s.handleContainersStop))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleRegisterDevice))
@@ -285,31 +287,6 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
-}
-
-func (s *Server) handleContainersStart(w http.ResponseWriter, r *http.Request) {
-	s.runCompose(w, r, s.Compose.Start)
-}
-
-func (s *Server) handleContainersStop(w http.ResponseWriter, r *http.Request) {
-	s.runCompose(w, r, s.Compose.Stop)
-}
-
-func (s *Server) runCompose(w http.ResponseWriter, r *http.Request, action func(string) error) {
-	p, err := s.Projects.Get(r.PathValue("projectId"))
-	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
-	}
-	if action == nil {
-		writeError(w, http.StatusInternalServerError, "compose action not configured")
-		return
-	}
-	if err := action(p.Path); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
 type registerDeviceRequest struct {

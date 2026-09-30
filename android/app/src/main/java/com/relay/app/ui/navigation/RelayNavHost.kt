@@ -15,6 +15,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.ui.screens.ChatScreen
+import com.relay.app.ui.screens.ContainersScreen
 import com.relay.app.ui.screens.FileBrowserScreen
 import com.relay.app.ui.screens.FolderPickerScreen
 import com.relay.app.ui.screens.ProjectListScreen
@@ -29,12 +30,15 @@ object Routes {
     const val SESSION_LIST = "runners/{hostname}/projects/{projectId}/sessions"
     const val CHAT = "runners/{hostname}/projects/{projectId}/sessions/{sessionId}/chat"
     const val FILES = "runners/{hostname}/projects/{projectId}/files"
+    const val CONTAINERS = "runners/{hostname}/projects/{projectId}/containers"
     fun projectList(hostname: String) = "runners/$hostname/projects"
     fun folderPicker(hostname: String) = "runners/$hostname/projects/pick-folder"
     fun sessionList(hostname: String, projectId: String) = "runners/$hostname/projects/$projectId/sessions"
     fun chat(hostname: String, projectId: String, sessionId: String) =
         "runners/$hostname/projects/$projectId/sessions/$sessionId/chat"
     fun files(hostname: String, projectId: String) = "runners/$hostname/projects/$projectId/files"
+    fun containers(hostname: String, projectId: String) =
+        "runners/$hostname/projects/$projectId/containers"
 }
 
 @Composable
@@ -118,6 +122,9 @@ fun RelayNavHost(
                     onSessionSelected = { session ->
                         navController.navigate(Routes.chat(hostname, projectId, session.id))
                     },
+                    onContainersSelected = {
+                        navController.navigate(Routes.containers(hostname, projectId))
+                    },
                     onBack = { navController.popBackStack() },
                 )
             }
@@ -137,6 +144,27 @@ fun RelayNavHost(
                 UnknownRunnerPlaceholder()
             } else {
                 FileBrowserScreen(
+                    runner = runner,
+                    projectId = projectId,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+        }
+
+        composable(
+            route = Routes.CONTAINERS,
+            arguments = listOf(
+                navArgument("hostname") { type = NavType.StringType },
+                navArgument("projectId") { type = NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val hostname = backStackEntry.arguments?.getString("hostname").orEmpty()
+            val projectId = backStackEntry.arguments?.getString("projectId").orEmpty()
+            val runner = runners.find { it.hostname == hostname }
+            if (runner == null) {
+                UnknownRunnerPlaceholder()
+            } else {
+                ContainersScreen(
                     runner = runner,
                     projectId = projectId,
                     onBack = { navController.popBackStack() },
