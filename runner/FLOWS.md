@@ -410,26 +410,35 @@ To change update timing: env `RELAY_UPDATE_INTERVAL`, `RELAY_UPDATE_QUIET`. To s
 `RELAY_UPDATE_DISABLED=true` (supervision continues). Private repo: `RELAY_GITHUB_TOKEN`
 (see LATER.md).
 
-## OS sleep settings - currently "never sleep" (2026-09-30)
+## OS sleep settings - TEMPORARY "never sleep" until the Pi waker exists
 
-Relay's idle-suspend only decides when *Relay* suspends a machine; the OS has its own sleep
-timers, which would otherwise put a runner to sleep under an active session. Current policy:
-**no machine ever sleeps** (no wake path exists yet). Later: turn Relay's idle-suspend back on
-with a short `RELAY_IDLE_TIMEOUT` - that is the "sleep only when inactive" mode - once wake works.
+**Temporary workaround (2026-09-30), not the design.** The design is sleep-when-idle plus wake on
+demand: the runner suspends its machine after `RELAY_IDLE_TIMEOUT` without work, and the phone
+wakes it through `wakerd` on an always-on Raspberry Pi on the same LAN (see
+`cmd/wakerd/FLOWS.md`, SHOPPING.md). No Pi exists yet, so a sleeping runner is unreachable
+until someone physically wakes it. Until then **no runner machine ever sleeps**.
 
+Current overrides:
 - **Laptop (Windows, Modern Standby / S0 only - no S3):** `powercfg` standby + hibernate timeouts
-  = 0 on AC and battery (were 5 min AC / 3 min battery). This machine exposes **no lid-close
-  setting** in `powercfg`, so what closing the lid does is untested. Relay idle-suspend off:
-  `RELAY_IDLE_SUSPEND_ENABLED=false` in `%LOCALAPPDATA%\Relay\relay.env` - this also disables
-  the phone's Sleep button (it returns 503; same flag).
+  = 0 on AC and battery (were: standby 5 min AC / 3 min battery). This machine exposes **no
+  lid-close setting** in `powercfg`, so what closing the lid does is untested. Relay idle-suspend
+  off: `RELAY_IDLE_SUSPEND_ENABLED=false` in `%LOCALAPPDATA%\Relay\relay.env`. This also disables
+  the phone's Sleep button (returns 503; same flag).
 - **Server (Ubuntu, GNOME):** `gsettings org.gnome.settings-daemon.plugins.power
-  sleep-inactive-{ac,battery}-type = 'nothing'` (battery was suspend after 15 min); lid close
-  already `ignore` in logind. Relay idle-suspend was never enabled there.
+  sleep-inactive-{ac,battery}-type = 'nothing'` (were: AC `suspend` with timeout 0 = never,
+  battery `suspend` after 15 min). Lid close was already `ignore` in logind, unchanged. Relay
+  idle-suspend was never enabled there.
 
-To revert the laptop: `powercfg /change standby-timeout-ac 5` (etc.). Server:
-`gsettings reset org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type`.
-Not done (needs sudo, optional belt-and-braces): `systemctl mask sleep.target suspend.target
-hibernate.target hybrid-sleep.target`.
+**Revert when** the Pi is running `wakerd` **and** waking each runner machine from the phone
+has worked end to end (per machine: the laptop's wake path is still unproven, see SHOPPING.md;
+a machine without a working wake path stays on never-sleep):
+1. Laptop: `powercfg /change standby-timeout-ac 5`, `powercfg /change standby-timeout-dc 3`;
+   in `relay.env` set `RELAY_IDLE_SUSPEND_ENABLED=true` and a short `RELAY_IDLE_TIMEOUT`
+   (e.g. `30m`), then restart the "Relay keeper" task.
+2. Server: `gsettings reset org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type`
+   and `... sleep-inactive-battery-type`; add `RELAY_IDLE_SUSPEND_ENABLED=true` +
+   `RELAY_IDLE_TIMEOUT` to `/etc/relay/runner.env`; `sudo systemctl restart relay-runner@victor`.
+3. Delete this section's "Current overrides" and update the Change Index.
 
 ## Windows Firewall silently blocks inbound connections from other devices
 
@@ -637,6 +646,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Stop button (cancel turn) | `acp_session.go` (`Cancel`), `POST /v1/sessions/{id}/cancel` |
 | Default permission mode | env `RELAY_DEFAULT_MODE` (default `bypassPermissions`), `session.NewManager` |
 | Which command runs for a provider | `session.autoDetectProviders`, env `RELAY_ACP_<NAME>` / `RELAY_PROVIDER_<NAME>` |
+| TEMPORARY never-sleep overrides (until the Pi waker) | "OS sleep settings" section above: `powercfg`, GNOME `gsettings`, `RELAY_IDLE_SUSPEND_ENABLED` |
 | Session files, save/heartbeat intervals | `internal/session/store.go` |
 | Resume a dormant session | `acp_session.go` (`ensureAgent`), `acp.Client.ResumeSession` |
 | Runner supervision / restart backoff | `internal/keeper/supervisor.go` |
