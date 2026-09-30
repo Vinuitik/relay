@@ -6,6 +6,7 @@ import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.HttpException
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import java.net.ConnectException
@@ -32,9 +33,22 @@ fun friendlyErrorMessage(e: Exception, runner: KnownRunner): String {
                 "other devices even though the runner works fine from its own machine)."
         is UnknownHostException ->
             "Can't resolve $where - is this phone's Tailscale connected?"
+        // Runner error bodies are `{"error": string}` (shared/API.md) - surface that reason
+        // instead of Retrofit's bare "HTTP 400 Bad Request".
+        is HttpException -> {
+            val reason = runCatching {
+                errorBodyAdapter.fromJson(e.response()?.errorBody()?.string().orEmpty())?.error
+            }.getOrNull()
+            "$where: HTTP ${e.code()}" + (reason?.let { " - $it" } ?: "")
+        }
         else -> "$where: ${e.message ?: e::class.simpleName}"
     }
 }
+
+private data class ErrorBody(val error: String?)
+
+private val errorBodyAdapter =
+    Moshi.Builder().add(KotlinJsonAdapterFactory()).build().adapter(ErrorBody::class.java)
 
 /**
  * Builds (and caches) a [RelayApiService] per known runner. Every request carries the

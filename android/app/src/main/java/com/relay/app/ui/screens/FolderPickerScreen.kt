@@ -156,9 +156,12 @@ fun FolderPickerScreen(
  * The runner may be Linux or Windows (see ARCHITECTURE.md "OS-independent"), so the correct
  * separator can't be assumed - it's inferred from the path string itself: a Windows root entry
  * already comes back as "C:\" (trailing backslash) from `roots_windows.go`, a Unix root as "/",
- * so checking for a trailing separator or an existing backslash covers both.
+ * so checking for a trailing separator or an existing backslash covers both. From the roots
+ * view (empty base) the entry is itself an absolute root and is used as-is - prefixing "/"
+ * turned "C:\" into "/C:\", which Windows rejects as not absolute.
  */
 private fun joinPath(base: String, name: String): String = when {
+    base.isEmpty() -> name
     base.endsWith("/") || base.endsWith("\\") -> base + name
     base.contains("\\") -> "$base\\$name"
     else -> "$base/$name"
