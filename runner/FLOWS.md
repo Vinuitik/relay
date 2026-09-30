@@ -410,6 +410,27 @@ To change update timing: env `RELAY_UPDATE_INTERVAL`, `RELAY_UPDATE_QUIET`. To s
 `RELAY_UPDATE_DISABLED=true` (supervision continues). Private repo: `RELAY_GITHUB_TOKEN`
 (see LATER.md).
 
+## OS sleep settings - currently "never sleep" (2026-09-30)
+
+Relay's idle-suspend only decides when *Relay* suspends a machine; the OS has its own sleep
+timers, which would otherwise put a runner to sleep under an active session. Current policy:
+**no machine ever sleeps** (no wake path exists yet). Later: turn Relay's idle-suspend back on
+with a short `RELAY_IDLE_TIMEOUT` - that is the "sleep only when inactive" mode - once wake works.
+
+- **Laptop (Windows, Modern Standby / S0 only - no S3):** `powercfg` standby + hibernate timeouts
+  = 0 on AC and battery (were 5 min AC / 3 min battery). This machine exposes **no lid-close
+  setting** in `powercfg`, so what closing the lid does is untested. Relay idle-suspend off:
+  `RELAY_IDLE_SUSPEND_ENABLED=false` in `%LOCALAPPDATA%\Relay\relay.env` - this also disables
+  the phone's Sleep button (it returns 503; same flag).
+- **Server (Ubuntu, GNOME):** `gsettings org.gnome.settings-daemon.plugins.power
+  sleep-inactive-{ac,battery}-type = 'nothing'` (battery was suspend after 15 min); lid close
+  already `ignore` in logind. Relay idle-suspend was never enabled there.
+
+To revert the laptop: `powercfg /change standby-timeout-ac 5` (etc.). Server:
+`gsettings reset org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type`.
+Not done (needs sudo, optional belt-and-braces): `systemctl mask sleep.target suspend.target
+hibernate.target hybrid-sleep.target`.
+
 ## Windows Firewall silently blocks inbound connections from other devices
 
 **Found the hard way (2026-09-19):** the phone app could not reach the laptop runner at all
