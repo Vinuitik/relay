@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"relay/runner/internal/activity"
 	"relay/runner/internal/notify"
@@ -16,8 +17,13 @@ import (
 	"relay/runner/internal/session"
 )
 
-// Version is reported by GET /v1/runner/info.
+// Version is the API version reported by GET /v1/runner/info.
 const Version = "v1"
+
+// Build is this binary's release tag (e.g. "runner-3f2a1bc"), stamped at
+// release time with -ldflags "-X relay/runner/internal/api.Build=...";
+// "dev" for local builds. keeperd compares it against the latest release.
+var Build = "dev"
 
 // Server holds the dependencies needed to serve the v1 API.
 type Server struct {
@@ -107,6 +113,11 @@ type runnerInfo struct {
 	Hostname string `json:"hostname"`
 	Busy     bool   `json:"busy"`
 	Version  string `json:"version"`
+	Build    string `json:"build"`
+	// IdleSince is when the runner last stopped being busy (RFC3339),
+	// empty while busy - keeperd only restarts for an update after a
+	// quiet period.
+	IdleSince string `json:"idleSince,omitempty"`
 }
 
 // anyBusy reports whether any session across any project is currently
@@ -131,7 +142,12 @@ func (s *Server) handleRunnerInfo(w http.ResponseWriter, r *http.Request) {
 		hostname = "unknown"
 	}
 
-	writeJSON(w, http.StatusOK, runnerInfo{Hostname: hostname, Busy: s.anyBusy(), Version: Version})
+	busy, idleSince := s.Sessions.IdleStatus()
+	info := runnerInfo{Hostname: hostname, Busy: busy, Version: Version, Build: Build}
+	if !busy {
+		info.IdleSince = idleSince.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, info)
 }
 
 // handleSuspend suspends this machine to sleep immediately (POST /v1/suspend) - see

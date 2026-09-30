@@ -360,29 +360,55 @@ the real server before building the relay.
 
 To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
 
-## Auto-restart on machine restart (both platforms)
+## keeperd - keeps the runner running and up to date
 
-**Server (systemd):** already covered by the existing install - `relay-runner@<user>.service` is
-`enabled` (survives a full reboot, not just a crash - `Restart=always` in the unit only covers
-crashes while already running) and was confirmed `enabled` on the actual deployed server
-(2026-09-19). No action needed after a full power-off/on cycle.
+Files: cmd/keeperd/main.go, internal/keeper/{config,supervisor,updater,proc_unix,proc_windows}.go,
+install/install-keeperd.{sh,ps1}, .github/workflows/runner-release.yml
 
-**Laptop (Windows, no systemd equivalent):** a Scheduled Task needs elevated
-(`Register-ScheduledTask`) rights this environment doesn't have (`Access is denied` even without
-`-RunLevel Highest`), so the fallback is a Startup-folder shortcut instead -
-`start-relay-runner.ps1` (sets `RELAY_LISTEN_ADDR` to this laptop's Tailscale IP, then
-`Start-Process -WindowStyle Hidden` the runner binary) launched via a `.lnk` in
-`shell:startup` (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`) pointing at
-`powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File start-relay-runner.ps1`.
-**This fires at user logon, not at raw machine power-on** - after a full shutdown, the runner
-comes back automatically once you log into Windows normally, no manual command needed; it does
-NOT come back before login (no auto-logon configured, deliberately - that would need storing a
-Windows credential unencrypted).
+The process started at boot; the process-level counterpart of wakerd (wakerd wakes machines,
+keeperd (re)starts runnerd).
 
-To change the laptop's bind address: edit `RELAY_LISTEN_ADDR` directly in
-`install/start-relay-runner.ps1` (hardcoded, not re-detected - Tailscale IPs are stable per
-device but not guaranteed permanent).
-To remove: delete the `.lnk` from the Startup folder above.
+Boot → keeperd → `LoadEnvFile(<dir>/relay.env)` → `Updater.Bootstrap` (downloads the runner if
+missing, installs the ACP adapter into `<dir>/acp` via npm) → `Supervisor.Start` runs
+`<dir>/bin/relay-runner` with keeperd's env + `RELAY_ACP_CLAUDE=<dir>/acp/.../claude-agent-acp`
+→ runner dies → restarted (1s, or 10s if it died within 30s of starting).
+
+Update loop (first check 2 min after boot, then every `RELAY_UPDATE_INTERVAL`, default 6h):
+`Updater.Check` → GitHub `releases/latest` → runner build (`GET /v1/runner/info` `build`) or
+keeperd `version` differs from the release tag? → wait until the runner has been idle
+`RELAY_UPDATE_QUIET` (default 15m; retried every 10 min; a runner that doesn't answer
+isn't waited for) → `npm install` adapter@latest →
+- keeperd outdated → download + SHA256SUMS check → rename running binary to `.old`, new one in
+  → stop runner → hand over (Linux: exit 3, systemd restarts; Windows: start the new keeperd
+  detached, breaking away from the task's job object, then exit) → the new keeperd updates the
+  runner on its next pass.
+- runner outdated → download + verify → stop runner → `relay-runner` → `.old`, new one in →
+  start → must answer `/v1/health` and stay up 10s within 60s, else **rollback** to `.old`.
+
+Release: push to main touching `runner/**` (not `*.md`) → `runner-release.yml` → `go test` →
+builds relay-runner/keeperd/wakerd for linux amd64/arm64/arm + windows amd64, tag
+`runner-<sha7>` stamped into the binaries (`api.Build`, `main.version`) → `SHA256SUMS` →
+GitHub Release marked latest.
+
+**Linux (server):** `relay-runner@<user>` systemd unit, `ExecStart=/opt/relay/bin/keeperd`,
+`Restart=always`, settings in `/etc/relay/runner.env`. One-time switch from the old direct-runner
+unit: `sudo install/install-keeperd.sh <user>`. `/opt/relay` must be owned by the user so keeperd
+can replace binaries without root. Logs: `journalctl -u relay-runner@<user> -f`.
+
+**Windows (laptop):** install dir `%LOCALAPPDATA%\Relay` (bin/, acp/, relay.env, keeper.log).
+One-time: `install/install-keeperd.ps1` in an elevated PowerShell → registers
+- "Relay keeper": **at startup, no logon needed** (S4U - runs as the user without a stored
+  password; Claude's login is a plain file so it works; no desktop access), no time limit,
+  restart on failure;
+- "Relay input watcher": at logon, `keeperd -watch-input` in the desktop session - posts
+  `/v1/activity` every 30s while keyboard/mouse were used in the last minute, because the
+  boot-time runner can't see desktop input (`GetLastInputInfo` is per-session). Without it
+  idle-suspend would treat an in-use laptop as idle.
+and removes the old Startup-folder shortcut (`start-relay-runner.ps1`, now legacy).
+
+To change update timing: env `RELAY_UPDATE_INTERVAL`, `RELAY_UPDATE_QUIET`. To stop updates:
+`RELAY_UPDATE_DISABLED=true` (supervision continues). Private repo: `RELAY_GITHUB_TOKEN`
+(see LATER.md).
 
 ## Windows Firewall silently blocks inbound connections from other devices
 
@@ -419,6 +445,18 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 ## Technology notes
 
+- **Auto-update trusts GitHub**: whoever can push to `main` (or publish a release) runs code on
+  every runner machine within ~6h. SHA256SUMS only guards against corrupted downloads - it's
+  published by the same workflow. Accepted by the user 2026-09-30; token/private repo in LATER.md.
+- **An update restarts the runner** only after 15 min without a busy session - a session
+  `waiting` on a permission counts as idle and loses the pending request (the session itself
+  resumes). keeperd itself has no state.
+- **keeperd "dev" builds never self-update** (only release-stamped ones do); a runner reporting
+  any build other than the latest tag is replaced, including "dev".
+- **Windows S4U task**: no stored password, but also no network credentials (SMB shares) and no
+  DPAPI user secrets - fine for Relay (Claude login is `~/.claude/.credentials.json`), would break
+  anything the runner needs from Credential Manager. Hard stop = kill (no SIGTERM on Windows);
+  the runner tolerates it (2s save interval).
 - **ACP agents need Node >= 22 on the runner machine** plus
   `npm i -g @agentclientprotocol/claude-agent-acp` (0.84.0 tested 2026-09-30). The runner finds
   `claude-agent-acp` on PATH - a Task Scheduler/systemd runner may have a different PATH than your
@@ -580,6 +618,12 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Which command runs for a provider | `session.autoDetectProviders`, env `RELAY_ACP_<NAME>` / `RELAY_PROVIDER_<NAME>` |
 | Session files, save/heartbeat intervals | `internal/session/store.go` |
 | Resume a dormant session | `acp_session.go` (`ensureAgent`), `acp.Client.ResumeSession` |
+| Runner supervision / restart backoff | `internal/keeper/supervisor.go` |
+| Update check, idle gate, swap + rollback, adapter npm install | `internal/keeper/updater.go` (`Check`, `replaceRunner`, `replaceKeeper`) |
+| keeperd settings (dir, repo, token, intervals) | `internal/keeper/config.go`, env `RELAY_KEEPER_DIR` / `RELAY_UPDATE_*` / `RELAY_GITHUB_TOKEN`, file `<dir>/relay.env` |
+| Release build targets / version stamping | `.github/workflows/runner-release.yml` |
+| Windows boot task + input watcher | `install/install-keeperd.ps1`, `keeperd -watch-input` (`cmd/keeperd/main.go`) |
+| Linux unit | `install/relay-runner.service`, `install/install-keeperd.sh` |
 | Needs-input push | `cmd/runnerd/main.go` (`sessions.OnNeedsInput`), `notify.NotifySessionNeedsInput` |
 | Auth header check | `internal/api/api.go` middleware |
 | Docker compose invocation (up/down/ps args) | `internal/compose/compose.go` (`UpWith`, `DownWith`, `StatusWith`) |

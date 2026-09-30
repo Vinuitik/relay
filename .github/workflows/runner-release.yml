@@ -1,0 +1,61 @@
+name: Runner release
+
+# Builds relay-runner, keeperd and wakerd for every platform a runner or
+# waker runs on and publishes them as a GitHub Release. keeperd on each
+# machine polls the latest release and swaps binaries in while the runner is
+# idle - see runner/FLOWS.md "keeperd". Only runs when runner code changed
+# (not its docs).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "runner/**"
+      - "!runner/**.md"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: runner/go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: |
+          TAG="runner-${GITHUB_SHA::7}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          mkdir -p dist
+          # tag stamped into both binaries: the runner reports it in
+          # /v1/runner/info, keeperd compares it against the latest release.
+          LDFLAGS="-s -w -X relay/runner/internal/api.Build=$TAG -X main.version=$TAG"
+          for target in linux/amd64 linux/arm64 linux/arm windows/amd64; do
+            os="${target%/*}"; arch="${target#*/}"
+            ext=""; [ "$os" = windows ] && ext=".exe"
+            for pair in relay-runner:runnerd keeperd:keeperd wakerd:wakerd; do
+              name="${pair%%:*}"; cmd="${pair#*:}"
+              # keeperd on Windows is started by Task Scheduler (and at logon
+              # for -watch-input): GUI subsystem so it never flashes a console.
+              extra=""; [ "$os/$cmd" = windows/keeperd ] && extra="-H=windowsgui"
+              GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS $extra" \
+                -o "dist/$name-$os-$arch$ext" "./cmd/$cmd"
+            done
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ github.event.head_commit.message }}
+        run: gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --notes "$NOTES" --latest

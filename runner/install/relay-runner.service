@@ -1,14 +1,18 @@
 [Unit]
-Description=Relay runner
+Description=Relay runner (via keeperd)
 After=network-online.target tailscaled.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=%i
-ExecStart=/opt/relay/bin/relay-runner
+# keeperd runs relay-runner as its child and swaps in new releases - see
+# runner/FLOWS.md "keeperd". It exits (code 3) after replacing its own binary;
+# Restart=always brings up the new one.
+ExecStart=/opt/relay/bin/keeperd
 Restart=always
 RestartSec=5
+TimeoutStopSec=20
 EnvironmentFile=-/etc/relay/runner.env
 
 # Restart=always (not on-failure): the runner may exit 0 on purpose (e.g. after an
