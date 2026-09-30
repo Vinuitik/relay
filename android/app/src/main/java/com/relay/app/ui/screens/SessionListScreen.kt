@@ -157,7 +157,7 @@ fun SessionListScreen(
 @Composable
 private fun StateBadge(state: String) {
     val color = when (state) {
-        "busy" -> StateBusy
+        "busy", "waiting" -> StateBusy
         "idle" -> StateIdle
         "finished" -> StateFinished
         "error" -> StateError

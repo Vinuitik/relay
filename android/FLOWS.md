@@ -45,10 +45,16 @@ Every screen: `RelayApiClient.forRunner(runner)` → `RelayApiService` (Retrofit
 local cache of sessions/messages anymore**, so an unreachable runner means an error message, not
 stale data.
 
-ChatScreen polls `GET /v1/sessions/{id}` every 3s via LaunchedEffect+delay while state is
-"busy" — no WebSocket/streaming (matches the API contract).
+ChatScreen polls `GET /v1/sessions/{id}` every 1s while `busy`, 3s while `waiting`, and stops
+when `idle` — no WebSocket/SSE; "streaming" is the runner merging text chunks into the transcript
+between polls. Transcript rendering: `user`/`agent` → bubbles, `tool` → one compact line
+(`ToolRow`: ✓ completed / ✗ failed / ⋯ running + title). Auto-scrolls to the newest entry.
+- Red Stop button (replaces Send while busy/waiting) → `cancelTurn` → turn stops, session stays.
+- Mode picker (top bar, ACP sessions only) → `setMode` with one of `session.modes`.
+- `pendingPermission` → `PermissionCard` at the end of the list, one button per option →
+  `answerPermission`. FCM `session_needs_input` → "Agent needs your approval" notification.
 
-To change poll interval: `ChatScreen.kt` (`POLL_INTERVAL_MS`)
+To change poll intervals: `ChatScreen.kt` (`POLL_BUSY_MS`, `POLL_WAITING_MS`)
 To change API base URL scheme (http vs https): `RelayApiClient.kt`
 To change the default port: `model/Models.kt` (`KnownRunner.DEFAULT_PORT` — **7777**, matching
 the runner's own default; this was wrong at 8080 until 2026-09-20)
@@ -309,6 +315,8 @@ ContainersScreen (2026-09-30), which also surfaces failures (`lastError`).
 |---|---|
 | Known runners storage | `data/KnownRunnersRepository.kt`, `model/Models.kt` (`KnownRunner`) |
 | Default runner port (7777) | `model/Models.kt` (`KnownRunner.DEFAULT_PORT`) |
+| Chat transcript rendering (bubbles, tool rows, permission card, Stop, mode picker) | `ui/screens/ChatScreen.kt` |
+| Notification text per push type | `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
 | Containers screen (compose file picker, start/switch/stop) | `ui/screens/ContainersScreen.kt` |
 | When the Containers icon shows | `ui/screens/SessionListScreen.kt` (`hasDocker`) |
 | Runner error text in error messages | `network/RelayApiClient.kt` (`friendlyErrorMessage`) |

@@ -68,6 +68,13 @@ func main() {
 			}
 		}
 	}
+	sessions.OnNeedsInput = func(sess session.Session) {
+		for _, d := range devices.List() {
+			if err := notifier.NotifySessionNeedsInput(d, notify.Session{ID: sess.ID, ProjectID: sess.ProjectID}); err != nil {
+				log.Printf("notify device %s of session %s needing input: %v", d.ID, sess.ID, err)
+			}
+		}
+	}
 
 	// Idle-suspend (sleep, not poweroff) is opt-in only - see internal/idle's
 	// package doc. Never starts unless RELAY_IDLE_SUSPEND_ENABLED=true is

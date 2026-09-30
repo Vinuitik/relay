@@ -105,6 +105,26 @@ func parsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 // wiring in internal/session - logs and continues rather than failing the
 // session transition.
 func (n *fcmNotifier) NotifySessionFinished(device Device, session Session) error {
+	return n.sendData(device, map[string]string{
+		"type":      "session_finished",
+		"sessionId": session.ID,
+		"projectId": session.ProjectID,
+	})
+}
+
+// NotifySessionNeedsInput sends a data-only FCM message telling device an
+// agent is waiting on a permission decision. Same best-effort contract as
+// NotifySessionFinished.
+func (n *fcmNotifier) NotifySessionNeedsInput(device Device, session Session) error {
+	return n.sendData(device, map[string]string{
+		"type":      "session_needs_input",
+		"sessionId": session.ID,
+		"projectId": session.ProjectID,
+	})
+}
+
+// sendData sends one data-only FCM message to device.
+func (n *fcmNotifier) sendData(device Device, data map[string]string) error {
 	token, err := n.accessTokenFor()
 	if err != nil {
 		return fmt.Errorf("obtain FCM access token: %w", err)
@@ -113,11 +133,7 @@ func (n *fcmNotifier) NotifySessionFinished(device Device, session Session) erro
 	msg := map[string]any{
 		"message": map[string]any{
 			"token": device.FCMToken,
-			"data": map[string]string{
-				"type":      "session_finished",
-				"sessionId": session.ID,
-				"projectId": session.ProjectID,
-			},
+			"data":  data,
 		},
 	}
 	body, err := json.Marshal(msg)

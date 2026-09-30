@@ -24,16 +24,25 @@ Session {
   id: string
   projectId: string
   provider: string     // "claude" | "codex" | ... (matches a configured CLI command)
-  state: string        // "busy" | "idle" | "finished" | "error"
+  state: string        // "busy" | "idle" | "waiting" (paused on a permission request) | "finished" | "error"
   createdAt: string
   finishedAt: string?  // null while not finished
   messages: Message[]
+  // ACP providers only (claude), omitted otherwise:
+  mode?: string                         // current permission mode id, e.g. "bypassPermissions"
+  modes?: {id, name, description?}[]    // what the agent offers
+  pendingPermission?: {                 // set while state == "waiting"
+    title: string, toolKind: string,
+    options: {optionId, name, kind}[]   // kind: allow_once | allow_always | reject_once | reject_always
+  }
 }
 
 Message {
-  role: string         // "user" | "agent"
-  text: string
+  role: string         // "user" | "agent" | "tool" (one agent step, e.g. a file edit or command)
+  text: string         // for "tool": one-line title, e.g. "Write hello.txt"
   at: string           // RFC3339
+  toolKind?: string    // tool only: read | edit | delete | move | search | execute | think | fetch | other
+  status?: string      // tool only: pending | in_progress | completed | failed
 }
 
 RunnerInfo {
@@ -93,8 +102,11 @@ BrowseResult {
 | GET | `/v1/projects/{projectId}/sessions` | - | `200 Session[]` | includes finished sessions not yet purged by weekly cleanup |
 | POST | `/v1/projects/{projectId}/sessions` | `{provider: string}` | `201 Session` | spawns the configured CLI command for `provider`, scoped to the project dir |
 | GET | `/v1/sessions/{sessionId}` | - | `200 Session` | full transcript so far |
-| POST | `/v1/sessions/{sessionId}/message` | `{text: string}` | `202 {}` | appends a user message and feeds it to the running agent subprocess's stdin |
+| POST | `/v1/sessions/{sessionId}/message` | `{text: string}` | `202 {}` | appends a user message and starts a turn; the reply streams into `messages` (poll `GET`). `409` while the previous turn is still running. |
 | POST | `/v1/sessions/{sessionId}/stop` | - | `200 Session` | kills the subprocess, marks session `finished` |
+| POST | `/v1/sessions/{sessionId}/cancel` | - | `200 Session` | stops the current turn but keeps the session (the Stop button); the session goes `idle` shortly after. No-op if nothing is running. ACP only, `400` otherwise. |
+| POST | `/v1/sessions/{sessionId}/mode` | `{modeId: string}` | `200 Session` | switches permission mode, one of `modes`. `400` for an unknown id. ACP only. |
+| POST | `/v1/sessions/{sessionId}/permission` | `{optionId: string}` | `200 Session` | answers `pendingPermission` with one of its options. `400` if nothing is pending or the option is unknown. |
 | GET | `/v1/projects/{projectId}/containers` | - | `200 ContainersStatus` | compose files found at the project's top level (`docker-compose.yml`, `docker-compose.dev.yml`, `compose-prod.yaml`, ...), the active one, and every container compose started from this directory. Only calls docker if a compose file exists; docker failures go in `dockerError`, not an HTTP error. |
 | POST | `/v1/projects/{projectId}/containers/start` | `{file?: string}` (body optional) | `202 ContainersStatus` | turns on `file` (default: the active file) with `docker compose -f <file> up -d`. If a different file was active it's brought down first - a **switch**, so only one compose file runs per project. The choice is persisted. Runs in the background: poll GET until `operation` is `""`, then check `lastError`. `400` if no compose file, `file` isn't one of `composeFiles`, or several exist and none is chosen yet; `409` if an operation is already running. |
 | POST | `/v1/projects/{projectId}/containers/stop` | - | `202 ContainersStatus` | `docker compose -f <active> down --remove-orphans` in the background - removes containers from any of the project's compose files. Same `400`/`409` as start. |
@@ -111,7 +123,9 @@ Errors: `4xx/5xx` bodies are `{"error": string}`.
 Every push the runner sends is data-only (no `notification` block — the app builds its own, see
 `RelayFirebaseMessagingService.notificationContentFor`). `data.type` is:
 
-- `session_finished` — `data: {type, sessionId, projectId}`
+- `session_finished` — `data: {type, sessionId, projectId}` (once per completed agent turn)
+- `session_needs_input` — `data: {type, sessionId, projectId}`, the agent is paused on a
+  permission request (session `waiting`)
 - `runner_suspending` — `data: {type, hostname}`, sent best-effort right before the runner
   suspends to sleep (never on a manual `/v1/sessions/{id}/stop`) — see runner/FLOWS.md "Idle-suspend".
 

@@ -52,70 +52,62 @@ compose.defaultNames. To change what "switch" does: api.handleContainersStart.
 
 ## Session lifecycle
 
-POST /v1/projects/{id}/sessions → session.Manager.Start(projectID, provider)
-→ provider resolved (`resolveProvider`), in order: (1) env `RELAY_PROVIDER_<NAME>` explicit
-  override → `sh -c <value>`, (2) built-in "echo-agent" test provider (`sh -c cat`), (3)
-  **auto-detect**: for `"claude"`/`"codex"` specifically, `exec.LookPath` on PATH right now - no
-  env var needed at all if the CLI is installed where the runner's user can see it (see
-  `autoDetectProviders`) → os/exec.Command spawned, scoped to project dir
-→ stdout/stderr scanner goroutine (`session.Manager.pump`) appends to in-memory transcript (role "agent")
-→ initial state depends on codec: raw-codec providers start `busy` (process spawned, no
-  per-turn signal, so busy until it exits - unchanged, original behavior); a claude-stream-json
-  provider starts `idle` (long-lived process, waiting for the first message)
+Files: session.go, acp_session.go, internal/acp/acp.go, internal/acp/types.go
 
-**Per-turn busy/idle (claude-stream-json only).** The claude CLI process stays alive across
-many turns, so "busy" can't mean "process running" the way it does for a raw-codec provider -
-it has to track *this turn*:
-POST /v1/sessions/{id}/message → session.Manager.SendMessage → io.WriteString to subprocess
-stdin, state → `busy` (a no-op for raw-codec, which is already busy)
-→ agent replies, then emits a stream-json `"result"` event on stdout - the wire format's
-  end-of-turn marker (previously dropped/ignored entirely, see `decodeClaudeStreamJSONLine`'s
-  history) - `pump` detects it via `decodeClaudeStreamJSONEventType` and calls
-  `session.Manager.finishTurn`: state → `idle`, and `OnFinished` fires once for that turn (this
-  is what actually sends the job-done push - see "Device registration + notify-on-finish" below;
-  before this, OnFinished only fired on process exit, which for a long-lived claude session could
-  be never)
-→ raw-codec providers have no such signal and are unaffected: still busy until the process exits
+POST /v1/projects/{id}/sessions → session.Manager.Start(projectID, provider) →
+`resolveProvider`, in order: (1) env `RELAY_ACP_<NAME>` → ACP agent at that path, (2) env
+`RELAY_PROVIDER_<NAME>` → raw `sh -c <value>`, (3) built-in "echo-agent" (`sh -c cat`, tests),
+(4) **auto-detect** (`autoDetectProviders`): `"claude"` → `claude-agent-acp` on PATH (ACP),
+`"codex"` → bare `codex` (raw, untested) → ACP or raw path below.
+To add a provider: `autoDetectProviders` (ACP: set `ACP: true`), or env `RELAY_ACP_<NAME>`.
 
-POST /v1/sessions/{id}/stop → session.Manager.Stop → kill process, state → `finished`
-(both codecs)
-Process exit on its own (not via Stop) → `session.Manager.awaitExit` → state → `finished` (clean
-exit) or `error` (non-zero exit) - unchanged for both codecs; `OnFinished` fires again here too,
-but only on `finished`, never `error`
+### Sessions (ACP) - claude
 
-`session.Manager.IdleStatus()` (used by `internal/idle` and `api.anyBusy`) reads this per-record
-state: a session is busy only while `StateBusy`; `StateIdle` (between turns, process still alive)
-never counts as busy, and each record's `idleSince` (the most recent moment it stopped being
-busy - a completed turn, an exit, or Stop) feeds the runner-wide idle-since calculation used to
-decide when to auto-suspend.
+Agent Client Protocol: JSON-RPC over the agent's stdin/stdout, one provider-neutral protocol
+(Claude via `claude-agent-acp`, Codex via `codex-acp` [NOT IMPLEMENTED], Gemini via
+`gemini --acp` [NOT IMPLEMENTED]).
 
-**No manual setup needed for claude/codex** as long as the CLI is on PATH - confirmed this is
-exactly how `os/exec.Command` already resolves a bare name with no path separators, the same
-mechanism `StartAuthLogin`'s `defaultAuthLoginCommand` already relied on. `RELAY_PROVIDER_<NAME>`
-still exists to override the bare command (custom install path, extra flags) or add an
-unlisted provider - checked first, so an explicit override always wins over auto-detection.
-If the CLI genuinely isn't installed, starting a session fails with a clear "not found on PATH"
-error rather than silently falling back to anything.
+Start: `startACP` → `acp.Start` (spawn) → `initialize` → `session/new {cwd: project dir}` (returns
+the agent's modes) → `session/set_mode(Manager.DefaultMode)` → state `idle`.
+To change the default mode: env `RELAY_DEFAULT_MODE` (default `bypassPermissions` = no prompts;
+`default` = ask before every change). Mode ids come from the agent - Claude offers `default`,
+`acceptEdits`, `plan`, `auto`, `bypassPermissions`.
 
-**"claude" needs a wire-format codec, not just a bare command.** A bare `claude` with piped
-stdin and no flags silently runs in one-shot `--print` mode and errors if no input arrives
-within a few seconds - discovered exactly this way the first time auto-detect was tried end to
-end. Real multi-turn chat over one persistent process needs
-`--print --input-format=stream-json --output-format=stream-json` (each line in and out is a
-JSON event, not plain text) - confirmed by hand (2026-09-19) piping one probe message through it
-directly, then again through the full runner→session→API path (two real messages in the same
-session, second one correctly referencing the first - see the test transcript in this session's
-history if you need the exact request/response). `autoDetectProviders["claude"]` carries both
-the flags and `ProviderCommand.Codec = codecClaudeStreamJSON`; `SendMessage` encodes outgoing
-text via `encodeClaudeStreamJSONUserMessage`, `pump` decodes incoming lines via
-`decodeClaudeStreamJSONLine` (only `"assistant"`-type events' text content survives into the
-transcript - `"system"`/`"rate_limit_event"` events and anything that fails to parse as JSON are
-dropped, never shown as raw JSON on the phone; `"result"` is handled separately, not dropped -
-see "Per-turn busy/idle" above). `[NOT IMPLEMENTED]`: surfacing
-tool-use/tool-result content blocks in the transcript - only assistant text is shown for v1.
-"codex" has no confirmed equivalent wire format yet and stays raw text/no-args - **untested
-end-to-end**, likely to hit the same one-shot-vs-persistent problem claude did until someone
-actually runs it and checks.
+Turn: POST …/message → `sendACP` (409 `ErrTurnInProgress` if a turn is running) → state `busy`
+→ goroutine `runTurn` → `session/prompt` (blocks for the whole turn) → meanwhile the agent streams
+`session/update` → `onUpdate`:
+- `agent_message_chunk` → appended to the current agent message (merged by `messageId`)
+- `tool_call` / `tool_call_update` → one `role:"tool"` message per call, title/kind/status
+  rewritten in place (e.g. "Preparing file…" → "Write hello.txt", pending → completed)
+- `current_mode_update` → `Session.mode`
+→ prompt returns `stopReason` → `runTurn`: state `idle`, still-running tool rows → `failed`,
+`OnFinished` fires (job-done push). `cancelled` adds "(stopped)", other non-`end_turn` reasons a note.
+
+Permission: agent sends `session/request_permission` → `onRequest`: state `waiting`,
+`Session.pendingPermission {title, toolKind, options}`, `OnNeedsInput` → FCM
+`session_needs_input` → POST …/permission `{optionId}` → `RespondPermission` → agent continues
+(state `busy`). Only happens in modes that ask (not in `bypassPermissions`).
+
+Stop button: POST …/cancel → `Manager.Cancel` → answers any open permission with `cancelled` →
+`session/cancel` notification → prompt returns `cancelled` → `idle`. Session stays usable.
+Mode switch: POST …/mode `{modeId}` → `session/set_mode`.
+
+End session: POST …/stop → `Manager.Stop` → kill agent process → `finished`.
+Process exits on its own → `awaitExit` (waits for `acp.Client.Done()` so stdout is drained, then
+`Wait`) → `finished`/`error`; on error the agent's last stderr lines are added to the transcript.
+
+### Sessions (raw) - echo-agent, RELAY_PROVIDER_<NAME>
+
+Spawn → `pump` appends each stdout/stderr line as an agent message → `busy` from spawn until the
+process exits (no turn signal) → Stop/exit as above.
+
+### Busy/idle for idle-suspend
+
+`Manager.IdleStatus()` (used by `internal/idle` and `api.anyBusy`): busy only while some session
+is `busy`. `idle` (between turns) and `waiting` (paused on your permission decision) do not keep
+the machine awake - a pending permission survives sleep (RAM is kept) and is still answerable
+after wake; only a reboot loses it. Each record's `idleSince` (last turn end / permission request
+/ exit / Stop) feeds the runner-wide idle-since.
 
 ## Idle-suspend (sleep) - the other half of the sleep path
 
@@ -150,7 +142,7 @@ tracker and `mon.LocalInput` = `activity.LocalIdleTime`, then `.Run()` (ticker a
 Each tick computes an effective idle-since as the **latest** of:
 - (a) `session.Manager.IdleStatus()` (busy bool, idleSince time.Time - computed from existing
   session state, not separately tracked; see its doc comment in session.go - each session
-  record tracks its own `idleSince`, since a claude-stream-json session goes busy→idle→busy per
+  record tracks its own `idleSince`, since an ACP session goes busy→idle→busy per
   turn rather than only busy→terminal, so the runner-wide idle-since is the max of all records'
   idleSince, not simply the latest `FinishedAt`). If busy, skip immediately - the newer inputs
   below never override a busy session.
@@ -226,7 +218,7 @@ enable outside an intentional deployment - a manual button doesn't change that r
 shouldn't get its own, looser gate.
 
 `api.anyBusy()` (shared by `handleRunnerInfo`'s `busy` field and `handleSuspend`'s refusal) only
-counts `session.StateBusy` - a claude-stream-json session sitting `StateIdle` between turns
+counts `session.StateBusy` - an ACP session sitting `StateIdle` between turns
 (process still alive, waiting for the next message) never blocks a suspend.
 
 To change the idle threshold: env `RELAY_IDLE_TIMEOUT` (Go duration string, e.g. "45m";
@@ -408,6 +400,23 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 ## Technology notes
 
+- **ACP agents need Node >= 22 on the runner machine** plus
+  `npm i -g @agentclientprotocol/claude-agent-acp` (0.84.0 tested 2026-09-30). The runner finds
+  `claude-agent-acp` on PATH - a Task Scheduler/systemd runner may have a different PATH than your
+  shell (npm's global bin must be on it), else set `RELAY_ACP_CLAUDE` to the full path (on
+  Windows the `.cmd` shim works). The adapter uses the machine's existing `claude` login (Claude
+  Pro/Max subscription) - no `ANTHROPIC_API_KEY` needed; setting one would switch to API billing.
+- **Every Claude session loads the user's global `~/.claude` config** (CLAUDE.md, skills, MCP
+  servers) - ~50k tokens of context before the first message, the same as a local `claude`.
+- **`bypassPermissions` is the default** (user's choice, 2026-09-30): Claude runs any command
+  and edits any file without asking. The brake is the phone's Stop button (`session/cancel`).
+  Main real risk: prompt injection from content Claude reads (web pages, repos). Set
+  `RELAY_DEFAULT_MODE=default` to be asked first.
+- **One turn at a time per session**: a message sent while a turn runs gets 409, not queued
+  (the adapter supports queueing; not used).
+- **Streaming is polling**: the app polls `GET /v1/sessions/{id}` every 1s while busy. No SSE.
+- **ACP session ids are not persisted**: a runner restart loses the conversation (the agent's
+  own history on disk remains; `session/load` resume is [NOT IMPLEMENTED]).
 - **Sessions are in-memory only** (a `sync.Mutex`-guarded map in session.Manager). A runner
   restart loses all session state and transcripts — no disk persistence. Acceptable for this
   milestone; revisit if restarts become common. Note this is a *process* restart, not a suspend
@@ -536,7 +545,14 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Projects root / registry file location | `internal/config/config.go` (env `RELAY_HOME`) |
 | Listen address | `internal/config/config.go` (env `RELAY_LISTEN_ADDR`) |
 | Provider → command mapping | `internal/session/session.go` (`resolveProvider`, `autoDetectProviders`, env `RELAY_PROVIDER_<NAME>` override) |
-| claude stream-json codec (encode/decode) | `internal/session/session.go` (`encodeClaudeStreamJSONUserMessage`, `decodeClaudeStreamJSONLine`, `codecClaudeStreamJSON`) |
+| ACP wire client (JSON-RPC over stdio) | `internal/acp/acp.go` (`Client.Call`, `readLoop`) |
+| ACP method/field shapes | `internal/acp/types.go` |
+| Transcript from streamed updates (text merge, tool rows) | `internal/session/acp_session.go` (`onUpdate`) |
+| Permission request → waiting → answer | `acp_session.go` (`onRequest`, `RespondPermission`) |
+| Stop button (cancel turn) | `acp_session.go` (`Cancel`), `POST /v1/sessions/{id}/cancel` |
+| Default permission mode | env `RELAY_DEFAULT_MODE` (default `bypassPermissions`), `session.NewManager` |
+| Which command runs for a provider | `session.autoDetectProviders`, env `RELAY_ACP_<NAME>` / `RELAY_PROVIDER_<NAME>` |
+| Needs-input push | `cmd/runnerd/main.go` (`sessions.OnNeedsInput`), `notify.NotifySessionNeedsInput` |
 | Auth header check | `internal/api/api.go` middleware |
 | Docker compose invocation (up/down/ps args) | `internal/compose/compose.go` (`UpWith`, `DownWith`, `StatusWith`) |
 | Which file names count as compose files | `compose.composeFileRe` |

@@ -6,6 +6,9 @@ import "log"
 // finishes, or when this runner is about to suspend to S5.
 type Notifier interface {
 	NotifySessionFinished(device Device, session Session) error
+	// NotifySessionNeedsInput tells device an agent is paused on a
+	// permission request (FCM data.type "session_needs_input").
+	NotifySessionNeedsInput(device Device, session Session) error
 	// NotifyRunnerSuspending tells device this runner is about to power
 	// off, so the app can show "X is going to sleep" instead of the chat
 	// screen just going silent with no explanation. Called from
@@ -24,6 +27,11 @@ type noopNotifier struct{}
 
 func (noopNotifier) NotifySessionFinished(Device, Session) error {
 	log.Printf("FCM not configured, skipping notification")
+	return nil
+}
+
+func (noopNotifier) NotifySessionNeedsInput(Device, Session) error {
+	log.Printf("FCM not configured, skipping needs-input notification")
 	return nil
 }
 

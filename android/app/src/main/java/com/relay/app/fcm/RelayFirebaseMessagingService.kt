@@ -85,6 +85,7 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
                 val hostname = data["hostname"] ?: "A runner"
                 "$hostname is going to sleep" to "No active session — suspending to save power."
             }
+            "session_needs_input" -> "Agent needs your approval" to "A session is paused waiting for permission."
             else -> "Session finished" to "A runner session finished."
         }
     }

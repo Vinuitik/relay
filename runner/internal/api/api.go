@@ -72,6 +72,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{sessionId}", s.auth(s.handleGetSession))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/message", s.auth(s.handleSendMessage))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/stop", s.auth(s.handleStopSession))
+	mux.HandleFunc("POST /v1/sessions/{sessionId}/cancel", s.auth(s.handleCancelTurn))
+	mux.HandleFunc("POST /v1/sessions/{sessionId}/mode", s.auth(s.handleSetMode))
+	mux.HandleFunc("POST /v1/sessions/{sessionId}/permission", s.auth(s.handlePermission))
 	mux.HandleFunc("GET /v1/projects/{projectId}/containers", s.auth(s.handleContainersStatus))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/start", s.auth(s.handleContainersStart))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/stop", s.auth(s.handleContainersStop))
@@ -270,7 +273,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, session.ErrSessionNotFound):
 			writeError(w, http.StatusNotFound, "session not found")
-		case errors.Is(err, session.ErrSessionFinished):
+		case errors.Is(err, session.ErrSessionFinished), errors.Is(err, session.ErrTurnInProgress):
 			writeError(w, http.StatusConflict, err.Error())
 		default:
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -287,6 +290,60 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
+}
+
+// handleCancelTurn stops the agent's current turn without ending the
+// session - the phone's red Stop button. ACP providers only.
+func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.Sessions.Cancel(r.PathValue("sessionId"))
+	writeSessionResult(w, sess, err)
+}
+
+type setModeRequest struct {
+	ModeID string `json:"modeId"`
+}
+
+// handleSetMode switches an ACP session's permission mode, one of the
+// session's `modes`.
+func (s *Server) handleSetMode(w http.ResponseWriter, r *http.Request) {
+	var req setModeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sess, err := s.Sessions.SetMode(r.PathValue("sessionId"), req.ModeID)
+	writeSessionResult(w, sess, err)
+}
+
+type permissionRequest struct {
+	OptionID string `json:"optionId"`
+}
+
+// handlePermission answers the session's pending permission request with
+// one of pendingPermission.options.
+func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
+	var req permissionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sess, err := s.Sessions.RespondPermission(r.PathValue("sessionId"), req.OptionID)
+	writeSessionResult(w, sess, err)
+}
+
+func writeSessionResult(w http.ResponseWriter, sess session.Session, err error) {
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, sess)
+	case errors.Is(err, session.ErrSessionNotFound):
+		writeError(w, http.StatusNotFound, "session not found")
+	case errors.Is(err, session.ErrNotSupported), errors.Is(err, session.ErrInvalidChoice):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, session.ErrSessionFinished):
+		writeError(w, http.StatusConflict, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 type registerDeviceRequest struct {

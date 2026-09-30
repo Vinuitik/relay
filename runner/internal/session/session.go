@@ -1,6 +1,11 @@
 // Package session implements session lifecycle: spawning a CLI agent
-// subprocess per session, capturing its stdout into a transcript, and
-// feeding it user messages via stdin.
+// subprocess per session, turning its output into a transcript, and feeding
+// it user messages. Two kinds of provider:
+//   - ACP providers (claude via claude-agent-acp, ...) - a structured
+//     protocol with streaming text, tool-call progress, permission requests,
+//     modes, and an explicit end-of-turn. See acp_session.go.
+//   - raw providers (echo-agent, RELAY_PROVIDER_<NAME> overrides) - a line
+//     in, lines out, no notion of turns.
 //
 // Limitation (by design, for this milestone): sessions live in memory only,
 // guarded by a mutex. A runner restart loses all session state (transcripts,
@@ -19,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"relay/runner/internal/acp"
 )
 
 // Session states.
@@ -27,6 +34,9 @@ const (
 	StateIdle     = "idle"
 	StateFinished = "finished"
 	StateError    = "error"
+	// StateWaiting: an ACP agent is paused on a permission request - waiting
+	// on the human, not working, so it counts as idle for idle-suspend.
+	StateWaiting = "waiting"
 )
 
 // Errors returned by Manager methods, mapped to HTTP status codes by the
@@ -40,13 +50,41 @@ var (
 	ErrUnknownProvider = errors.New("unknown provider")
 	// ErrSessionFinished is returned by SendMessage/Stop on an already-terminal session.
 	ErrSessionFinished = errors.New("session already finished")
+	// ErrTurnInProgress is returned by SendMessage while the agent is still
+	// working on (or waiting for permission in) the previous turn.
+	ErrTurnInProgress = errors.New("agent is still working on the previous message")
+	// ErrNotSupported is returned by Cancel/SetMode/RespondPermission on a
+	// raw (non-ACP) provider.
+	ErrNotSupported = errors.New("not supported by this provider")
+	// ErrInvalidChoice is returned for an unknown mode/permission option or
+	// when no permission request is pending.
+	ErrInvalidChoice = errors.New("invalid choice")
 )
 
 // Message is one transcript entry.
 type Message struct {
-	Role string `json:"role"` // "user" | "agent"
+	Role string `json:"role"` // "user" | "agent" | "tool"
+	// Text is the message text, or for role "tool" a one-line title such as
+	// "Write hello.txt" / "npm test".
 	Text string `json:"text"`
 	At   string `json:"at"` // RFC3339
+	// ToolKind and Status are set for role "tool" only: kind is ACP's read,
+	// edit, delete, move, search, execute, think, fetch, other; status is
+	// pending, in_progress, completed, failed.
+	ToolKind string `json:"toolKind,omitempty"`
+	Status   string `json:"status,omitempty"`
+
+	// ref is the ACP messageId (agent) or toolCallId (tool) that later
+	// streamed updates are merged into. Internal only.
+	ref string
+}
+
+// PendingPermission is an ACP agent's open permission request, answered via
+// Manager.RespondPermission.
+type PendingPermission struct {
+	Title    string                 `json:"title"`
+	ToolKind string                 `json:"toolKind"`
+	Options  []acp.PermissionOption `json:"options"`
 }
 
 // Session matches the shape defined in shared/API.md.
@@ -58,28 +96,21 @@ type Session struct {
 	CreatedAt  string    `json:"createdAt"`
 	FinishedAt *string   `json:"finishedAt"`
 	Messages   []Message `json:"messages"`
+	// Mode/Modes: the agent's current and available permission modes (ACP
+	// providers only), e.g. "bypassPermissions". Empty for raw providers.
+	Mode              string             `json:"mode,omitempty"`
+	Modes             []acp.Mode         `json:"modes,omitempty"`
+	PendingPermission *PendingPermission `json:"pendingPermission,omitempty"`
 }
 
 // ProviderCommand is the command run for a given provider name.
 type ProviderCommand struct {
 	Name string
 	Args []string
-	// Codec selects how SendMessage/pump encode stdin and decode stdout for
-	// this provider - "" means raw text (a line in, a line out), matching
-	// the package doc comment's original assumption. See codecClaudeStreamJSON.
-	Codec string
+	// ACP marks an Agent Client Protocol agent (see acp_session.go);
+	// otherwise raw text, a line in and lines out.
+	ACP bool
 }
-
-// codecClaudeStreamJSON is `claude`'s `--input-format=stream-json
-// --output-format=stream-json` wire format - confirmed by hand (2026-09-19,
-// piping one probe message through `claude --print --input-format=stream-json
-// --output-format=stream-json --verbose`) rather than assumed. Plain
-// `claude` with piped stdin and no flags is NOT this: it silently runs in
-// one-shot `--print` mode and errors if no input arrives immediately,
-// which is what a bare auto-detected `claude` did the first time this was
-// tried - the flags plus this codec are both required together, not
-// optional extras.
-const codecClaudeStreamJSON = "claude-stream-json"
 
 // record is the internal, mutable state for one session.
 type record struct {
@@ -87,16 +118,20 @@ type record struct {
 	data Session
 
 	cmd   *exec.Cmd
-	stdin io.WriteCloser // nil once the process has exited or Stop was called
-	// codec is set once at Start and never changes for the session's
-	// lifetime, so it's read without rec.mu held (same as cmd/data.Provider).
-	codec string
+	stdin io.WriteCloser // raw providers only; nil once the process has exited or Stop was called
+
+	// ACP providers only (see acp_session.go). acp/acpSession are set once
+	// at start and never change afterwards.
+	acp        *acp.Client
+	acpSession string
+	turnActive bool            // a session/prompt call is in flight
+	permID     json.RawMessage // JSON-RPC id of the open permission request, nil if none
 	// stopped marks that Stop() already finalized this session, so the
 	// background reader goroutine (which observes process exit
 	// independently) must not overwrite that final state.
 	stopped bool
 	// idleSince is the most recent moment this record stopped being busy -
-	// a completed turn (claude-stream-json "result" event, see finishTurn),
+	// a completed ACP turn or permission request (see acp_session.go),
 	// a clean/errored process exit (awaitExit), or Stop() - whichever
 	// happened most recently. Zero value means "still busy, never yet gone
 	// idle." Read by Manager.IdleStatus; guarded by mu like the rest of the
@@ -118,19 +153,28 @@ type Manager struct {
 	// session has ever been created yet.
 	createdAt time.Time
 
+	// DefaultMode is the ACP mode new sessions are switched to right after
+	// creation, if the agent offers it (env RELAY_DEFAULT_MODE, default
+	// "bypassPermissions" - no permission prompts; the phone's Stop button
+	// is the brake). Empty keeps the agent's own default.
+	DefaultMode string
+
+	// OnNeedsInput, if set, is called (in its own goroutine) when an ACP
+	// agent pauses on a permission request - wired to a push notification
+	// in cmd/runnerd/main.go.
+	OnNeedsInput func(Session)
+
 	// OnFinished, if set, is called (in its own goroutine, so it never
 	// blocks or can fail the state transition itself) whenever a session
-	// either completes a turn (a claude-stream-json "result" event - see
-	// finishTurn, called once per turn, not once per process lifetime) or
-	// reaches StateFinished (its subprocess exited cleanly via awaitExit, or
-	// it was stopped via Stop). This is how runner/internal/notify gets
-	// wired in to notify registered devices of "your job is done"; session
-	// deliberately doesn't import notify to avoid a dependency
-	// cycle/coupling - it just reports the fact via this hook. For a
-	// persistent claude-stream-json session the per-turn firing is the
-	// meaningful one, since the subprocess stays alive across turns and may
-	// never reach StateFinished at all; a raw-codec provider has no notion
-	// of turns, so it only ever fires once, at process exit.
+	// either completes a turn (an ACP session/prompt returning - once per
+	// turn, not once per process lifetime) or reaches StateFinished (its
+	// subprocess exited cleanly via awaitExit, or it was stopped via Stop).
+	// This is how runner/internal/notify gets wired in to notify registered
+	// devices of "your job is done"; session deliberately doesn't import
+	// notify to avoid a dependency cycle/coupling - it just reports the fact
+	// via this hook. For a long-lived ACP session the per-turn firing is the
+	// meaningful one; a raw provider has no notion of turns, so it only ever
+	// fires once, at process exit.
 	OnFinished func(Session)
 }
 
@@ -138,11 +182,16 @@ type Manager struct {
 // working directory by id; it's injected (rather than importing the
 // project package directly) to keep session decoupled from project.
 func NewManager(resolveDir ResolveProjectDir) *Manager {
+	mode := os.Getenv("RELAY_DEFAULT_MODE")
+	if mode == "" {
+		mode = "bypassPermissions"
+	}
 	return &Manager{
-		sessions:   make(map[string]*record),
-		resolveDir: resolveDir,
-		providers:  defaultProviders(),
-		createdAt:  time.Now(),
+		sessions:    make(map[string]*record),
+		resolveDir:  resolveDir,
+		providers:   defaultProviders(),
+		createdAt:   time.Now(),
+		DefaultMode: mode,
 	}
 }
 
@@ -156,39 +205,30 @@ func defaultProviders() map[string]ProviderCommand {
 }
 
 // autoDetectProviders maps a provider name the phone app is allowed to ask
-// for to the bare CLI command name to look up on PATH - no manual
-// RELAY_PROVIDER_<NAME> setup needed on a fresh deployment as long as the
-// CLI is actually installed. Bare names (no args) deliberately reuse
-// autoDetectProviders maps a provider name the phone app is allowed to ask
 // for to the command to run if it resolves on PATH right now - no manual
-// RELAY_PROVIDER_<NAME> setup needed on a fresh deployment as long as the
-// CLI is actually installed. "claude" needs the stream-json flags (see
-// codecClaudeStreamJSON) to hold a persistent multi-turn conversation over
-// one piped stdin instead of exiting after one one-shot --print call.
-// "codex" has no confirmed equivalent wire format yet, so it stays raw
-// text/no-args for now - untested end-to-end, see runner/FLOWS.md.
+// setup needed as long as the CLI is installed. "claude" runs through the
+// ACP adapter (`npm i -g @agentclientprotocol/claude-agent-acp`, needs Node
+// >= 22), which uses the machine's existing `claude` login. "codex" is still
+// the bare CLI over raw text - untested end-to-end; codex-acp is the planned
+// replacement, see runner/FLOWS.md.
 var autoDetectProviders = map[string]ProviderCommand{
-	"claude": {
-		Name:  "claude",
-		Args:  []string{"--print", "--input-format=stream-json", "--output-format=stream-json", "--verbose"},
-		Codec: codecClaudeStreamJSON,
-	},
+	"claude": {Name: "claude-agent-acp", ACP: true},
 	"codex": {Name: "codex"},
 }
 
 // resolveProvider maps a provider name to a command, in order: (1)
-// RELAY_PROVIDER_<NAME> (name upper-cased, "-" -> "_") as a shell command
-// string, e.g. RELAY_PROVIDER_CLAUDE="claude --project ." - still the way
-// to override the bare command, pass extra args, or opt out of the
-// stream-json codec (an env override always gets Codec: "", raw text - see
-// the doc comment above codecClaudeStreamJSON if you need to override
-// *and* keep the codec, which isn't supported today); (2) a hardcoded
-// provider (currently just "echo-agent", for tests); (3) autoDetectProviders
-// - if the name is a known CLI and it resolves on PATH right now, use its
-// pre-configured command+codec. Checked last, not first, so an explicit env
-// override always wins over what's merely installed.
+// RELAY_ACP_<NAME> (name upper-cased, "-" -> "_") - path/command of an ACP
+// agent, e.g. RELAY_ACP_CLAUDE=C:\tools\claude-agent-acp.cmd; (2)
+// RELAY_PROVIDER_<NAME> as a raw shell command string; (3) a hardcoded
+// provider (currently just "echo-agent", for tests); (4) autoDetectProviders
+// - if the name is a known CLI and it resolves on PATH right now. Env
+// overrides win over what's merely installed.
 func (m *Manager) resolveProvider(name string) (ProviderCommand, error) {
-	envKey := "RELAY_PROVIDER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	suffix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	if acpCmd := os.Getenv("RELAY_ACP_" + suffix); acpCmd != "" {
+		return ProviderCommand{Name: acpCmd, ACP: true}, nil
+	}
+	envKey := "RELAY_PROVIDER_" + suffix
 	if cmdStr := os.Getenv(envKey); cmdStr != "" {
 		return ProviderCommand{Name: "sh", Args: []string{"-c", cmdStr}}, nil
 	}
@@ -199,7 +239,11 @@ func (m *Manager) resolveProvider(name string) (ProviderCommand, error) {
 		if _, err := exec.LookPath(pc.Name); err == nil {
 			return pc, nil
 		}
-		return ProviderCommand{}, fmt.Errorf("%w: %q CLI not found on PATH (install it, or set %s to its full path)", ErrUnknownProvider, pc.Name, envKey)
+		hint := envKey
+		if pc.ACP {
+			hint = "RELAY_ACP_" + suffix
+		}
+		return ProviderCommand{}, fmt.Errorf("%w: %q not found on PATH (install it, or set %s to its full path)", ErrUnknownProvider, pc.Name, hint)
 	}
 	return ProviderCommand{}, fmt.Errorf("%w: %q (configure it via %s)", ErrUnknownProvider, name, envKey)
 }
@@ -229,6 +273,10 @@ func (m *Manager) start(projectID, provider, dir string) (Session, error) {
 	id := m.newID()
 	m.mu.Unlock()
 
+	if pc.ACP {
+		return m.startACP(id, projectID, provider, dir, pc)
+	}
+
 	cmd := exec.Command(pc.Name, pc.Args...)
 	cmd.Dir = dir
 
@@ -247,34 +295,20 @@ func (m *Manager) start(projectID, provider, dir string) (Session, error) {
 		return Session{}, fmt.Errorf("start provider %q: %w", provider, err)
 	}
 
-	// A claude-stream-json process is long-lived across turns: once spawned
-	// it sits waiting for the first stdin message, so it starts idle, not
-	// busy - only SendMessage (a turn starting) makes it busy. A raw-codec
-	// provider (e.g. echo-agent, or an unconfigured CLI) keeps the original
-	// behavior: busy from the moment it's spawned until the process exits,
-	// since there's no per-turn signal (like the "result" event) to know it
-	// ever goes idle in between.
+	// A raw provider has no per-turn signal, so it's busy from the moment
+	// it's spawned until the process exits.
 	startTime := nowT()
-	initialState := StateBusy
-	if pc.Codec == codecClaudeStreamJSON {
-		initialState = StateIdle
-	}
-
 	rec := &record{
 		data: Session{
 			ID:        id,
 			ProjectID: projectID,
 			Provider:  provider,
-			State:     initialState,
+			State:     StateBusy,
 			CreatedAt: startTime.Format(time.RFC3339),
 			Messages:  []Message{},
 		},
 		cmd:   cmd,
 		stdin: stdinPipe,
-		codec: pc.Codec,
-	}
-	if initialState != StateBusy {
-		rec.idleSince = startTime
 	}
 
 	m.mu.Lock()
@@ -287,140 +321,23 @@ func (m *Manager) start(projectID, provider, dir string) (Session, error) {
 	return rec.snapshot(), nil
 }
 
-// pump reads the subprocess's combined stdout/stderr line by line, decoding
-// each line per rec.codec before appending it as an "agent" message. Raw
-// codec (default) appends the line as-is; codecClaudeStreamJSON parses each
-// line as a claude-cli stream-json event and only surfaces assistant text
-// (see decodeClaudeStreamJSONLine) - a line that doesn't decode to visible
-// text (e.g. the "system" event type, or malformed JSON) is dropped from
-// the transcript rather than shown raw, so the phone doesn't get an
-// unreadable JSON blob in the chat. The "result" event is handled
-// separately, not dropped: it's the wire format's end-of-turn marker, so it
-// drives finishTurn (busy -> idle, plus the per-turn OnFinished/job-done
-// signal) instead of ever being appended to the transcript.
+// pump reads a raw provider's combined stdout/stderr line by line,
+// appending each line as an "agent" message.
 func (m *Manager) pump(rec *record, r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if rec.codec == codecClaudeStreamJSON {
-			if eventType, ok := decodeClaudeStreamJSONEventType(line); ok && eventType == "result" {
-				m.finishTurn(rec)
-				continue
-			}
-			if text, ok := decodeClaudeStreamJSONLine(line); ok {
-				rec.appendMessage(Message{Role: "agent", Text: text, At: now()})
-			}
-			continue
-		}
-		rec.appendMessage(Message{Role: "agent", Text: line, At: now()})
+		rec.appendMessage(Message{Role: "agent", Text: scanner.Text(), At: now()})
 	}
-}
-
-// finishTurn marks a claude-stream-json session idle again after a
-// completed agent turn (a "result" event - see pump) and fires the
-// OnFinished hook once for that turn - this is what actually sends the
-// job-done push, see OnFinished's doc comment. Guarded on the record still
-// being StateBusy, so a stray/duplicate "result" line (already idle) or one
-// that races the process exiting (already finished/error) never re-fires
-// the hook or clobbers a terminal state.
-func (m *Manager) finishTurn(rec *record) {
-	rec.mu.Lock()
-	if rec.data.State != StateBusy {
-		rec.mu.Unlock()
-		return
-	}
-	rec.data.State = StateIdle
-	rec.idleSince = nowT()
-	snapshot := cloneSession(rec.data)
-	rec.mu.Unlock()
-
-	m.notifyFinished(snapshot)
-}
-
-// claudeStreamJSONContentBlock is one entry of a stream-json message's
-// "content" array. Non-text blocks (e.g. tool_use) are silently dropped by
-// both the encoder (never produced - user messages here are plain text)
-// and the decoder (ignored - see decodeClaudeStreamJSONLine's doc comment)
-// - `[NOT IMPLEMENTED]`: surfacing tool calls/results in the phone
-// transcript, only the assistant's own text is shown for v1.
-type claudeStreamJSONContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-// encodeClaudeStreamJSONUserMessage builds one `claude --input-format
-// stream-json` input line for a plain-text user message - the shape
-// confirmed by hand against a real `claude --print --input-format=stream-json
-// --output-format=stream-json` process (2026-09-19).
-func encodeClaudeStreamJSONUserMessage(text string) (string, error) {
-	payload := struct {
-		Type    string `json:"type"`
-		Message struct {
-			Role    string                         `json:"role"`
-			Content []claudeStreamJSONContentBlock `json:"content"`
-		} `json:"message"`
-	}{Type: "user"}
-	payload.Message.Role = "user"
-	payload.Message.Content = []claudeStreamJSONContentBlock{{Type: "text", Text: text}}
-
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("encode claude stream-json user message: %w", err)
-	}
-	return string(b), nil
-}
-
-// decodeClaudeStreamJSONEventType extracts just the top-level "type" field
-// from a `claude --output-format=stream-json` line - used by pump to detect
-// the "result" event (the wire format's end-of-turn marker) before falling
-// through to decodeClaudeStreamJSONLine's assistant-text-only parsing.
-// ok=false means the line isn't valid JSON at all.
-func decodeClaudeStreamJSONEventType(line string) (eventType string, ok bool) {
-	var event struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(line), &event); err != nil {
-		return "", false
-	}
-	return event.Type, true
-}
-
-// decodeClaudeStreamJSONLine parses one `claude --output-format=stream-json`
-// output line and, if it's an "assistant" event, returns its text content
-// blocks concatenated. Every other observed event type ("system" init,
-// "rate_limit_event", the final "result" summary - handled separately by
-// decodeClaudeStreamJSONEventType/finishTurn, not here) and any line that
-// fails to parse as JSON at all return ok=false - dropped from the
-// transcript rather than shown as raw JSON (see pump's doc comment).
-func decodeClaudeStreamJSONLine(line string) (text string, ok bool) {
-	var event struct {
-		Type    string `json:"type"`
-		Message *struct {
-			Content []claudeStreamJSONContentBlock `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal([]byte(line), &event); err != nil {
-		return "", false
-	}
-	if event.Type != "assistant" || event.Message == nil {
-		return "", false
-	}
-	var sb strings.Builder
-	for _, block := range event.Message.Content {
-		if block.Type == "text" {
-			sb.WriteString(block.Text)
-		}
-	}
-	if sb.Len() == 0 {
-		return "", false
-	}
-	return sb.String(), true
 }
 
 // awaitExit waits for the subprocess to exit and finalizes session state,
 // unless Stop() already finalized it first.
 func (m *Manager) awaitExit(rec *record) {
+	if rec.acp != nil {
+		// Let the reader drain stdout before Wait closes the pipe.
+		<-rec.acp.Done()
+	}
 	err := rec.cmd.Wait()
 
 	rec.mu.Lock()
@@ -428,6 +345,15 @@ func (m *Manager) awaitExit(rec *record) {
 		rec.mu.Unlock()
 		return
 	}
+	if err != nil && rec.acp != nil {
+		msg := "Agent exited: " + err.Error()
+		if tail := rec.acp.StderrTail(); tail != "" {
+			msg += "\n" + tail
+		}
+		rec.data.Messages = append(rec.data.Messages, Message{Role: "agent", Text: msg, At: now()})
+	}
+	rec.data.PendingPermission = nil
+	rec.permID = nil
 	ts := nowT()
 	tsStr := ts.Format(time.RFC3339)
 	rec.data.FinishedAt = &tsStr
@@ -448,7 +374,7 @@ func (m *Manager) awaitExit(rec *record) {
 
 // notifyFinished invokes OnFinished (if set) in its own goroutine, so a
 // slow or failing notification path can never block session lifecycle
-// transitions. Called both for a completed turn (finishTurn) and for a
+// transitions. Called both for a completed ACP turn and for a
 // terminal StateFinished transition (awaitExit, Stop) - see OnFinished's
 // doc comment for the full picture of when each fires.
 func (m *Manager) notifyFinished(sess Session) {
@@ -493,9 +419,9 @@ func (m *Manager) ListByProject(projectID string) []Session {
 // session state rather than tracked as separate counters, so there's only
 // one place session busy/idle/finished state lives.
 //
-// State is NOT monotonic busy -> {finished, error} for a claude-stream-json
-// session: it goes busy -> idle -> busy -> idle ... once per turn (see
-// SendMessage and pump's "result"-event handling), and may only ever reach
+// State is NOT monotonic busy -> {finished, error} for an ACP session: it
+// goes busy -> idle (or waiting) -> busy ... once per turn (see
+// acp_session.go), and may only ever reach
 // finished/error when the subprocess itself exits or Stop is called - which,
 // for a long-lived provider process, can be much later than its last busy
 // period. So the moment the whole runner most recently stopped being busy
@@ -536,6 +462,9 @@ func (m *Manager) SendMessage(sessionID, text string) error {
 	if err != nil {
 		return err
 	}
+	if rec.acp != nil {
+		return m.sendACP(rec, text)
+	}
 
 	rec.mu.Lock()
 	if isTerminal(rec.data.State) || rec.stdin == nil {
@@ -543,34 +472,12 @@ func (m *Manager) SendMessage(sessionID, text string) error {
 		return ErrSessionFinished
 	}
 	stdin := rec.stdin
-	codec := rec.codec
-	// A turn is starting: mark busy now, before writing to stdin - not
-	// after. A fast-replying subprocess could otherwise have pump observe
-	// the matching "result" event (finishTurn) before this goroutine gets
-	// back around to flipping the state post-write; finishTurn's StateBusy
-	// guard would then see "not busy yet" and silently no-op, and this
-	// write's later Busy transition would land *after* that, leaving the
-	// session stuck busy forever for a turn that already finished. Setting
-	// it first closes that race. No-op for raw-codec providers, which are
-	// already busy from Start.
-	rec.data.State = StateBusy
 	rec.mu.Unlock()
 
-	payload := text
-	if codec == codecClaudeStreamJSON {
-		encoded, err := encodeClaudeStreamJSONUserMessage(text)
-		if err != nil {
-			return err
-		}
-		payload = encoded
-	}
-
-	if _, err := io.WriteString(stdin, payload+"\n"); err != nil {
+	if _, err := io.WriteString(stdin, text+"\n"); err != nil {
 		return fmt.Errorf("write to session stdin: %w", err)
 	}
 
-	// The transcript always stores the plain text the user typed, never the
-	// wire-format envelope - the phone should never see raw stream-json.
 	rec.appendMessage(Message{Role: "user", Text: text, At: now()})
 	return nil
 }
@@ -593,6 +500,8 @@ func (m *Manager) Stop(sessionID string) (Session, error) {
 	tsStr := ts.Format(time.RFC3339)
 	rec.data.State = StateFinished
 	rec.data.FinishedAt = &tsStr
+	rec.data.PendingPermission = nil
+	rec.permID = nil
 	rec.idleSince = ts
 	proc := rec.cmd.Process
 	rec.stdin = nil

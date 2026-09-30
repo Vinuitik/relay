@@ -17,16 +17,40 @@ data class Session(
     val id: String,
     val projectId: String,
     val provider: String,
-    val state: String, // "busy" | "idle" | "finished" | "error"
+    val state: String, // "busy" | "idle" | "waiting" | "finished" | "error"
     val createdAt: String,
     val finishedAt: String?,
     val messages: List<Message>,
+    // ACP providers only (e.g. claude): permission modes and an open permission request.
+    val mode: String? = null,
+    val modes: List<AgentMode>? = null,
+    val pendingPermission: PendingPermission? = null,
 )
 
 data class Message(
-    val role: String, // "user" | "agent"
-    val text: String,
+    val role: String, // "user" | "agent" | "tool"
+    val text: String, // for "tool": a one-line title like "Write hello.txt"
     val at: String,
+    val toolKind: String? = null, // read, edit, execute, search, ...
+    val status: String? = null, // tool only: pending, in_progress, completed, failed
+)
+
+data class AgentMode(
+    val id: String, // e.g. "default", "acceptEdits", "bypassPermissions"
+    val name: String,
+    val description: String? = null,
+)
+
+data class PendingPermission(
+    val title: String,
+    val toolKind: String?,
+    val options: List<PermissionOption>,
+)
+
+data class PermissionOption(
+    val optionId: String,
+    val name: String,
+    val kind: String, // allow_once, allow_always, reject_once, reject_always
 )
 
 data class RunnerInfo(

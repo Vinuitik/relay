@@ -22,6 +22,8 @@ data class NewSessionRequest(val provider: String)
 data class MessageRequest(val text: String)
 data class DeviceRegistrationRequest(val fcmToken: String)
 data class StartContainersRequest(val file: String)
+data class SetModeRequest(val modeId: String)
+data class PermissionRequest(val optionId: String)
 
 /**
  * Retrofit mirror of shared/API.md's v1 endpoint table. Endpoints whose response body carries no
@@ -70,6 +72,21 @@ interface RelayApiService {
 
     @POST("v1/sessions/{sessionId}/stop")
     suspend fun stopSession(@Path("sessionId") sessionId: String): Session
+
+    /** Stops the agent's current turn without ending the session (the red Stop button). */
+    @POST("v1/sessions/{sessionId}/cancel")
+    suspend fun cancelTurn(@Path("sessionId") sessionId: String): Session
+
+    /** Switches permission mode, one of [Session.modes]. */
+    @POST("v1/sessions/{sessionId}/mode")
+    suspend fun setMode(@Path("sessionId") sessionId: String, @Body request: SetModeRequest): Session
+
+    /** Answers [Session.pendingPermission] with one of its options. */
+    @POST("v1/sessions/{sessionId}/permission")
+    suspend fun answerPermission(
+        @Path("sessionId") sessionId: String,
+        @Body request: PermissionRequest,
+    ): Session
 
     /** Detected compose files, the active one, and container states. Cheap - safe to poll. */
     @GET("v1/projects/{projectId}/containers")
