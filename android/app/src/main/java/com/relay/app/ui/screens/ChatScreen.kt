@@ -332,13 +332,18 @@ private fun ChatBubble(message: Message) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
+        // Agent replies get the full width: they carry code blocks and lists.
         Box(
             modifier = Modifier
-                .widthIn(max = 300.dp)
+                .then(if (isUser) Modifier.widthIn(max = 300.dp) else Modifier.fillMaxWidth())
                 .background(color = bubbleColor, shape = RoundedCornerShape(12.dp))
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
-            Text(text = message.text, color = textColor)
+            if (isUser) {
+                Text(text = message.text, color = textColor)
+            } else {
+                MarkdownText(text = message.text, color = textColor)
+            }
         }
     }
 }

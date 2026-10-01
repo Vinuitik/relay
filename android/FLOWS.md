@@ -1,7 +1,7 @@
 # Android app flows
 
 Files: MainActivity.kt, RelayNavHost.kt, RunnerListScreen.kt, QrScanScreen.kt,
-ProjectListScreen.kt, SessionListScreen.kt, ChatScreen.kt, FileBrowserScreen.kt,
+ProjectListScreen.kt, SessionListScreen.kt, ChatScreen.kt, MarkdownText.kt, Theme.kt, FileBrowserScreen.kt,
 FolderPickerScreen.kt, KnownRunnersRepository.kt, RelayApiClient.kt, RelayApiService.kt,
 RelayFirebaseMessagingService.kt, RegisterDeviceWorker.kt
 
@@ -47,8 +47,8 @@ stale data.
 
 ChatScreen polls `GET /v1/sessions/{id}` every 1s while `busy`, 3s while `waiting`, and stops
 when `idle` — no WebSocket/SSE; "streaming" is the runner merging text chunks into the transcript
-between polls. Transcript rendering: `user`/`agent` → bubbles, `tool` → one compact line
-(`ToolRow`: ✓ completed / ✗ failed / ⋯ running + title). Auto-scrolls to the newest entry.
+between polls. Transcript rendering: `user` → plain bubble, `agent` → full-width bubble rendered as markdown
+(`MarkdownText`), `tool` → one compact line (`ToolRow`: ✓ completed / ✗ failed / ⋯ running + title). Auto-scrolls to the newest entry.
 - Red Stop button (replaces Send while busy/waiting) → `cancelTurn` → turn stops, session stays.
 - Mode picker (top bar, ACP sessions only) → `setMode` with one of `session.modes`.
 - `pendingPermission` → `PermissionCard` at the end of the list, one button per option →
@@ -279,9 +279,14 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
   transcript. The Room cache that used to back this was deleted 2026-09-20 (it was a
   write-through mirror, so nothing unrecoverable was stored in it). If offline reading is wanted
   back, it's a fresh decision, not a revert.
+- **Always dark theme**: `RelayTheme(darkTheme = true)` ignores the phone's light/dark setting;
+  dynamic (wallpaper) colors still apply on Android 12+.
+- **Markdown is hand-rolled** (`MarkdownText.kt`, no library): headings, lists, quotes, rules,
+  fenced code, inline bold/italic/code/links/strike. Tables and nested structures show as plain
+  text; links are underlined but not tappable; `_` is never emphasis (keeps snake_case intact).
 - **DataStore Preferences has no encryption** — the runner key is stored in plaintext prefs.
   Acceptable for now (single-user, own devices) but worth revisiting before wider use.
-- **Chat polling is a fixed 3s loop, only while `state == "busy"`.** It stops on any exception
+- **Chat polling is 1s while `busy`, 3s while `waiting`, off otherwise.** It stops on any exception
   (and shows the error) rather than retrying — a runner that goes away mid-session needs the
   screen re-entered. There is no backoff and no WebSocket.
 - **WorkManager is now used for exactly one thing** (`RegisterDeviceWorker`, FCM token
@@ -319,6 +324,8 @@ ContainersScreen (2026-09-30), which also surfaces failures (`lastError`).
 | Known runners storage | `data/KnownRunnersRepository.kt`, `model/Models.kt` (`KnownRunner`) |
 | Default runner port (7777) | `model/Models.kt` (`KnownRunner.DEFAULT_PORT`) |
 | Chat transcript rendering (bubbles, tool rows, permission card, Stop, mode picker) | `ui/screens/ChatScreen.kt` |
+| Markdown in agent replies | `ui/screens/MarkdownText.kt` (`parseBlocks`, `inline`) |
+| Dark/light theme | `ui/theme/Theme.kt` (`RelayTheme` `darkTheme` default) |
 | Notification text per push type | `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
 | Containers screen (compose file picker, start/switch/stop) | `ui/screens/ContainersScreen.kt` |
 | When the Containers icon shows | `ui/screens/SessionListScreen.kt` (`hasDocker`) |
@@ -329,7 +336,7 @@ ContainersScreen (2026-09-30), which also surfaces failures (`lastError`).
 | HTTP client / auth header | `network/RelayApiClient.kt`, `network/RelayApiService.kt` |
 | Connection error wording | `network/RelayApiClient.kt` (`friendlyErrorMessage`) |
 | Navigation graph / routes | `ui/navigation/RelayNavHost.kt` (`Routes`) |
-| Chat poll interval | `ui/screens/ChatScreen.kt` (`POLL_INTERVAL_MS`) |
+| Chat poll intervals | `ui/screens/ChatScreen.kt` (`POLL_BUSY_MS`, `POLL_WAITING_MS`) |
 | Sleep button + its 409/503/error Toasts | `ui/screens/RunnerListScreen.kt` (`suspendRunner`) |
 | Remove runner | `data/KnownRunnersRepository.kt` (`removeRunner`), `ui/screens/RunnerListScreen.kt` |
 | Session provider list ("claude"/"codex") | `ui/screens/SessionListScreen.kt` (`KNOWN_PROVIDERS`) |

@@ -1,7 +1,6 @@
 package com.relay.app.ui.theme
 
 import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -26,7 +25,8 @@ private val DarkColors = darkColorScheme(
 
 @Composable
 fun RelayTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    // Always dark (the light scheme was too bright). Pass isSystemInDarkTheme() to follow the phone.
+    darkTheme: Boolean = true,
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit,
 ) {
