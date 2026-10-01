@@ -110,6 +110,8 @@ data class DirEntry(
  * directory to register, unlike [FileEntry]'s project-scoped listing. */
 data class BrowseResult(
     val path: String,
+    /** One level up; `""` = the drive list (Windows); null at the top. */
+    val parent: String? = null,
     val entries: List<DirEntry>,
 )
 

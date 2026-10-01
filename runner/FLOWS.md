@@ -266,9 +266,15 @@ existing" after the fact.
 any project-level scoping exists. Lists subdirectories only (never files), skips dotfiles,
 `path` empty/omitted lists filesystem roots (`listRoots()`, build-tagged: `/` on Unix, existing
 drive letters `A:\`-`Z:\` on Windows via `os.Stat` probing - stdlib only, no cgo).
+`path=~` (`project.StartPath`) → `documentsDir()` → the user's Documents folder, which is where the
+phone picker opens: Windows asks the shell (`KnownFolderPath(FOLDERID_Documents)` - follows
+OneDrive redirection), Linux reads `XDG_DOCUMENTS_DIR` from `~/.config/user-dirs.dirs`; then
+`~/Documents`, then `~`. Every listing carries `parent` (one level up; `""` = the drive list on
+Windows; omitted at `/`) so the phone can walk up from Documents.
 
 To change what's excluded from a browse listing (e.g. dotfiles): `project.go`'s `BrowseDir`.
 To change root listing: `roots_unix.go` / `roots_windows.go`.
+To change the start folder: `documentsDir()` in `project.go`, `knownDocumentsDir()` in `roots_*.go`.
 
 ## File viewing (read-only, scoped to a project dir)
 
@@ -693,4 +699,5 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Register existing folder as a project | `internal/project/project.go` (`RegisterExisting`), `internal/api/api.go` (`handleCreateProject`) |
 | Unscoped directory browse (project picking) | `internal/project/project.go` (`BrowseDir`), `internal/api/api.go` (`handleBrowse`) |
 | Filesystem roots listing | `internal/project/roots_unix.go`, `roots_windows.go` (`listRoots`) |
+| Folder picker start folder (Documents) | `internal/project/project.go` (`documentsDir`, `StartPath`), `roots_*.go` (`knownDocumentsDir`) |
 | Laptop auto-start at logon | `install/start-relay-runner.ps1` + Startup-folder `.lnk` (see "Auto-restart on machine restart") |

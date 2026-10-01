@@ -152,10 +152,13 @@ ProjectListScreen's "+" FAB opens a small `DropdownMenu`: "Scaffold new empty pr
 
 `FolderPickerScreen` is an unscoped filesystem browser (`GET /v1/browse`, see runner/FLOWS.md) —
 deliberately separate from `FileBrowserScreen`, which is read-only and scoped to one
-already-registered project. Path history is a stack of absolute paths (empty string = the
-filesystem-roots view), same local-state back-navigation pattern as `FileBrowserScreen`. Its
-"select this folder" FAB (hidden at the roots view — registering `/` or `C:\` itself is
-nonsensical) calls `POST /v1/projects {path}` **directly from this screen**, then hands the
+already-registered project. It opens at `~` (the runner resolves that to the user's Documents
+folder) → the response's `path`/`parent` become `resolvedPath`/`parentPath` → a ".." row pushes
+`parentPath`, so the user can walk up from Documents. Path history is a stack of paths (`~` first,
+empty string = the drive-list view), same local-state back-navigation pattern as
+`FileBrowserScreen`; child paths are built from `resolvedPath`, never from the stack. Its
+"select this folder" FAB (hidden while `parentPath` is null — registering `/` or the drive list
+is nonsensical) calls `POST /v1/projects {path}` **directly from this screen**, then hands the
 resulting `Project` to `onRegistered` — registration happens here, not back in
 `ProjectListScreen`, specifically to avoid the awkwardness of popping back to a list screen that
 has no way to know it should re-fetch.

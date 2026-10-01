@@ -71,6 +71,7 @@ FileContent {
 
 BrowseResult {
   path: string         // the absolute path that was listed (empty when listing filesystem roots)
+  parent?: string      // one level up ("" = the filesystem-roots view); absent at the top
   entries: {name: string}[]  // subdirectories only, hidden (dotfile) dirs excluded
 }
 ```
@@ -99,7 +100,7 @@ BrowseResult {
 | GET | `/v1/runner/info` | - | `200 RunnerInfo` | |
 | GET | `/v1/projects` | - | `200 Project[]` | |
 | POST | `/v1/projects` | `{name: string, path?: string}` | `201 Project` | scaffolds a new project dir under the runner's configured projects root, unless `path` is set, in which case that already-existing absolute directory is registered as-is (name defaults to the directory's base name). `400` if `path` doesn't exist, isn't a directory, or is already registered. |
-| GET | `/v1/browse?path=<absolute>` | - | `200 BrowseResult` | lists subdirectories of `path` — **unscoped**, unlike the project file-viewing endpoints, since its purpose is finding a directory to register via `POST /v1/projects {path}` before any project-level scoping exists. `path` omitted/empty lists filesystem roots. `400` if `path` isn't absolute or isn't a directory. |
+| GET | `/v1/browse?path=<absolute>` | - | `200 BrowseResult` | lists subdirectories of `path` — **unscoped**, unlike the project file-viewing endpoints, since its purpose is finding a directory to register via `POST /v1/projects {path}` before any project-level scoping exists. `path` omitted/empty lists filesystem roots; `path=~` lists the user's Documents folder (falls back to home) - where the picker opens. `400` if `path` isn't absolute or isn't a directory. |
 | GET | `/v1/projects/{projectId}/sessions` | - | `200 Session[]` | includes finished sessions not yet purged by weekly cleanup |
 | POST | `/v1/projects/{projectId}/sessions` | `{provider: string}` | `201 Session` | spawns the configured CLI command for `provider`, scoped to the project dir |
 | GET | `/v1/sessions/{sessionId}` | - | `200 Session` | full transcript so far |

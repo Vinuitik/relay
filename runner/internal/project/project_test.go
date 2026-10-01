@@ -1,6 +1,7 @@
 package project
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -158,5 +159,41 @@ func TestResolvePathRejectsAbsolute(t *testing.T) {
 	}
 	if _, err := reg.ResolvePath(p.ID, filepath.Join(string(filepath.Separator), "etc", "passwd")); err == nil {
 		t.Error("ResolvePath(absolute) = nil error, want an error")
+	}
+}
+
+func TestBrowseStartPathOpensDocuments(t *testing.T) {
+	home := t.TempDir()
+	docs := filepath.Join(home, "Documents")
+	if err := os.Mkdir(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "nonexistent"))
+
+	res, err := BrowseDir(StartPath)
+	if err != nil {
+		t.Fatalf("BrowseDir: %v", err)
+	}
+	// On Windows the known-folder lookup ignores env vars, so only assert there.
+	if os.PathSeparator == '/' && res.Path != docs {
+		t.Fatalf("path = %q, want %q", res.Path, docs)
+	}
+	if res.Parent == nil || *res.Parent != filepath.Dir(res.Path) {
+		t.Fatalf("parent = %v, want %q", res.Parent, filepath.Dir(res.Path))
+	}
+}
+
+func TestBrowseRootHasNoParentOnUnix(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("unix only")
+	}
+	res, err := BrowseDir("/")
+	if err != nil {
+		t.Fatalf("BrowseDir: %v", err)
+	}
+	if res.Parent != nil {
+		t.Fatalf("parent = %q, want nil", *res.Parent)
 	}
 }

@@ -223,28 +223,45 @@ type DirEntry struct {
 	Name string `json:"name"`
 }
 
+// StartPath is the BrowseDir path meaning "the user's Documents folder"
+// (falls back to the home directory) - where the phone's folder picker opens.
+// Never a valid absolute path on any OS, so it can't collide with a real one.
+const StartPath = "~"
+
+// BrowseResult is BrowseDir's answer. Parent is the path one level up ("" =
+// the roots view on Windows); nil when Path is already the top.
+type BrowseResult struct {
+	Path    string     `json:"path"`
+	Parent  *string    `json:"parent,omitempty"`
+	Entries []DirEntry `json:"entries"`
+}
+
 // BrowseDir lists the subdirectories of path (unscoped - unlike ResolvePath,
 // this deliberately walks anywhere on disk, since its purpose is finding a
 // project directory to register before any project-level scoping exists).
 // Empty path lists filesystem roots (just "/" on Linux; all drive letters on
-// Windows). Hidden directories (dotfiles) are skipped.
-func BrowseDir(path string) (string, []DirEntry, error) {
+// Windows); StartPath lists the Documents folder. Hidden directories
+// (dotfiles) are skipped.
+func BrowseDir(path string) (BrowseResult, error) {
 	if path == "" {
-		return rootsPlaceholder, listRoots(), nil
+		return BrowseResult{Path: rootsPlaceholder, Entries: listRoots()}, nil
+	}
+	if path == StartPath {
+		path = documentsDir()
 	}
 	if !filepath.IsAbs(path) {
-		return "", nil, fmt.Errorf("path must be absolute")
+		return BrowseResult{}, fmt.Errorf("path must be absolute")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", nil, fmt.Errorf("stat %q: %w", path, err)
+		return BrowseResult{}, fmt.Errorf("stat %q: %w", path, err)
 	}
 	if !info.IsDir() {
-		return "", nil, fmt.Errorf("%q is not a directory", path)
+		return BrowseResult{}, fmt.Errorf("%q is not a directory", path)
 	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return "", nil, fmt.Errorf("read dir %q: %w", path, err)
+		return BrowseResult{}, fmt.Errorf("read dir %q: %w", path, err)
 	}
 	out := make([]DirEntry, 0, len(entries))
 	for _, e := range entries {
@@ -253,7 +270,40 @@ func BrowseDir(path string) (string, []DirEntry, error) {
 		}
 		out = append(out, DirEntry{Name: e.Name()})
 	}
-	return path, out, nil
+	return BrowseResult{Path: path, Parent: parentOf(path), Entries: out}, nil
+}
+
+// parentOf returns the directory above path, rootsPlaceholder for a Windows
+// drive root (so the picker can reach other drives), or nil at the Unix root.
+func parentOf(path string) *string {
+	parent := filepath.Dir(path)
+	if parent != path {
+		return &parent
+	}
+	if rootsPlaceholder == "" {
+		roots := rootsPlaceholder
+		return &roots
+	}
+	return nil
+}
+
+// documentsDir is the user's Documents folder (OS-specific lookup, then
+// ~/Documents), else the home directory, else the filesystem root.
+func documentsDir() string {
+	if d := knownDocumentsDir(); d != "" {
+		if info, err := os.Stat(d); err == nil && info.IsDir() {
+			return d
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return string(filepath.Separator)
+	}
+	d := filepath.Join(home, "Documents")
+	if info, err := os.Stat(d); err == nil && info.IsDir() {
+		return d
+	}
+	return home
 }
 
 func (r *Registry) uniqueSlugLocked(base string) string {

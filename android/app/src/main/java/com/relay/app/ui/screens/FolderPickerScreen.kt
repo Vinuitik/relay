@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,10 +60,14 @@ fun FolderPickerScreen(
     val api = remember(runner) { RelayApiClient.forRunner(runner) }
     val scope = rememberCoroutineScope()
 
-    var pathStack by remember { mutableStateOf(listOf("")) }
+    // "~" = the runner's Documents folder (see shared/API.md `GET /v1/browse`); the real path
+    // comes back in `resolvedPath`, which is what child paths and registration use.
+    var pathStack by remember { mutableStateOf(listOf("~")) }
     val currentPath = pathStack.last()
 
     var entries by remember { mutableStateOf<List<DirEntry>>(emptyList()) }
+    var resolvedPath by remember { mutableStateOf("") }
+    var parentPath by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var registering by remember { mutableStateOf(false) }
@@ -71,7 +76,10 @@ fun FolderPickerScreen(
         loading = true
         error = null
         try {
-            entries = api.browse(currentPath).entries.sortedBy { it.name.lowercase() }
+            val result = api.browse(currentPath)
+            entries = result.entries.sortedBy { it.name.lowercase() }
+            resolvedPath = result.path
+            parentPath = result.parent
         } catch (e: Exception) {
             error = friendlyErrorMessage(e, runner)
         } finally {
@@ -94,7 +102,7 @@ fun FolderPickerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(currentPath.ifEmpty { "Select folder" }) },
+                title = { Text(resolvedPath.ifEmpty { "Select folder" }) },
                 navigationIcon = {
                     IconButton(onClick = { if (!stepBack()) onBack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -103,14 +111,14 @@ fun FolderPickerScreen(
             )
         },
         floatingActionButton = {
-            // Registering the filesystem root itself is nonsensical (never a real project) -
+            // Registering a filesystem root (no parent) or the drive list is nonsensical -
             // only offer "select this folder" once inside a real directory.
-            if (currentPath.isNotEmpty() && !registering) {
+            if (!loading && resolvedPath.isNotEmpty() && parentPath != null && !registering) {
                 FloatingActionButton(onClick = {
                     registering = true
                     scope.launch {
                         try {
-                            val project = api.createProject(NewProjectRequest(name = "", path = currentPath))
+                            val project = api.createProject(NewProjectRequest(name = "", path = resolvedPath))
                             onRegistered(project)
                         } catch (e: Exception) {
                             error = friendlyErrorMessage(e, runner)
@@ -131,8 +139,24 @@ fun FolderPickerScreen(
                     text = "Error: $error",
                     modifier = Modifier.align(Alignment.Center).padding(16.dp),
                 )
-                entries.isEmpty() -> Text("No subfolders.", modifier = Modifier.align(Alignment.Center))
                 else -> LazyColumn {
+                    // "Up" lets the user leave the Documents start folder - the back stack only
+                    // goes back to where they came from.
+                    parentPath?.let { parent ->
+                        item(key = "..") {
+                            ListItem(
+                                headlineContent = { Text("..") },
+                                leadingContent = {
+                                    Icon(imageVector = Icons.Default.ArrowUpward, contentDescription = "Up")
+                                },
+                                modifier = Modifier.clickable { pathStack = pathStack + parent },
+                            )
+                            HorizontalDivider()
+                        }
+                    }
+                    if (entries.isEmpty()) {
+                        item(key = "empty") { Text("No subfolders.", modifier = Modifier.padding(16.dp)) }
+                    }
                     items(entries, key = { it.name }) { entry ->
                         ListItem(
                             headlineContent = { Text(entry.name) },
@@ -140,7 +164,7 @@ fun FolderPickerScreen(
                                 Icon(imageVector = Icons.Default.Folder, contentDescription = null)
                             },
                             modifier = Modifier.clickable {
-                                pathStack = pathStack + joinPath(currentPath, entry.name)
+                                pathStack = pathStack + joinPath(resolvedPath, entry.name)
                             },
                         )
                         HorizontalDivider()

@@ -220,12 +220,12 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 // to register before any project-level scoping exists. See
 // project.BrowseDir.
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
-	current, entries, err := project.BrowseDir(r.URL.Query().Get("path"))
+	res, err := project.BrowseDir(r.URL.Query().Get("path"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": current, "entries": entries})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {

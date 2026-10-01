@@ -2,7 +2,11 @@
 
 package project
 
-import "os"
+import (
+	"os"
+
+	"golang.org/x/sys/windows"
+)
 
 // rootsPlaceholder is what BrowseDir reports as the "current path" when
 // listing filesystem roots (no real path is being browsed yet).
@@ -20,4 +24,14 @@ func listRoots() []DirEntry {
 		}
 	}
 	return out
+}
+
+// knownDocumentsDir asks Windows where Documents is - it may be redirected
+// (e.g. into OneDrive), so %USERPROFILE%\Documents isn't reliable.
+func knownDocumentsDir() string {
+	d, err := windows.KnownFolderPath(windows.FOLDERID_Documents, 0)
+	if err != nil {
+		return ""
+	}
+	return d
 }
