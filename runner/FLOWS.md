@@ -522,13 +522,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   on their own when the runner's pipe closes (observed: 0 orphans after `Stop-Process -Force`).
 - **Graceful shutdown on Windows**: `Stop-Process` is always a hard kill; SIGINT only arrives
   from a console Ctrl+C. Fine given the above.
-- **Sessions used to be in-memory only** (history) (a `sync.Mutex`-guarded map in session.Manager). A runner
-  restart loses all session state and transcripts — no disk persistence. Acceptable for this
-  milestone; revisit if restarts become common. Note this is a *process* restart, not a suspend
-  cycle — idle-suspend now sleeps (S3/Modern Standby) rather than powering off, so RAM (and this
-  in-memory state) survives a normal idle-suspend/wake round-trip; only an actual reboot loses it.
-- **Project registry persists to disk** (`projects.json`), sessions do not — asymmetric by
-  design for this milestone, not an oversight.
+- **Project registry persists to disk** (`projects.json`), as do sessions (see above).
 - **compose.Runner is an interface** specifically so `docker compose` calls are fakeable in
   tests — no real compose file has been exercised by the tests yet.
 - **Container operation state is in-memory** (`Server.containerOps`): a runner restart mid-`up`
@@ -559,7 +553,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   runner-to-runner `/v1/wake` endpoint was removed; they're kept for the separate Pi daemon.
 - **Device registrations persist to disk** (`notify.Registry`, mutex-guarded map keyed by FCM
   token, written atomically to `$RELAY_HOME/devices.json`, mode 0600 — see `NewRegistryAt`).
-  They survive a runner restart, unlike `session.Manager`'s transcripts. A missing file means
+  They survive a runner restart, like `session.Manager`'s transcripts. A missing file means
   "no devices yet" and a corrupt one logs and starts empty, so a bad file can never stop the
   runner coming up. The file holds push tokens, hence 0600.
 - **FCM auth is a hand-rolled JWT-bearer OAuth2 exchange** (RFC 7523), not
@@ -706,4 +700,4 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Unscoped directory browse (project picking) | `internal/project/project.go` (`BrowseDir`), `internal/api/api.go` (`handleBrowse`) |
 | Filesystem roots listing | `internal/project/roots_unix.go`, `roots_windows.go` (`listRoots`) |
 | Folder picker start folder (Documents) | `internal/project/project.go` (`documentsDir`, `StartPath`), `roots_*.go` (`knownDocumentsDir`) |
-| Laptop auto-start at logon | `install/start-relay-runner.ps1` + Startup-folder `.lnk` (see "Auto-restart on machine restart") |
+| Laptop auto-start at boot | `install/install-keeperd.ps1` ("Relay keeper" task, see "keeperd"); `start-relay-runner.ps1` is legacy |
