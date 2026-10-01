@@ -200,7 +200,10 @@ func (u *Updater) Check() error {
 	runnerOutdated := statusErr != nil || st.Build != r.Tag
 	keeperOutdated := u.Version != r.Tag && u.Version != "dev"
 	if !runnerOutdated && !keeperOutdated {
-		u.updateAdapter()
+		// Don't swap the adapter's files under a running turn; next check retries.
+		if statusErr != nil || !st.Busy {
+			u.updateAdapter()
+		}
 		return nil
 	}
 	if statusErr == nil && !u.quiet(st) {

@@ -50,7 +50,7 @@ func LoadConfig() Config {
 		Dir:            os.Getenv("RELAY_KEEPER_DIR"),
 		Repo:           envOr("RELAY_UPDATE_REPO", "Vinuitik/relay"),
 		Token:          strings.TrimSpace(os.Getenv("RELAY_GITHUB_TOKEN")),
-		CheckEvery:     envDuration("RELAY_UPDATE_INTERVAL", 6*time.Hour),
+		CheckEvery:     envDuration("RELAY_UPDATE_INTERVAL", 10*time.Minute),
 		Quiet:          envDuration("RELAY_UPDATE_QUIET", 0),
 		Disabled:       os.Getenv("RELAY_UPDATE_DISABLED") == "true",
 		AdapterPackage: "@agentclientprotocol/claude-agent-acp",

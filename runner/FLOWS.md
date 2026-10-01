@@ -379,7 +379,7 @@ missing, installs the ACP adapter into `<dir>/acp` via npm) → `Supervisor.Star
 `<dir>/bin/relay-runner` with keeperd's env + `RELAY_ACP_CLAUDE=<dir>/acp/.../claude-agent-acp`
 → runner dies → restarted (1s, or 10s if it died within 30s of starting).
 
-Update loop (first check 2 min after boot, then every `RELAY_UPDATE_INTERVAL`, default 6h):
+Update loop (first check 2 min after boot, then every `RELAY_UPDATE_INTERVAL`, default 10m - a push reaches every machine within ~10 min; adapter `npm install` is skipped while a turn runs):
 `Updater.Check` → GitHub `releases/latest` → runner build (`GET /v1/runner/info` `build`) or
 keeperd `version` differs from the release tag? → wait until the runner has been idle
 `RELAY_UPDATE_QUIET` (default 0 = only wait out a running turn; retried every 3 min - each retry is a GitHub API call, 60/h per public IP; a runner that doesn't answer
@@ -482,7 +482,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 ## Technology notes
 
 - **Auto-update trusts GitHub**: whoever can push to `main` (or publish a release) runs code on
-  every runner machine within ~6h. SHA256SUMS only guards against corrupted downloads - it's
+  every runner machine within ~10 min. SHA256SUMS only guards against corrupted downloads - it's
   published by the same workflow. Accepted by the user 2026-09-30; token/private repo in LATER.md.
 - **An update restarts the runner** as soon as no agent is mid-turn (`RELAY_UPDATE_QUIET` adds a grace period; phone foreground is not considered) - a session
   `waiting` on a permission counts as idle and loses the pending request (the session itself
