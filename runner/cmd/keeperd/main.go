@@ -129,7 +129,7 @@ func main() {
 		next = cfg.CheckEvery
 		if err := upd.Check(); err != nil {
 			if errors.Is(err, keeper.ErrNotIdle) {
-				next = 10 * time.Minute // retry soon once work is done
+				next = 3 * time.Minute // retry soon once work is done; each Check calls the GitHub API (60/h unauthenticated, shared per public IP)
 			} else {
 				log.Printf("keeper: update check: %v", err)
 			}

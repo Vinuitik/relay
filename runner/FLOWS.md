@@ -382,7 +382,7 @@ missing, installs the ACP adapter into `<dir>/acp` via npm) → `Supervisor.Star
 Update loop (first check 2 min after boot, then every `RELAY_UPDATE_INTERVAL`, default 6h):
 `Updater.Check` → GitHub `releases/latest` → runner build (`GET /v1/runner/info` `build`) or
 keeperd `version` differs from the release tag? → wait until the runner has been idle
-`RELAY_UPDATE_QUIET` (default 15m; retried every 10 min; a runner that doesn't answer
+`RELAY_UPDATE_QUIET` (default 5m; retried every 3 min - each retry is a GitHub API call, 60/h per public IP; a runner that doesn't answer
 isn't waited for) → `npm install` adapter@latest →
 - keeperd outdated → download + SHA256SUMS check → rename running binary to `.old`, new one in
   → stop runner → hand over (Linux: exit 3, systemd restarts; Windows: start the new keeperd
@@ -484,7 +484,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 - **Auto-update trusts GitHub**: whoever can push to `main` (or publish a release) runs code on
   every runner machine within ~6h. SHA256SUMS only guards against corrupted downloads - it's
   published by the same workflow. Accepted by the user 2026-09-30; token/private repo in LATER.md.
-- **An update restarts the runner** only after 15 min without a busy session - a session
+- **An update restarts the runner** only after 5 min without a busy session (phone foreground is not considered) - a session
   `waiting` on a permission counts as idle and loses the pending request (the session itself
   resumes). keeperd itself has no state.
 - **keeperd "dev" builds never self-update** (only release-stamped ones do); a runner reporting
