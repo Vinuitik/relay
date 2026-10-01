@@ -75,6 +75,7 @@ func (s *Supervisor) spawnLocked() {
 		time.AfterFunc(5*time.Second, s.respawn)
 		return
 	}
+	bindToKeeper(cmd.Process)
 	s.cmd, s.exited, s.started = cmd, exited, time.Now()
 	log.Printf("keeper: started %s (pid %d)", s.Path, cmd.Process.Pid)
 	go func() {

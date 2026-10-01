@@ -21,3 +21,7 @@ func RelaunchSelf(path string) error {
 }
 
 func hideWindow(*exec.Cmd) {}
+
+// bindToKeeper is a no-op: systemd stops the whole cgroup (keeperd, runner,
+// agents) together, so the runner can't outlive keeperd.
+func bindToKeeper(*os.Process) {}

@@ -489,6 +489,11 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   resumes). keeperd itself has no state.
 - **keeperd "dev" builds never self-update** (only release-stamped ones do); a runner reporting
   any build other than the latest tag is replaced, including "dev".
+- **The runner dies with keeperd**: Linux - systemd stops the whole cgroup. Windows - keeperd puts
+  the runner in a kill-on-close job object (`bindToKeeper`), so a stopped, crashed or killed keeperd
+  takes the runner and its agents down too. Before this (up to `runner-e7a50d4`) a stopped keeperd
+  left an orphan runner holding the port, and the next keeperd's runner crash-looped on "bind".
+  Agents spawned in the few ms before the runner joins the job would escape it (none do in practice).
 - **Windows S4U task**: no stored password, but also no network credentials (SMB shares) and no
   DPAPI user secrets - fine for Relay (Claude login is `~/.claude/.credentials.json`), would break
   anything the runner needs from Credential Manager. Hard stop = kill (no SIGTERM on Windows);
@@ -656,6 +661,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Session files, save/heartbeat intervals | `internal/session/store.go` |
 | Resume a dormant session | `acp_session.go` (`ensureAgent`), `acp.Client.ResumeSession` |
 | Runner supervision / restart backoff | `internal/keeper/supervisor.go` |
+| Runner dies with keeperd (Windows job object) | `internal/keeper/proc_windows.go` (`bindToKeeper`) |
 | Update check, idle gate, swap + rollback, adapter npm install | `internal/keeper/updater.go` (`Check`, `replaceRunner`, `replaceKeeper`) |
 | keeperd settings (dir, repo, token, intervals) | `internal/keeper/config.go`, env `RELAY_KEEPER_DIR` / `RELAY_UPDATE_*` / `RELAY_GITHUB_TOKEN`, file `<dir>/relay.env` |
 | Release build targets / version stamping | `.github/workflows/runner-release.yml` |

@@ -3,9 +3,14 @@
 package keeper
 
 import (
+	"log"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // terminate on Windows is a hard kill - there's no SIGTERM. The runner
@@ -43,4 +48,47 @@ func RelaunchSelf(path string) error {
 // hideWindow keeps the runner child from opening a console window.
 func hideWindow(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
+}
+
+// killJob is a job object that Windows kills, with everything in it, once
+// its last handle closes - i.e. whenever keeperd exits, however it exits.
+// Without it a stopped or crashed keeperd leaves the runner holding the port,
+// and the next keeperd's runner can't start. The handle isn't inheritable, so
+// the runner doesn't keep the job alive itself.
+var (
+	killJobOnce sync.Once
+	killJob     windows.Handle
+)
+
+// bindToKeeper puts the runner into killJob; the agents it spawns inherit
+// the job. Failure only loses the orphan protection, so it's just logged.
+func bindToKeeper(p *os.Process) {
+	killJobOnce.Do(func() {
+		job, err := windows.CreateJobObject(nil, nil)
+		if err != nil {
+			log.Printf("keeper: create job object: %v", err)
+			return
+		}
+		info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+		info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+		if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+			uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+			log.Printf("keeper: set job kill-on-close: %v", err)
+			windows.CloseHandle(job)
+			return
+		}
+		killJob = job
+	})
+	if killJob == 0 {
+		return
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(p.Pid))
+	if err != nil {
+		log.Printf("keeper: open runner process: %v", err)
+		return
+	}
+	defer windows.CloseHandle(h)
+	if err := windows.AssignProcessToJobObject(killJob, h); err != nil {
+		log.Printf("keeper: assign runner to job: %v", err)
+	}
 }
