@@ -183,7 +183,15 @@ fun FileBrowserContent(vm: FileBrowserViewModel) {
             when {
                 entries == null && error != null -> FullScreenError(error, onRetry = { vm.loadDir() })
                 entries == null -> SkeletonRows()
-                entries.isEmpty() -> EmptyState("Empty folder.")
+                entries.isEmpty() -> if (vm.pathSegments.isEmpty()) {
+                    EmptyState(
+                        "No files yet - ask the agent to create some, then refresh.",
+                        actionLabel = "Refresh",
+                        onAction = { vm.loadDir() },
+                    )
+                } else {
+                    EmptyState("This folder is empty.", actionLabel = "Go up", onAction = { vm.stepBack() })
+                }
                 else -> LazyColumn(Modifier.fillMaxWidth()) {
                     items(entries, key = { it.name }) { entry ->
                         ListItem(

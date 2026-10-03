@@ -1,7 +1,7 @@
 # Android app flows
 
 Files: MainActivity.kt, RelayNavHost.kt, HomeScreen.kt, HomeViewModel.kt, ProjectScreen.kt,
-ProjectViewModel.kt, RunnerListScreen.kt, QrScanScreen.kt, ChatScreen.kt, MarkdownText.kt, Theme.kt,
+ProjectViewModel.kt, RunnerListScreen.kt, QrScanScreen.kt, ChatScreen.kt, ChatViewModel.kt, MarkdownText.kt, Theme.kt,
 FileBrowserScreen.kt (FileBrowserViewModel + FileBrowserContent), ContainersScreen.kt
 (ContainersViewModel + ContainersContent), FolderPickerScreen.kt, ScreenStates.kt,
 KnownRunnersRepository.kt, AppPrefsRepository.kt, RelayApiClient.kt, RelayApiService.kt,
@@ -32,14 +32,16 @@ MainActivity → RelayNavHost → waits for first DataStore read (runners, lastR
 → start = `home` (or `runners` if none) → cold launch w/o deep link: restore last route
 (`project`, then `chat` pushed on top) → Home ⇄ Project → Chat.
 
-- Home: top-bar runner switcher (lamp + label ▾ → runners with health lamps + "Manage runners").
-  One runner → title only, "Manage runners" in ⋮. Body: "Needs you" (`listAllSessions("waiting,busy")`,
+- Home: top bar = wordmark "Relay" (Barlow SemiBold) + lamp (lit amber while any `needsYou`
+  session is `waiting`, else dark) over the runner switcher (online lamp + label ▾ → runners with
+  health lamps + "Manage runners"; press = scale 0.97, `pressScale`). One runner → label only,
+  "Manage runners" in ⋮. No projects → one line + "Add project" button (opens the add sheet). Body: "Needs you" (`listAllSessions("waiting,busy")`,
   tap → Chat) then Projects. Row = name · path · containers lamp (lit = something up; only when a
   compose file exists) · ⋮ (New chat, Files, Containers, Containers up/down). Several compose
   files + nothing up → "Containers up…" opens the Containers tab to pick one.
   ExtendedFAB "Add project" → ModalBottomSheet: Register existing folder → `pick-folder`;
   New empty project → name dialog → `POST /v1/projects {name}`.
-  To change: HomeScreen.kt (`HomeList`, `ProjectRow`, `RunnerSwitcher`).
+  To change: HomeScreen.kt (`HomeList`, `ProjectRow`, `RunnerSwitcher`, `Wordmark`).
 - Project: title = project name, `PrimaryTabRow` Chats | Files | Containers, Crossfade 150ms.
   Chats: rows = `Session.displayTitle` (title, else provider) · relative time + preview · StatusChip,
   sorted waiting first then newest `activityAt`. ExtendedFAB "New chat" → create with
@@ -49,6 +51,7 @@ MainActivity → RelayNavHost → waits for first DataStore read (runners, lastR
   To change: ProjectScreen.kt (`ChatsContent`, `NewChatFab`, `FirstMessageComposer`).
 - Manage runners: tap row → becomes current runner → Home. Row ⋮ = Rename / Sleep / Remove
   (Sleep + Remove confirmed). ExtendedFAB "Pair runner" → QR (Crossfade 200ms, same screen).
+  No runners → `EmptyState` line + "Pair runner" button.
 - Leaving a runner-scoped route for an unknown host → "Unknown runner" placeholder.
 - Back from Project/Chat with nothing under it (deep link/restore) → `goHome()`.
 
@@ -57,18 +60,26 @@ forward = slide 10% + fade (200ms after 60ms), 280ms EaseOut, old fades out 100m
 slide-out 10% 240ms + fade 200ms, revealed screen fades in 200ms. Tabs: Crossfade 150ms. QR: fade 200ms.
 
 ContainersContent → status card (lamp + "Up · N of M running" / "Everything is down" /
-in-flight operation + progress bar, "from <file>", then request/`lastError`/`dockerError` in red)
-→ one card per compose file with its own button:
+"Starting… 0:42" = in-flight operation + elapsed time, "from <file>", progress bar in a fixed 4dp
+slot, then request/`lastError`/`dockerError` in red) → one card per compose file ("Compose files"
+header only when there are several), each with its own button:
 - that file's stack is up → **Down** (`stopContainers`)
 - another file's stack is up → **Switch here** (`startContainers(file)`; runner downs the old one first)
 - nothing up → **Up** (`startContainers(file)`)
-→ full-width red **Take everything down** (`stopContainers`, enabled whenever no operation is in
-flight - compose down is idempotent) → Services list (lamp, service, file, state).
+→ Services list (lamp, service, file, state; rows `key`ed) → 24dp gap → full-width outlined
+error-colour **Take everything down** → confirm AlertDialog → LongPress haptic + `stopContainers`
+(enabled whenever no operation is in flight - compose down is idempotent).
+No compose file → one line naming the expected `docker-compose.yml`.
+Motion: lamp/card/state colours `animateColorAsState` 250ms EaseOut; status title AnimatedContent
+fade 150 in (+4dp slide) / 100 out; Up/Switch/Down button Crossfade 150ms; bar alpha 200ms.
+Elapsed time = `ContainersViewModel.opStartedAt` (`SystemClock.elapsedRealtime()` when an operation
+is first seen; cleared when `operation` goes empty) - client-side, so opening the tab mid-operation
+counts from then, not from when the runner started.
 "Which file is up" = the `composeFile` of the first running container, falling back to
 `activeFile` - truer than `activeFile` alone if someone ran compose by hand on the runner.
 Runner answers `202` immediately → tab polls every 2s while `operation` is non-empty, 10s
 otherwise - only while the tab is composed (`ContainersViewModel.pollWhileVisible()`).
-To change the labels/polling/button rules: ContainersScreen.kt (`ComposeFileCard`, `StatusCard`).
+To change the labels/polling/button rules: ContainersScreen.kt (`ComposeFileCard`, `StatusCard`, `Elapsed`).
 
 To add a screen: RelayNavHost.kt (`Routes` + a `composable(...)`)
 
@@ -92,32 +103,47 @@ Screen state lives in ViewModels scoped to the NavBackStackEntry (`viewModel()` 
 | HomeViewModel | runner, projects, needsYou, containers map, online map, refreshing, error | `selectRunner()` each time Home composes; containers per row in parallel after the list |
 | ProjectViewModel | project (name), sessions, refreshing, error, creating, missing | init + `refreshIfLoaded()` on return |
 | FileBrowserViewModel | pathSegments, entries, viewingFile, fileText, errors | init + per directory |
-| ContainersViewModel | status, error | polled while the Containers tab is visible |
+| ContainersViewModel | status, error, opStartedAt | polled while the Containers tab is visible |
+| ChatViewModel | session, loadError, projectName, input, sending, pendingText, events (Snackbar) | init → poll loop; `listProjects` once for the subtitle |
 
 Rules (DESIGN.md "States"): `null` data = never loaded → `SkeletonRows`; error with no data →
 `FullScreenError` (cause + "Is Tailscale on? Is the runner awake?" + Retry); refresh with data →
 content stays + 2dp `LinearProgressIndicator` (`RefreshableBox`); pull-to-refresh on every list.
 Home with stale data + failed refresh → "Runner offline" banner + rows at 50% alpha.
-Action errors (new chat, create project, containers up/down) → Snackbar.
+Action errors (new chat, create project, containers up/down, register folder) → Snackbar.
+Empty lists → `EmptyState(text, actionLabel, onAction)`: one line saying what to do + the primary
+action Button (Manage runners: Pair runner; Files: Refresh at root / Go up in a subfolder). Home and
+the folder picker render the same shape inline in their LazyColumn. No "Error:" prefixes.
 
 Every call: `RelayApiClient.forRunner(runner)` → `RelayApiService` (Retrofit+OkHttp+Moshi) →
 `X-Relay-Key` header on every call → runner's `shared/API.md` v1 endpoints. **Network only — no
 local cache of sessions/messages**; ViewModels only keep the last answer while their back-stack
 entry lives.
 
-ChatScreen polls `GET /v1/sessions/{id}` every 1s while `busy`, 3s while `waiting`, and stops
-when `idle` — no WebSocket/SSE; "streaming" is the runner merging text chunks into the transcript
-between polls. Transcript rendering: `user` → plain bubble, `agent` → full-width bubble rendered as markdown
-(`MarkdownText`), `tool` → one compact line (`ToolRow`: ✓ completed / ✗ failed / ⋯ running + title). Auto-scrolls to the newest entry.
-- Agent message with `kind` `quota`/`auth` → red `ProblemCard` ("Quota exhausted" / "Claude login
-  expired" + the provider's own text, which carries the reset time) instead of a bubble.
-  FCM `session_finished` with `problem` → "Claude quota exhausted" / "Claude login expired" push.
-- Red Stop button (replaces Send while busy/waiting) → `cancelTurn` → turn stops, session stays.
-- Mode picker (top bar, ACP sessions only) → `setMode` with one of `session.modes`.
-- `pendingPermission` → `PermissionCard` at the end of the list, one button per option →
-  `answerPermission`. FCM `session_needs_input` → "Agent needs your approval" notification.
+ChatViewModel polls `GET /v1/sessions/{id}` every 1s while `busy`, 3s while `waiting`, and stops
+when idle — no WebSocket/SSE; "streaming" is the runner merging text chunks into the transcript
+between polls. Poll error with no data → `FullScreenError`; with data → polling stops + Snackbar Retry.
+- Top bar: title `Session.displayTitle`, subtitle `project name · mode`; mode picker (`current ▾`,
+  ACP only) → `setMode`; ⋮ Files → `Routes.project(…, tab=files)` pushed on top (Back returns to chat).
+- Transcript (`Transcript`, LazyColumn keyed by index): `user` → right `primaryContainer` bubble,
+  `agent` → `MarkdownText` on surface (no bubble), `tool` → `ToolRow` (codeSmall, check / error /
+  spinner icon). 4dp between consecutive tool rows, 8 otherwise, 16 gutter.
+- Agent message with `kind` `quota`/`auth` → `ProblemCard` (errorContainer + amber interlock bar,
+  provider's own text carries the reset time). FCM `session_finished` with `problem` → push.
+- `pendingPermission` → `StickyPermission` above the composer (not a list item): warning chip
+  colours + interlock bar, allow* = Button, reject* = OutlinedButton (error) → `answerPermission`.
+  FCM `session_needs_input` → "Agent needs your approval" notification.
+- Send → `ChatViewModel.send()`: input cleared + optimistic bubble at 60% alpha (`pendingText`) →
+  `sendMessage` → poll; first `user` message past the send point = echo → bubble 100%. Failure →
+  text restored to input + Snackbar Retry. Idle with no echo after 10 ticks → bubble dropped.
+- Stop (same 48dp slot as Send while busy/waiting) → `cancelTurn` → turn stops, session stays.
+- Motion (DESIGN.md): items appended after first load enter 8dp up + fade 180ms (`AppearOnce`);
+  follow-bottom only if the user was at the bottom (stick = non-animated `scrollBy`, new item = one
+  `animateScrollToItem`), else "↓ New" pill; 4dp busy-bar slot fades 200ms; Send↔Stop
+  `AnimatedContent`; permission card fade+slide 1/6+expand 220 / fade 120+shrink 150.
+  Haptics: Send TextHandleMove; Stop, Allow/Deny, permission arriving while watching LongPress.
 
-To change poll intervals: `ChatScreen.kt` (`POLL_BUSY_MS`, `POLL_WAITING_MS`)
+To change poll intervals: `ChatViewModel.kt` (`POLL_BUSY_MS`, `POLL_WAITING_MS`, `ECHO_WAIT_TICKS`)
 To change API base URL scheme (http vs https): `RelayApiClient.kt`
 To change the default port: `model/Models.kt` (`KnownRunner.DEFAULT_PORT` — **7777**, matching
 the runner's own default; this was wrong at 8080 until 2026-09-20)
@@ -223,8 +249,10 @@ folder) → the response's `path`/`parent` become `resolvedPath`/`parentPath` �
 `parentPath`, so the user can walk up from Documents. Path history is a stack of paths (`~` first,
 empty string = the drive-list view), same local-state back-navigation pattern as
 `FileBrowserViewModel`; child paths are built from `resolvedPath`, never from the stack. Its
-"select this folder" FAB (hidden while `parentPath` is null — registering `/` or the drive list
-is nonsensical) calls `POST /v1/projects {path}` **directly from this screen**, then hands the
+"Select this folder" ExtendedFAB (`canRegister`: hidden while loading, on error, or while
+`parentPath` is null — registering `/` or the drive list is nonsensical; an empty folder also
+shows it as a Button) calls `register()` → `POST /v1/projects {path}` **directly from this screen**
+(failure → Snackbar, listing stays; load failure → `FullScreenError` + Retry, first load → `SkeletonRows`), then hands the
 resulting `Project` to `onRegistered` — registration happens here, not back on Home,
 so nothing depends on Home noticing it should re-fetch.
 
@@ -383,7 +411,7 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
 - **DataStore Preferences has no encryption** — the runner key is stored in plaintext prefs.
   Acceptable for now (single-user, own devices) but worth revisiting before wider use.
 - **Chat polling is 1s while `busy`, 3s while `waiting`, off otherwise.** It stops on any exception
-  (and shows the error) rather than retrying — a runner that goes away mid-session needs the
+  (Snackbar Retry, or full-screen error before first load) rather than retrying — a runner that goes away mid-session needs the
   screen re-entered. There is no backoff and no WebSocket.
 - **WorkManager is now used for exactly one thing** (`RegisterDeviceWorker`, FCM token
   registration) and has no dedup/backoff tuning — `OneTimeWorkRequestBuilder` defaults. Its loop
@@ -436,12 +464,19 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Deep-link intent-filter | `app/src/main/AndroidManifest.xml` |
 | Known runners storage | `data/KnownRunnersRepository.kt`, `model/Models.kt` (`KnownRunner`) |
 | Default runner port (7777) | `model/Models.kt` (`KnownRunner.DEFAULT_PORT`) |
-| Chat transcript rendering (bubbles, tool rows, permission card, Stop, mode picker) | `ui/screens/ChatScreen.kt` |
+| Chat transcript rendering (bubbles, tool rows, Stop, mode picker, ⋮ Files) | `ui/screens/ChatScreen.kt` (`Transcript`, `UserBubble`, `ToolRow`, `Composer`, `ModePicker`, `ChatOverflow`) |
+| Chat state / polling / optimistic send / Snackbar events | `ui/screens/ChatViewModel.kt` (`startPolling`, `send`, `act`) |
+| Permission card (sticky) + interlock bar | `ui/screens/ChatScreen.kt` (`StickyPermission`, `PermissionCard`, `InterlockCard`) |
+| Chat follow-bottom / "↓ New" pill / item enter animation | `ui/screens/ChatScreen.kt` (`Transcript`, `STICK_DELTA`, `AppearOnce`) |
 | Quota / login-expired card + push text | `ui/screens/ChatScreen.kt` (`ProblemCard`), `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
 | Markdown in agent replies | `ui/screens/MarkdownText.kt` (`parseBlocks`, `inline`) |
 | Dark/light theme | `ui/theme/Theme.kt` (`RelayTheme` `darkTheme` default) |
 | Notification text per push type | `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
-| Containers tab (per-file Up/Down/Switch cards, take-everything-down, polling) | `ui/screens/ContainersScreen.kt` (`ContainersContent`, `ContainersViewModel`) |
+| Containers tab (per-file Up/Down/Switch cards, take-everything-down + confirm, polling) | `ui/screens/ContainersScreen.kt` (`ContainersContent`, `ContainersViewModel`) |
+| Containers status motion / elapsed-time line | `ui/screens/ContainersScreen.kt` (`StatusCard`, `Elapsed`, `ColorSpec`, `ContainersViewModel.opStartedAt`) |
+| Home wordmark + "waiting" lamp | `ui/screens/HomeScreen.kt` (`Wordmark`) |
+| Press-scale feedback (custom clickables) | `ui/screens/HomeScreen.kt` (`pressScale`) |
+| Empty-state line + action button | `ui/components/ScreenStates.kt` (`EmptyState`) |
 | Project-row containers lamp | `ui/screens/HomeScreen.kt` (`ProjectRow`) |
 | Runner error text in error messages | `network/RelayApiClient.kt` (`friendlyErrorMessage`) |
 | QR pairing content parsing | `ui/screens/QrScanScreen.kt` (`parseRelayQrContent`) |
@@ -450,7 +485,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | HTTP client / auth header | `network/RelayApiClient.kt`, `network/RelayApiService.kt` |
 | Connection error wording | `network/RelayApiClient.kt` (`friendlyErrorMessage`) |
 | Navigation graph / routes | `ui/navigation/RelayNavHost.kt` (`Routes`) |
-| Chat poll intervals | `ui/screens/ChatScreen.kt` (`POLL_BUSY_MS`, `POLL_WAITING_MS`) |
+| Chat poll intervals | `ui/screens/ChatViewModel.kt` (`POLL_BUSY_MS`, `POLL_WAITING_MS`, `ECHO_WAIT_TICKS`) |
 | Sleep (row ⋮) + its 409/503/error Toasts | `ui/screens/RunnerListScreen.kt` (`suspendRunner`) |
 | Rename runner | `ui/screens/RunnerListScreen.kt` (`renamingRunner`, `NameRunnerDialog`) |
 | Remove runner | `data/KnownRunnersRepository.kt` (`removeRunner`), `ui/screens/RunnerListScreen.kt` |

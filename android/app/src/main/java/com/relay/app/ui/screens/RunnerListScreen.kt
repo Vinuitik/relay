@@ -39,7 +39,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -47,6 +46,7 @@ import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.model.KnownRunner
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.friendlyErrorMessage
+import com.relay.app.ui.components.EmptyState
 import com.relay.app.ui.theme.codeSmall
 import kotlinx.coroutines.launch
 
@@ -259,11 +259,10 @@ private fun RunnerList(
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             if (runners.isEmpty()) {
-                Text(
-                    text = "No runners yet. Tap Pair runner and scan the QR code the runner " +
-                        "prints on first launch (or enter its address and key by hand).",
-                    modifier = Modifier.align(Alignment.Center).padding(24.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                EmptyState(
+                    text = "Pair a runner by scanning the QR code it prints on first launch.",
+                    actionLabel = "Pair runner",
+                    onAction = onPair,
                 )
             } else {
                 LazyColumn {

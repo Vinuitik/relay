@@ -1,12 +1,17 @@
 package com.relay.app.ui.screens
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -17,6 +22,7 @@ import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -45,8 +51,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.relay.app.model.ContainersStatus
@@ -59,6 +68,8 @@ import com.relay.app.ui.components.SessionStateChip
 import com.relay.app.ui.components.SkeletonRows
 import com.relay.app.ui.components.StatusLamp
 import com.relay.app.ui.components.relativeTime
+import com.relay.app.ui.theme.BarlowSemiCondensed
+import com.relay.app.ui.theme.RelayMotion
 import com.relay.app.ui.theme.RelayStatus
 import com.relay.app.ui.theme.codeSmall
 import kotlinx.coroutines.launch
@@ -100,14 +111,17 @@ fun HomeScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    RunnerSwitcher(
-                        current = runner,
-                        runners = runners,
-                        online = vm.online,
-                        onOpen = { vm.checkOnline(runners) },
-                        onSwitch = onSwitchRunner,
-                        onManageRunners = onManageRunners,
-                    )
+                    Column {
+                        Wordmark(waiting = vm.needsYou.any { it.state == "waiting" })
+                        RunnerSwitcher(
+                            current = runner,
+                            runners = runners,
+                            online = vm.online,
+                            onOpen = { vm.checkOnline(runners) },
+                            onSwitch = onSwitchRunner,
+                            onManageRunners = onManageRunners,
+                        )
+                    }
                 },
                 actions = {
                     if (runners.size <= 1) {
@@ -153,6 +167,7 @@ fun HomeScreen(
                     containers = vm.containers,
                     offline = error != null,
                     onRetry = { vm.refresh() },
+                    onAddProject = { showAddSheet = true },
                     onOpenProject = onOpenProject,
                     onOpenChat = onOpenChat,
                     onNewChat = { p ->
@@ -195,6 +210,41 @@ fun HomeScreen(
     }
 }
 
+/**
+ * DESIGN.md "Signature details" 3: "Relay" in Barlow Semi Condensed SemiBold + a lamp that is lit
+ * amber while any session on this runner is waiting on you, dark otherwise.
+ */
+@Composable
+private fun Wordmark(waiting: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "Relay",
+            style = MaterialTheme.typography.titleLarge,
+            fontFamily = BarlowSemiCondensed,
+            fontWeight = FontWeight.SemiBold,
+        )
+        StatusLamp(
+            status = if (waiting) RelayStatus.Warning else RelayStatus.Idle,
+            lit = waiting,
+            modifier = Modifier.semantics {
+                contentDescription = if (waiting) "a session is waiting on you" else "nothing waiting"
+            },
+        )
+    }
+}
+
+/** DESIGN.md Motion "Press": scale 0.97 while pressed, 100ms in / 160ms out. Custom clickables only. */
+@Composable
+private fun Modifier.pressScale(interaction: MutableInteractionSource): Modifier {
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        if (pressed) 0.97f else 1f,
+        tween(if (pressed) 100 else 160, easing = RelayMotion.EaseOut),
+        label = "press",
+    )
+    return graphicsLayer { scaleX = scale; scaleY = scale }
+}
+
 @Composable
 private fun RunnerSwitcher(
     current: KnownRunner,
@@ -206,15 +256,35 @@ private fun RunnerSwitcher(
 ) {
     val single = runners.size <= 1
     var expanded by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
     Box {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = if (single) Modifier else Modifier.clickable { expanded = true; onOpen() },
+            modifier = if (single) {
+                Modifier
+            } else {
+                Modifier
+                    .pressScale(interaction)
+                    .clickable(interaction, LocalIndication.current) { expanded = true; onOpen() }
+            },
         ) {
             OnlineLamp(online[current.hostname])
-            Text(current.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!single) Icon(Icons.Default.ArrowDropDown, contentDescription = "Switch runner")
+            Text(
+                current.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (!single) {
+                Icon(
+                    Icons.Default.ArrowDropDown,
+                    contentDescription = "Switch runner",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             runners.forEach { r ->
@@ -257,6 +327,7 @@ private fun HomeList(
     containers: Map<String, ContainersStatus>,
     offline: Boolean,
     onRetry: () -> Unit,
+    onAddProject: () -> Unit,
     onOpenProject: (String, String) -> Unit,
     onOpenChat: (String, String) -> Unit,
     onNewChat: (Project) -> Unit,
@@ -301,11 +372,18 @@ private fun HomeList(
         }
         if (projects.isEmpty()) {
             item(key = "empty") {
-                Text(
-                    "No projects yet. Add one with \"Add project\".",
-                    modifier = Modifier.padding(24.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(
+                    Modifier.fillMaxWidth().padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Text(
+                        "Add a project folder to start chatting with an agent in it.",
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(onClick = onAddProject) { Text("Add project") }
+                }
             }
         }
         items(projects, key = { "p-" + it.id }) { p ->
@@ -367,7 +445,7 @@ private fun ProjectRow(
                     StatusLamp(
                         status = if (running > 0) RelayStatus.Success else RelayStatus.Idle,
                         lit = running > 0,
-                        modifier = Modifier.padding(end = 4.dp).size(10.dp).semantics {
+                        modifier = Modifier.padding(end = 4.dp).semantics {
                             contentDescription = if (running > 0) "containers: $running up" else "containers down"
                         },
                     )

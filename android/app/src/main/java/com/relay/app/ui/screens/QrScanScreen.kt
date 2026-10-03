@@ -10,11 +10,13 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -106,19 +109,29 @@ fun QrScanScreen(
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
             when {
-                hasCameraPermission -> Column(modifier = Modifier.fillMaxSize()) {
+                hasCameraPermission -> Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     Box(modifier = Modifier.weight(1f)) {
                         CameraPreviewWithScanner(onScanned = onScanned)
                     }
-                    TextButton(onClick = onManualEntry) { Text("Enter key manually instead") }
+                    TextButton(onClick = onManualEntry, modifier = Modifier.padding(8.dp)) {
+                        Text("Enter key manually instead")
+                    }
                 }
-                permissionDenied -> Column {
+                permissionDenied -> Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
                     Text(
-                        "Camera permission is needed to scan the QR code.",
-                        modifier = Modifier.padding(16.dp),
+                        "Allow camera access to scan the runner's QR code.",
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                        Text("Grant permission")
+                        Text("Allow camera")
                     }
                     TextButton(onClick = onManualEntry) { Text("Enter key manually instead") }
                 }

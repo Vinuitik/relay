@@ -119,16 +119,31 @@ fun FullScreenError(message: String, onRetry: () -> Unit, modifier: Modifier = M
     }
 }
 
-/** Centered one-line empty state. */
+/**
+ * Centered empty state (DESIGN.md "States"): one line telling you what to do + the primary action
+ * as a Button when [actionLabel]/[onAction] are given.
+ */
 @Composable
-fun EmptyState(text: String, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp)) {
+fun EmptyState(
+    text: String,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Text(
             text,
             modifier = Modifier.fillMaxWidth().padding(top = 96.dp),
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (actionLabel != null && onAction != null) {
+            Spacer(Modifier.height(16.dp))
+            Button(onClick = onAction) { Text(actionLabel) }
+        }
     }
 }
 

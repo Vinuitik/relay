@@ -2,7 +2,10 @@ package com.relay.app.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,13 +15,16 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -30,6 +36,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.relay.app.model.DirEntry
 import com.relay.app.model.KnownRunner
@@ -37,6 +44,8 @@ import com.relay.app.model.Project
 import com.relay.app.network.NewProjectRequest
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.friendlyErrorMessage
+import com.relay.app.ui.components.FullScreenError
+import com.relay.app.ui.components.SkeletonRows
 import kotlinx.coroutines.launch
 
 /**
@@ -71,6 +80,7 @@ fun FolderPickerScreen(
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var registering by remember { mutableStateOf(false) }
+    val snackbar = remember { SnackbarHostState() }
 
     suspend fun load() {
         loading = true
@@ -95,6 +105,25 @@ fun FolderPickerScreen(
         return true
     }
 
+    // Registration failures go to a Snackbar so the folder listing stays where it was.
+    fun register() {
+        registering = true
+        scope.launch {
+            try {
+                val project = api.createProject(NewProjectRequest(name = "", path = resolvedPath))
+                onRegistered(project)
+            } catch (e: Exception) {
+                snackbar.showSnackbar(friendlyErrorMessage(e, runner))
+            } finally {
+                registering = false
+            }
+        }
+    }
+
+    // Registering a filesystem root (no parent) or the drive list is nonsensical - only offer
+    // "select this folder" once inside a real directory.
+    val canRegister = !loading && error == null && resolvedPath.isNotEmpty() && parentPath != null
+
     BackHandler(enabled = true) {
         if (!stepBack()) onBack()
     }
@@ -111,34 +140,21 @@ fun FolderPickerScreen(
             )
         },
         floatingActionButton = {
-            // Registering a filesystem root (no parent) or the drive list is nonsensical -
-            // only offer "select this folder" once inside a real directory.
-            if (!loading && resolvedPath.isNotEmpty() && parentPath != null && !registering) {
-                FloatingActionButton(onClick = {
-                    registering = true
-                    scope.launch {
-                        try {
-                            val project = api.createProject(NewProjectRequest(name = "", path = resolvedPath))
-                            onRegistered(project)
-                        } catch (e: Exception) {
-                            error = friendlyErrorMessage(e, runner)
-                        } finally {
-                            registering = false
-                        }
-                    }
-                }) {
-                    Icon(Icons.Default.CheckCircle, contentDescription = "Select this folder")
-                }
+            if (canRegister && !registering) {
+                ExtendedFloatingActionButton(
+                    onClick = ::register,
+                    icon = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
+                    text = { Text("Select this folder") },
+                )
             }
         },
+        snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+            val err = error
             when {
-                loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                error != null -> Text(
-                    text = "Error: $error",
-                    modifier = Modifier.align(Alignment.Center).padding(16.dp),
-                )
+                loading -> SkeletonRows()
+                err != null -> FullScreenError(err, onRetry = { scope.launch { load() } })
                 else -> LazyColumn {
                     // "Up" lets the user leave the Documents start folder - the back stack only
                     // goes back to where they came from.
@@ -155,7 +171,22 @@ fun FolderPickerScreen(
                         }
                     }
                     if (entries.isEmpty()) {
-                        item(key = "empty") { Text("No subfolders.", modifier = Modifier.padding(16.dp)) }
+                        item(key = "empty") {
+                            Column(
+                                Modifier.fillMaxWidth().padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(16.dp),
+                            ) {
+                                Text(
+                                    if (canRegister) "No subfolders - register this one, or go up." else "No subfolders here - go up.",
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (canRegister) {
+                                    Button(onClick = ::register, enabled = !registering) { Text("Select this folder") }
+                                }
+                            }
+                        }
                     }
                     items(entries, key = { it.name }) { entry ->
                         ListItem(
@@ -177,7 +208,7 @@ fun FolderPickerScreen(
 
 /**
  * Joins the current absolute path (as echoed back by the runner) with a child directory name.
- * The runner may be Linux or Windows (see ARCHITECTURE.md "OS-independent"), so the correct
+ * The runner may be Linux or Windows, so the correct
  * separator can't be assumed - it's inferred from the path string itself: a Windows root entry
  * already comes back as "C:\" (trailing backslash) from `roots_windows.go`, a Unix root as "/",
  * so checking for a trailing separator or an existing backslash covers both. From the roots
