@@ -2,7 +2,6 @@ package com.relay.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,8 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -40,7 +37,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -49,8 +45,10 @@ import com.relay.app.model.KnownRunner
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.StartContainersRequest
 import com.relay.app.network.friendlyErrorMessage
-import com.relay.app.ui.theme.StateFinished
-import com.relay.app.ui.theme.StateIdle
+import com.relay.app.ui.components.StatusLamp
+import com.relay.app.ui.theme.FullShape
+import com.relay.app.ui.theme.RelayStatus
+import com.relay.app.ui.theme.statusColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -194,7 +192,7 @@ fun ContainersScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     ) {
-                        StatusDot(if (c.state == "running") StateFinished else StateIdle)
+                        StatusDot(running = c.state == "running")
                         Spacer(Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(c.service, fontWeight = FontWeight.Medium)
@@ -209,7 +207,7 @@ fun ContainersScreen(
                         Text(
                             text = c.state,
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (c.state == "running") StateFinished
+                            color = if (c.state == "running") MaterialTheme.statusColors.success.fg
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -230,7 +228,7 @@ private fun StatusCard(
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(if (runningCount > 0) StateFinished else StateIdle, size = 12)
+                StatusDot(running = runningCount > 0)
                 Spacer(Modifier.width(10.dp))
                 Text(
                     text = when {
@@ -280,7 +278,7 @@ private fun ComposeFileCard(
                 Text(
                     text = if (isUp) "running" else "stopped",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (isUp) StateFinished else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (isUp) MaterialTheme.statusColors.success.fg else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.width(12.dp))
@@ -294,8 +292,8 @@ private fun ComposeFileCard(
 }
 
 @Composable
-private fun StatusDot(color: Color, size: Int = 8) {
-    Box(modifier = Modifier.size(size.dp).background(color, CircleShape))
+private fun StatusDot(running: Boolean) {
+    StatusLamp(if (running) RelayStatus.Success else RelayStatus.Idle, lit = running)
 }
 
 /**
@@ -306,13 +304,12 @@ private fun StatusDot(color: Color, size: Int = 8) {
 fun ContainersChip(status: ContainersStatus?, onClick: () -> Unit) {
     if (status == null || status.composeFiles.isEmpty()) return
     val running = status.containers.count { it.state == "running" }
-    val color = if (running > 0) StateFinished else StateIdle
     OutlinedButton(
         onClick = onClick,
-        shape = RoundedCornerShape(50),
+        shape = FullShape,
         contentPadding = ButtonDefaults.TextButtonContentPadding,
     ) {
-        StatusDot(color)
+        StatusDot(running = running > 0)
         Spacer(Modifier.width(6.dp))
         Text(
             text = if (running > 0) "$running up" else "down",

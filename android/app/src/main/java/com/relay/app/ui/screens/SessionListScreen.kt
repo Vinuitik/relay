@@ -1,6 +1,5 @@
 package com.relay.app.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -38,7 +36,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.relay.app.model.ContainersStatus
 import com.relay.app.model.KnownRunner
@@ -46,10 +43,8 @@ import com.relay.app.model.Session
 import com.relay.app.network.NewSessionRequest
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.friendlyErrorMessage
-import com.relay.app.ui.theme.StateBusy
-import com.relay.app.ui.theme.StateError
-import com.relay.app.ui.theme.StateFinished
-import com.relay.app.ui.theme.StateIdle
+import com.relay.app.ui.components.StatusChip
+import com.relay.app.ui.theme.RelayStatus
 import kotlinx.coroutines.launch
 
 private val KNOWN_PROVIDERS = listOf("claude", "codex")
@@ -179,20 +174,15 @@ private fun ContainersRow(status: ContainersStatus?, error: String?, onClick: ()
 
 @Composable
 private fun StateBadge(state: String) {
-    val color = when (state) {
-        "busy", "waiting" -> StateBusy
-        "idle" -> StateIdle
-        "finished" -> StateFinished
-        "error" -> StateError
-        else -> StateIdle
+    val status = when (state) {
+        "waiting" -> RelayStatus.Warning
+        "busy" -> RelayStatus.Busy
+        "idle" -> RelayStatus.Idle
+        "finished" -> RelayStatus.Success
+        "error" -> RelayStatus.Error
+        else -> RelayStatus.Idle
     }
-    Box(
-        modifier = Modifier
-            .background(color = color, shape = RoundedCornerShape(50))
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-    ) {
-        Text(text = state, color = Color.White)
-    }
+    StatusChip(status = status, label = state)
 }
 
 @Composable

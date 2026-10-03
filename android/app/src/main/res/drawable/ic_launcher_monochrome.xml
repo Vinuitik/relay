@@ -6,26 +6,26 @@
     <!-- "Thrown contact" (android/DESIGN.md "Logo"): lead -> pivot -> lever swinging toward a
          second contact, lamp lit above. Inside the 66dp safe zone. -->
     <path
-        android:strokeColor="#EDE8DC"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="7"
         android:strokeLineCap="round"
         android:pathData="M28,66 H42" />
     <path
-        android:strokeColor="#EDE8DC"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="7"
         android:strokeLineCap="round"
         android:pathData="M42,66 L70,50" />
     <path
-        android:strokeColor="#EDE8DC"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="7"
         android:strokeLineCap="round"
         android:pathData="M70,66 H80" />
     <!-- pivot r5.5 at (42,66) -->
     <path
-        android:fillColor="#EDE8DC"
+        android:fillColor="#FFFFFF"
         android:pathData="M36.5,66 a5.5,5.5 0 1,0 11,0 a5.5,5.5 0 1,0 -11,0" />
     <!-- lamp r6 at (70,36) -->
     <path
-        android:fillColor="#FFB86A"
+        android:fillColor="#FFFFFF"
         android:pathData="M64,36 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" />
 </vector>

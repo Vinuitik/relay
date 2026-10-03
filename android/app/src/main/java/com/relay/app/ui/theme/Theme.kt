@@ -1,47 +1,25 @@
 package com.relay.app.ui.theme
 
-import android.os.Build
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
-
-private val LightColors = lightColorScheme(
-    primary = RelayPrimary,
-    onPrimary = RelayOnPrimary,
-    secondary = RelaySecondary,
-    background = RelayBackgroundLight,
-)
-
-private val DarkColors = darkColorScheme(
-    primary = RelayPrimary,
-    onPrimary = RelayOnPrimary,
-    secondary = RelaySecondary,
-    background = RelayBackgroundDark,
-)
+import androidx.compose.runtime.CompositionLocalProvider
 
 @Composable
 fun RelayTheme(
-    // Always dark (the light scheme was too bright). Pass isSystemInDarkTheme() to follow the phone.
+    // Always dark (user's choice, f49fceb). Pass isSystemInDarkTheme() to follow the phone; the
+    // light scheme is fully defined. Dynamic (wallpaper) colour is deliberately off - status hues
+    // must stay recognisable (DESIGN.md "Colour").
     darkTheme: Boolean = true,
-    dynamicColor: Boolean = true,
     content: @Composable () -> Unit,
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> DarkColors
-        else -> LightColors
+    CompositionLocalProvider(
+        LocalRelayStatusColors provides if (darkTheme) DarkStatusColors else LightStatusColors,
+    ) {
+        MaterialTheme(
+            colorScheme = if (darkTheme) DarkColors else LightColors,
+            typography = RelayTypography,
+            shapes = RelayShapes,
+            content = content,
+        )
     }
-
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = RelayTypography,
-        content = content,
-    )
 }
