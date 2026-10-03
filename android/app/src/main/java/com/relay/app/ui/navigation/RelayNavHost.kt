@@ -41,6 +41,7 @@ import com.relay.app.data.AppPrefsRepository
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.model.KnownRunner
 import com.relay.app.ui.screens.ChatScreen
+import com.relay.app.ui.screens.ChatViewModel
 import com.relay.app.ui.screens.ContainersViewModel
 import com.relay.app.ui.screens.FileBrowserViewModel
 import com.relay.app.ui.screens.FolderPickerScreen
@@ -262,10 +263,14 @@ fun RelayNavHost(
         ) { entry ->
             val runner = runnerFor(entry) ?: return@composable UnknownRunnerPlaceholder()
             KeepCurrentRunner(runner.hostname, currentHost, prefs)
+            val projectId = entry.arguments?.getString("projectId").orEmpty()
+            val sessionId = entry.arguments?.getString("sessionId").orEmpty()
+            val vm: ChatViewModel = viewModel(factory = viewModelFactory { initializer { ChatViewModel(runner, projectId, sessionId) } })
             ChatScreen(
-                runner = runner,
-                sessionId = entry.arguments?.getString("sessionId").orEmpty(),
+                vm = vm,
                 onBack = { if (!navController.popBackStack()) goHome(navController) },
+                // Pushed on top of the chat, so Back returns here.
+                onOpenFiles = { navController.navigate(Routes.project(runner.hostname, projectId, ProjectTab.FILES)) },
             )
         }
     }

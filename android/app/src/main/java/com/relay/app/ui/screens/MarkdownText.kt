@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.relay.app.ui.theme.codeMedium
 
 /**
  * Minimal markdown for agent replies: headings, bullet/numbered lists, quotes, rules,
@@ -34,7 +35,8 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun MarkdownText(text: String, color: Color, modifier: Modifier = Modifier) {
     val blocks = remember(text) { parseBlocks(text) }
-    val codeBg = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
+    // Agent text sits directly on surface (no bubble), so code needs its own tonal step.
+    val codeBg = MaterialTheme.colorScheme.surfaceContainerHigh
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         blocks.forEach { block ->
             when (block) {
@@ -72,8 +74,7 @@ fun MarkdownText(text: String, color: Color, modifier: Modifier = Modifier) {
                     Text(
                         text = block.text,
                         color = color,
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.codeMedium,
                         softWrap = false,
                     )
                 }
