@@ -83,6 +83,15 @@ Turn: POST …/message → `sendACP` (409 `ErrTurnInProgress` if a turn is runni
 → prompt returns `stopReason` → `runTurn`: state `idle`, still-running tool rows → `failed`,
 `OnFinished` fires (job-done push). `cancelled` adds "(stopped)", other non-`end_turn` reasons a note.
 
+Provider problems: `runTurn` tags the turn's failure with `Message.kind` so the phone shows a card
+instead of an ordinary reply - prompt error → `problemKind(err)` on the "Error: …" message; clean
+turn → `markProblemReply` checks this turn's last agent reply (≤300 chars only - Claude Code says
+"You've hit your limit · resets 5pm" as a normal reply). `kind` = `quota` | `auth` (ACP code
+-32000, or text like "OAuth token has expired" / "Please run /login"). `Session.LastProblem()` →
+FCM `session_finished` `problem` field → "Claude quota exhausted" / "Claude login expired" push.
+To change the wording matched: `session/problem.go` (`quotaMarkers`, `authMarkers`).
+Re-login from the phone: [NOT IMPLEMENTED] - next step, see "Provider login".
+
 Permission: agent sends `session/request_permission` → `onRequest`: state `waiting`,
 `Session.pendingPermission {title, toolKind, options}`, `OnNeedsInput` → FCM
 `session_needs_input` → POST …/permission `{optionId}` → `RespondPermission` → agent continues
@@ -481,6 +490,12 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 ## Technology notes
 
+- **Quota/auth detection is substring matching on the provider's wording** (`session/problem.go`).
+  If Claude Code rewords its limit/expiry message, the card silently degrades to a plain
+  "Error: …" bubble (nothing breaks, it just stops being labelled). Only the ACP auth error code
+  -32000 is a stable signal. Agent replies over 300 chars are never classified, so a real answer
+  that mentions "usage limit" isn't mislabelled; a short one could be.
+
 - **Auto-update trusts GitHub**: whoever can push to `main` (or publish a release) runs code on
   every runner machine within ~10 min. SHA256SUMS only guards against corrupted downloads - it's
   published by the same workflow. Accepted by the user 2026-09-30; token/private repo in LATER.md.
@@ -643,6 +658,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Key generation / storage | `internal/config/config.go` |
 | Projects root / registry file location | `internal/config/config.go` (env `RELAY_HOME`) |
 | Listen address | `internal/config/config.go` (env `RELAY_LISTEN_ADDR`) |
+| Quota/auth problem detection (`Message.kind`, push `problem`) | `internal/session/problem.go` (`problemKind`, `markProblemReply`, `LastProblem`) |
 | Provider → command mapping | `internal/session/session.go` (`resolveProvider`, `autoDetectProviders`, env `RELAY_PROVIDER_<NAME>` override) |
 | ACP wire client (JSON-RPC over stdio) | `internal/acp/acp.go` (`Client.Call`, `readLoop`) |
 | ACP method/field shapes | `internal/acp/types.go` |

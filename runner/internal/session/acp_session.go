@@ -230,11 +230,14 @@ func (m *Manager) runTurn(rec *record, text string) {
 	}
 	switch {
 	case err != nil:
-		rec.data.Messages = append(rec.data.Messages, Message{Role: "agent", Text: "Error: " + err.Error(), At: now()})
+		rec.data.Messages = append(rec.data.Messages, Message{Role: "agent", Text: "Error: " + err.Error(), Kind: problemKind(err, ""), At: now()})
 	case stopReason == "cancelled":
 		rec.data.Messages = append(rec.data.Messages, Message{Role: "agent", Text: "(stopped)", At: now()})
 	case stopReason != "end_turn" && stopReason != "":
 		rec.data.Messages = append(rec.data.Messages, Message{Role: "agent", Text: "(turn ended: " + stopReason + ")", At: now()})
+	}
+	if err == nil {
+		markProblemReply(rec.data.Messages)
 	}
 	// Tools still marked running when the turn ended never finish now.
 	for i := range rec.data.Messages {
@@ -251,6 +254,19 @@ func (m *Manager) runTurn(rec *record, text string) {
 	rec.mu.Unlock()
 
 	m.notifyFinished(snapshot)
+}
+
+// markProblemReply tags this turn's last agent reply with a problem Kind
+// when the agent reported a quota/auth problem as ordinary text (Claude
+// Code says "You've hit your limit · resets 5pm" as a normal reply, not an
+// error).
+func markProblemReply(msgs []Message) {
+	for i := len(msgs) - 1; i >= 0 && msgs[i].Role != "user"; i-- {
+		if msgs[i].Role == "agent" {
+			msgs[i].Kind = problemKind(nil, msgs[i].Text)
+			return
+		}
+	}
 }
 
 // onUpdate folds a session/update notification into the transcript:

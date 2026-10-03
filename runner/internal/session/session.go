@@ -73,6 +73,9 @@ type Message struct {
 	// pending, in_progress, completed, failed.
 	ToolKind string `json:"toolKind,omitempty"`
 	Status   string `json:"status,omitempty"`
+	// Kind marks an agent message that's really a provider problem:
+	// KindQuota or KindAuth (see problem.go). Empty for ordinary replies.
+	Kind string `json:"kind,omitempty"`
 
 	// ref is the ACP messageId (agent) or toolCallId (tool) that later
 	// streamed updates are merged into. Internal only.

@@ -164,7 +164,11 @@ fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     items(messages) { message ->
-                        if (message.role == "tool") ToolRow(message) else ChatBubble(message)
+                        when {
+                            message.role == "tool" -> ToolRow(message)
+                            message.kind == "quota" || message.kind == "auth" -> ProblemCard(message)
+                            else -> ChatBubble(message)
+                        }
                     }
                     session?.pendingPermission?.let { pp ->
                         item {
@@ -318,6 +322,45 @@ private fun PermissionCard(pp: PendingPermission, onChoose: (String) -> Unit) {
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * A provider problem the runner flagged (Message.kind): quota used up, or login expired.
+ * Shown as a card so it can't be mistaken for an agent reply.
+ */
+@Composable
+private fun ProblemCard(message: Message) {
+    val (title, hint) = when (message.kind) {
+        "quota" -> "Quota exhausted" to "Your Claude subscription limit is used up. Sessions work " +
+            "again once it resets."
+        else -> "Claude login expired" to "Sign in again on the runner (claude auth login)."
+    }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Text(
+                text = hint,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            // The provider's own wording carries the reset time ("resets 5pm").
+            Text(
+                text = message.text,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.padding(top = 8.dp),
+            )
         }
     }
 }

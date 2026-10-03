@@ -33,6 +33,7 @@ data class Message(
     val at: String,
     val toolKind: String? = null, // read, edit, execute, search, ...
     val status: String? = null, // tool only: pending, in_progress, completed, failed
+    val kind: String? = null, // agent only: "quota" | "auth" when the reply is a provider problem
 )
 
 data class AgentMode(

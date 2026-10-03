@@ -86,7 +86,11 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
                 "$hostname is going to sleep" to "No active session — suspending to save power."
             }
             "session_needs_input" -> "Agent needs your approval" to "A session is paused waiting for permission."
-            else -> "Session finished" to "A runner session finished."
+            else -> when (data["problem"]) {
+                "quota" -> "Claude quota exhausted" to "Your subscription limit is used up - the turn stopped."
+                "auth" -> "Claude login expired" to "The turn failed - sign in again to keep going."
+                else -> "Session finished" to "A runner session finished."
+            }
         }
     }
 

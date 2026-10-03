@@ -109,6 +109,7 @@ func (n *fcmNotifier) NotifySessionFinished(device Device, session Session) erro
 		"type":      "session_finished",
 		"sessionId": session.ID,
 		"projectId": session.ProjectID,
+		"problem":   session.Problem,
 	})
 }
 

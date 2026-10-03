@@ -29,6 +29,9 @@ type Device struct {
 type Session struct {
 	ID        string
 	ProjectID string
+	// Problem is "quota" or "auth" when the turn ended on a provider problem
+	// (session.KindQuota / KindAuth), so the push can say so; "" otherwise.
+	Problem string
 }
 
 // Registry tracks registered devices, keyed by FCM token so re-registering

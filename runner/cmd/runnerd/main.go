@@ -91,7 +91,7 @@ func main() {
 	notifier := notify.NewNotifier(os.Getenv("RELAY_FCM_CREDENTIALS"))
 	sessions.OnFinished = func(sess session.Session) {
 		for _, d := range devices.List() {
-			if err := notifier.NotifySessionFinished(d, notify.Session{ID: sess.ID, ProjectID: sess.ProjectID}); err != nil {
+			if err := notifier.NotifySessionFinished(d, notify.Session{ID: sess.ID, ProjectID: sess.ProjectID, Problem: sess.LastProblem()}); err != nil {
 				log.Printf("notify device %s of session %s finish: %v", d.ID, sess.ID, err)
 			}
 		}

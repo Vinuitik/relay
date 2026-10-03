@@ -44,6 +44,7 @@ Message {
   at: string           // RFC3339
   toolKind?: string    // tool only: read | edit | delete | move | search | execute | think | fetch | other
   status?: string      // tool only: pending | in_progress | completed | failed
+  kind?: string        // agent only: "quota" (subscription limit used up) | "auth" (login missing/expired)
 }
 
 RunnerInfo {
@@ -125,7 +126,8 @@ Errors: `4xx/5xx` bodies are `{"error": string}`.
 Every push the runner sends is data-only (no `notification` block — the app builds its own, see
 `RelayFirebaseMessagingService.notificationContentFor`). `data.type` is:
 
-- `session_finished` — `data: {type, sessionId, projectId}` (once per completed agent turn)
+- `session_finished` — `data: {type, sessionId, projectId, problem}` (once per completed agent turn;
+  `problem` is `"quota"` / `"auth"` when the turn ended on that provider problem, `""` otherwise)
 - `session_needs_input` — `data: {type, sessionId, projectId}`, the agent is paused on a
   permission request (session `waiting`)
 - `runner_suspending` — `data: {type, hostname}`, sent best-effort right before the runner

@@ -58,6 +58,9 @@ ChatScreen polls `GET /v1/sessions/{id}` every 1s while `busy`, 3s while `waitin
 when `idle` — no WebSocket/SSE; "streaming" is the runner merging text chunks into the transcript
 between polls. Transcript rendering: `user` → plain bubble, `agent` → full-width bubble rendered as markdown
 (`MarkdownText`), `tool` → one compact line (`ToolRow`: ✓ completed / ✗ failed / ⋯ running + title). Auto-scrolls to the newest entry.
+- Agent message with `kind` `quota`/`auth` → red `ProblemCard` ("Quota exhausted" / "Claude login
+  expired" + the provider's own text, which carries the reset time) instead of a bubble.
+  FCM `session_finished` with `problem` → "Claude quota exhausted" / "Claude login expired" push.
 - Red Stop button (replaces Send while busy/waiting) → `cancelTurn` → turn stops, session stays.
 - Mode picker (top bar, ACP sessions only) → `setMode` with one of `session.modes`.
 - `pendingPermission` → `PermissionCard` at the end of the list, one button per option →
@@ -336,6 +339,7 @@ ContainersScreen (2026-09-30), which also surfaces failures (`lastError`).
 | Known runners storage | `data/KnownRunnersRepository.kt`, `model/Models.kt` (`KnownRunner`) |
 | Default runner port (7777) | `model/Models.kt` (`KnownRunner.DEFAULT_PORT`) |
 | Chat transcript rendering (bubbles, tool rows, permission card, Stop, mode picker) | `ui/screens/ChatScreen.kt` |
+| Quota / login-expired card + push text | `ui/screens/ChatScreen.kt` (`ProblemCard`), `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
 | Markdown in agent replies | `ui/screens/MarkdownText.kt` (`parseBlocks`, `inline`) |
 | Dark/light theme | `ui/theme/Theme.kt` (`RelayTheme` `darkTheme` default) |
 | Notification text per push type | `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
