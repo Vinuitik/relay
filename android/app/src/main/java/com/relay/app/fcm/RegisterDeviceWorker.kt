@@ -42,7 +42,9 @@ class RegisterDeviceWorker(
         var anyFailed = false
         for (runner in runners) {
             try {
-                RelayApiClient.forRunner(runner).registerDevice(DeviceRegistrationRequest(token))
+                RelayApiClient.forRunner(runner).registerDevice(
+                    DeviceRegistrationRequest(token, runnerRef = runner.hostname),
+                )
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to register device with '${runner.hostname}' — skipping it", e)
                 anyFailed = true

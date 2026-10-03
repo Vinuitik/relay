@@ -42,14 +42,14 @@ import kotlinx.coroutines.launch
 /**
  * Unscoped filesystem browser for picking an already-existing directory to register as a
  * project (see shared/API.md `GET /v1/browse`, [com.relay.app.network.RelayApiService.browse]) —
- * distinct from [FileBrowserScreen], which is read-only and scoped to one already-registered
+ * distinct from [FileBrowserContent], which is read-only and scoped to one already-registered
  * project's directory. This screen only ever lists directories, never file contents; "select
  * this folder" registers it directly (`POST /v1/projects {path}`) and hands the resulting
  * [Project] to [onRegistered], rather than round-tripping the path back through
- * [ProjectListScreen] and relying on that screen's list happening to refresh on return.
+ * Home and relying on that screen's list happening to refresh on return.
  *
  * Path history is a simple stack of absolute paths (empty string = the filesystem-roots view),
- * mirroring [FileBrowserScreen]'s local-state back-navigation rather than a NavHost route.
+ * mirroring [FileBrowserContent]'s local-state back-navigation rather than a NavHost route.
  */
 @Composable
 fun FolderPickerScreen(

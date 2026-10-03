@@ -25,7 +25,18 @@ data class Session(
     val mode: String? = null,
     val modes: List<AgentMode>? = null,
     val pendingPermission: PendingPermission? = null,
-)
+    // First user message / last agent line, one line each; "" (or absent on old runners) if none.
+    val title: String? = null,
+    val preview: String? = null,
+    // RFC3339, bumped ~every 30s while busy; absent on old runners and non-ACP providers.
+    val lastActiveAt: String? = null,
+) {
+    /** What a row calls this session - its first message, else the provider name. */
+    val displayTitle: String get() = title?.takeIf { it.isNotBlank() } ?: provider
+
+    /** Newest known activity timestamp (RFC3339). */
+    val activityAt: String get() = lastActiveAt?.takeIf { it.isNotBlank() } ?: createdAt
+}
 
 data class Message(
     val role: String, // "user" | "agent" | "tool"
@@ -117,7 +128,7 @@ data class BrowseResult(
 )
 
 /** Response of every `/v1/projects/{id}/containers` endpoint - see
- * [com.relay.app.ui.screens.ContainersScreen]. */
+ * [com.relay.app.ui.screens.ContainersContent]. */
 data class ContainersStatus(
     val composeFiles: List<String>,
     val activeFile: String, // "" = several files and none chosen yet

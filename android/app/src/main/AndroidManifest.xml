@@ -28,6 +28,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Push deep link relay://r/{host}/p/{projectId}/s/{sessionId} -> Chat (RelayNavHost
+                 Routes.CHAT_DEEP_LINK). host="r" keeps the pairing QR's relay://host:port URIs out. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="relay" android:host="r" />
+            </intent-filter>
         </activity>
 
         <service

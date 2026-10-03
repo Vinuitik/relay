@@ -1,6 +1,8 @@
 package com.relay.app.ui.screens
 
 import android.widget.Toast
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,12 +14,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,12 +47,15 @@ import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.model.KnownRunner
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.friendlyErrorMessage
+import com.relay.app.ui.theme.codeSmall
 import kotlinx.coroutines.launch
 
 @Composable
 fun RunnerListScreen(
     repository: KnownRunnersRepository,
     onRunnerSelected: (KnownRunner) -> Unit,
+    /** Null when this is the root screen (no runners yet) - no back arrow then. */
+    onBack: (() -> Unit)?,
 ) {
     val runners by repository.runners.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
@@ -57,6 +65,7 @@ fun RunnerListScreen(
     var namingScannedRunner by remember { mutableStateOf<ScannedRunner?>(null) }
     var confirmRemoveRunner by remember { mutableStateOf<KnownRunner?>(null) }
     var confirmSuspendRunner by remember { mutableStateOf<KnownRunner?>(null) }
+    var renamingRunner by remember { mutableStateOf<KnownRunner?>(null) }
 
     /**
      * Calls `POST /v1/suspend` on the runner directly (no WorkManager indirection - the user is
@@ -84,7 +93,9 @@ fun RunnerListScreen(
         }
     }
 
-    if (showQrScan) {
+    // QR scan: fade only, 200ms (DESIGN.md Motion) - it replaces the whole screen while open.
+    Crossfade(targetState = showQrScan, animationSpec = tween(200), label = "qrScan") { scanning ->
+    if (scanning) {
         QrScanScreen(
             onScanned = { scanned ->
                 showQrScan = false
@@ -107,7 +118,17 @@ fun RunnerListScreen(
             },
             onClose = { showQrScan = false },
         )
-        return
+    } else {
+        RunnerList(
+            runners = runners,
+            onBack = onBack,
+            onPair = { showQrScan = true },
+            onRunnerSelected = onRunnerSelected,
+            onRename = { renamingRunner = it },
+            onSleep = { confirmSuspendRunner = it },
+            onRemove = { confirmRemoveRunner = it },
+        )
+    }
     }
 
     namingScannedRunner?.let { scanned ->
@@ -130,56 +151,6 @@ fun RunnerListScreen(
         )
     }
 
-    Scaffold(
-        topBar = { TopAppBar(title = { Text("Runners") }) },
-        floatingActionButton = {
-            FloatingActionButton(onClick = { showQrScan = true }) {
-                Icon(Icons.Default.Add, contentDescription = "Add runner")
-            }
-        },
-    ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-            if (runners.isEmpty()) {
-                Text(
-                    text = "No known runners yet. Add one with the + button — hostname and key" +
-                        " are printed by the runner on first launch (see ARCHITECTURE.md).",
-                    modifier = Modifier.align(Alignment.Center).padding(24.dp),
-                )
-            } else {
-                LazyColumn {
-                    items(runners, key = { it.hostname }) { runner ->
-                        var showMenu by remember { mutableStateOf(false) }
-                        ListItem(
-                            headlineContent = { Text(runner.label) },
-                            supportingContent = { Text("${runner.hostname}:${runner.port}") },
-                            trailingContent = {
-                                Row {
-                                    TextButton(onClick = { confirmSuspendRunner = runner }) { Text("Sleep") }
-                                    Box {
-                                        IconButton(onClick = { showMenu = true }) {
-                                            Icon(Icons.Default.MoreVert, contentDescription = "More actions for ${runner.label}")
-                                        }
-                                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                                            DropdownMenuItem(
-                                                text = { Text("Remove runner") },
-                                                onClick = {
-                                                    showMenu = false
-                                                    confirmRemoveRunner = runner
-                                                },
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onRunnerSelected(runner) },
-                        )
-                        HorizontalDivider()
-                    }
-                }
-            }
-        }
-    }
-
     if (showAddDialog) {
         AddRunnerDialog(
             onDismiss = { showAddDialog = false },
@@ -187,6 +158,20 @@ fun RunnerListScreen(
                 val newRunner = KnownRunner(hostname = hostname, port = port, key = key, displayName = displayName)
                 scope.launch { repository.addRunner(newRunner) }
                 showAddDialog = false
+            },
+        )
+    }
+
+    renamingRunner?.let { runner ->
+        NameRunnerDialog(
+            hostname = runner.hostname,
+            initial = runner.displayName.orEmpty(),
+            title = "Rename runner",
+            confirmLabel = "Save",
+            onDismiss = { renamingRunner = null },
+            onSave = { name ->
+                scope.launch { repository.updateRunner(runner.copy(displayName = name)) }
+                renamingRunner = null
             },
         )
     }
@@ -203,10 +188,13 @@ fun RunnerListScreen(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    scope.launch { repository.removeRunner(runner.hostname) }
-                    confirmRemoveRunner = null
-                }) { Text("Remove") }
+                TextButton(
+                    onClick = {
+                        scope.launch { repository.removeRunner(runner.hostname) }
+                        confirmRemoveRunner = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Remove") }
             },
             dismissButton = { TextButton(onClick = { confirmRemoveRunner = null }) { Text("Cancel") } },
         )
@@ -235,6 +223,89 @@ fun RunnerListScreen(
 }
 
 /**
+ * Manage runners body. Row tap = make it the current runner (Home). Rename / Sleep / Remove live
+ * in the row ⋮; Sleep and Remove are confirmed by the caller's dialogs.
+ */
+@Composable
+private fun RunnerList(
+    runners: List<KnownRunner>,
+    onBack: (() -> Unit)?,
+    onPair: () -> Unit,
+    onRunnerSelected: (KnownRunner) -> Unit,
+    onRename: (KnownRunner) -> Unit,
+    onSleep: (KnownRunner) -> Unit,
+    onRemove: (KnownRunner) -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Manage runners") },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                },
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = onPair,
+                icon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null) },
+                text = { Text("Pair runner") },
+            )
+        },
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (runners.isEmpty()) {
+                Text(
+                    text = "No runners yet. Tap Pair runner and scan the QR code the runner " +
+                        "prints on first launch (or enter its address and key by hand).",
+                    modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                LazyColumn {
+                    items(runners, key = { it.hostname }) { runner ->
+                        var showMenu by remember { mutableStateOf(false) }
+                        ListItem(
+                            headlineContent = { Text(runner.label) },
+                            supportingContent = {
+                                Text("${runner.hostname}:${runner.port}", style = MaterialTheme.typography.codeSmall)
+                            },
+                            trailingContent = {
+                                Box {
+                                    IconButton(onClick = { showMenu = true }) {
+                                        Icon(Icons.Default.MoreVert, contentDescription = "More actions for ${runner.label}")
+                                    }
+                                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                                        DropdownMenuItem(
+                                            text = { Text("Rename") },
+                                            onClick = { showMenu = false; onRename(runner) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Sleep") },
+                                            onClick = { showMenu = false; onSleep(runner) },
+                                        )
+                                        HorizontalDivider()
+                                        DropdownMenuItem(
+                                            text = { Text("Remove", color = MaterialTheme.colorScheme.error) },
+                                            onClick = { showMenu = false; onRemove(runner) },
+                                        )
+                                    }
+                                }
+                            },
+                            modifier = Modifier.clickable { onRunnerSelected(runner) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
  * Shown right after a successful QR scan, before the runner is actually added - lets the user
  * give it a friendly label instead of ending up with the raw Tailscale address as its only
  * name. Starts empty; left blank, the runner's [hostname] is used as its name.
@@ -244,11 +315,14 @@ private fun NameRunnerDialog(
     hostname: String,
     onDismiss: () -> Unit,
     onSave: (displayName: String) -> Unit,
+    initial: String = "",
+    title: String = "Name this runner",
+    confirmLabel: String = "Add runner",
 ) {
-    var name by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Name this runner") },
+        title = { Text(title) },
         text = {
             OutlinedTextField(
                 value = name,
@@ -259,7 +333,7 @@ private fun NameRunnerDialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = { onSave(name.trim().ifBlank { hostname }) }) { Text("Add runner") }
+            TextButton(onClick = { onSave(name.trim().ifBlank { hostname }) }) { Text(confirmLabel) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

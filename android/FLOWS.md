@@ -1,14 +1,16 @@
 # Android app flows
 
-Files: MainActivity.kt, RelayNavHost.kt, RunnerListScreen.kt, QrScanScreen.kt,
-ProjectListScreen.kt, SessionListScreen.kt, ChatScreen.kt, MarkdownText.kt, Theme.kt, FileBrowserScreen.kt,
-FolderPickerScreen.kt, KnownRunnersRepository.kt, RelayApiClient.kt, RelayApiService.kt,
+Files: MainActivity.kt, RelayNavHost.kt, HomeScreen.kt, HomeViewModel.kt, ProjectScreen.kt,
+ProjectViewModel.kt, RunnerListScreen.kt, QrScanScreen.kt, ChatScreen.kt, MarkdownText.kt, Theme.kt,
+FileBrowserScreen.kt (FileBrowserViewModel + FileBrowserContent), ContainersScreen.kt
+(ContainersViewModel + ContainersContent), FolderPickerScreen.kt, ScreenStates.kt,
+KnownRunnersRepository.kt, AppPrefsRepository.kt, RelayApiClient.kt, RelayApiService.kt,
 RelayFirebaseMessagingService.kt, RegisterDeviceWorker.kt
 
 ## Scope
 
-The app is deliberately down to one core loop: **pair a runner → list projects → list sessions →
-chat**, plus a read-only file browser and FCM push. A 2026-09-20 pass deleted everything built
+The app is deliberately down to one core loop: **pair a runner → Home (projects + Needs you) →
+Project (Chats | Files | Containers) → chat**, plus a read-only file browser and FCM push. A 2026-09-20 pass deleted everything built
 ahead of that loop — home-screen widget, uptime dashboard, Room offline cache, Wake-on-LAN
 config, generated friendly names, in-app update prompt, bulk container start/stop, and the
 auth-login relay. See "Deleted 2026-09-20" at the bottom for what's gone and why, so nobody goes
@@ -16,31 +18,59 @@ looking for it.
 
 ## Navigation
 
-MainActivity → RelayNavHost →
-RunnerListScreen → ProjectListScreen(runner) → SessionListScreen(runner, project)
-→ ChatScreen(runner, project, session)
+Design source: DESIGN.md "Navigation & flow". Routes in `RelayNavHost.Routes`:
 
-Side branches off ProjectListScreen: FileBrowserScreen (read-only, per project),
-FolderPickerScreen (register an existing folder as a project), and ContainersScreen via the
-per-row `ContainersChip` ("● 2 up" / "○ down"). Chips come from one `GET …/containers` per project,
-fired in parallel after the list loads; a failed check or no compose file → no chip.
-Off SessionListScreen: an always-visible "Containers" row at the top (summary: "N running" /
-"Everything is down" / "No compose file" / "Unavailable: <error>") → ContainersScreen.
+| Route | Screen | Notes |
+|---|---|---|
+| `home` | HomeScreen | current runner = `AppPrefsRepository.currentRunner` (fallback: first runner) |
+| `runners` | RunnerListScreen ("Manage runners") | start destination when no runners exist |
+| `r/{host}/p/{projectId}?tab={chats\|files\|containers}` | ProjectScreen | tab arg = initial tab |
+| `r/{host}/p/{projectId}/s/{sessionId}` | ChatScreen | deep link `relay://r/{host}/p/{projectId}/s/{sessionId}` |
+| `r/{host}/pick-folder` | FolderPickerScreen | |
 
-ContainersScreen → status card (dot + "Up · N of M running" / "Everything is down" /
+MainActivity → RelayNavHost → waits for first DataStore read (runners, lastRoute, currentRunner)
+→ start = `home` (or `runners` if none) → cold launch w/o deep link: restore last route
+(`project`, then `chat` pushed on top) → Home ⇄ Project → Chat.
+
+- Home: top-bar runner switcher (lamp + label ▾ → runners with health lamps + "Manage runners").
+  One runner → title only, "Manage runners" in ⋮. Body: "Needs you" (`listAllSessions("waiting,busy")`,
+  tap → Chat) then Projects. Row = name · path · containers lamp (lit = something up; only when a
+  compose file exists) · ⋮ (New chat, Files, Containers, Containers up/down). Several compose
+  files + nothing up → "Containers up…" opens the Containers tab to pick one.
+  ExtendedFAB "Add project" → ModalBottomSheet: Register existing folder → `pick-folder`;
+  New empty project → name dialog → `POST /v1/projects {name}`.
+  To change: HomeScreen.kt (`HomeList`, `ProjectRow`, `RunnerSwitcher`).
+- Project: title = project name, `PrimaryTabRow` Chats | Files | Containers, Crossfade 150ms.
+  Chats: rows = `Session.displayTitle` (title, else provider) · relative time + preview · StatusChip,
+  sorted waiting first then newest `activityAt`. ExtendedFAB "New chat" → create with
+  `lastProvider` → Chat; long-press → provider list (`AppPrefsRepository.KNOWN_PROVIDERS`).
+  Empty → inline composer: first message = `createSession` + `sendMessage` → Chat.
+  Files tab = `FileBrowserContent`, Containers tab = `ContainersContent` (no own top bar).
+  To change: ProjectScreen.kt (`ChatsContent`, `NewChatFab`, `FirstMessageComposer`).
+- Manage runners: tap row → becomes current runner → Home. Row ⋮ = Rename / Sleep / Remove
+  (Sleep + Remove confirmed). ExtendedFAB "Pair runner" → QR (Crossfade 200ms, same screen).
+- Leaving a runner-scoped route for an unknown host → "Unknown runner" placeholder.
+- Back from Project/Chat with nothing under it (deep link/restore) → `goHome()`.
+
+Transitions (NavHost level, `RelayNavHost.kt` `forwardEnter/forwardExit/backEnter/backExit`):
+forward = slide 10% + fade (200ms after 60ms), 280ms EaseOut, old fades out 100ms; back =
+slide-out 10% 240ms + fade 200ms, revealed screen fades in 200ms. Tabs: Crossfade 150ms. QR: fade 200ms.
+
+ContainersContent → status card (lamp + "Up · N of M running" / "Everything is down" /
 in-flight operation + progress bar, "from <file>", then request/`lastError`/`dockerError` in red)
 → one card per compose file with its own button:
 - that file's stack is up → **Down** (`stopContainers`)
 - another file's stack is up → **Switch here** (`startContainers(file)`; runner downs the old one first)
 - nothing up → **Up** (`startContainers(file)`)
 → full-width red **Take everything down** (`stopContainers`, enabled whenever no operation is in
-flight - compose down is idempotent) → Services list (dot, service, file, state).
+flight - compose down is idempotent) → Services list (lamp, service, file, state).
 "Which file is up" = the `composeFile` of the first running container, falling back to
 `activeFile` - truer than `activeFile` alone if someone ran compose by hand on the runner.
-Runner answers `202` immediately → screen polls every 2s while `operation` is non-empty, 10s otherwise.
+Runner answers `202` immediately → tab polls every 2s while `operation` is non-empty, 10s
+otherwise - only while the tab is composed (`ContainersViewModel.pollWhileVisible()`).
 To change the labels/polling/button rules: ContainersScreen.kt (`ComposeFileCard`, `StatusCard`).
 
-To add a screen: RelayNavHost.kt
+To add a screen: RelayNavHost.kt (`Routes` + a `composable(...)`)
 
 ## Data flow
 
@@ -49,10 +79,31 @@ RunnerListScreen ↔ KnownRunnersRepository (DataStore Preferences) — `hostnam
 de-facto id: `addRunner`/`updateRunner` upsert by it and `removeRunner` deletes by it. Added via
 QR scan by default (see "Pairing"); manual entry is the fallback.
 
-Every screen: `RelayApiClient.forRunner(runner)` → `RelayApiService` (Retrofit+OkHttp+Moshi) →
+AppPrefsRepository (separate DataStore file `app_prefs`): `currentRunner` (Home's runner; set by
+the switcher, Manage runners tap, and on entering any project/chat route - `KeepCurrentRunner`),
+`lastRoute` (written by a NavController destination listener for home/project/chat only),
+`lastProvider` (written on every New chat / first message).
+
+Screen state lives in ViewModels scoped to the NavBackStackEntry (`viewModel()` inside each
+`composable {}`), built via `viewModelFactory { initializer { … } }` with the runner + ids:
+
+| ViewModel | Holds | Load |
+|---|---|---|
+| HomeViewModel | runner, projects, needsYou, containers map, online map, refreshing, error | `selectRunner()` each time Home composes; containers per row in parallel after the list |
+| ProjectViewModel | project (name), sessions, refreshing, error, creating, missing | init + `refreshIfLoaded()` on return |
+| FileBrowserViewModel | pathSegments, entries, viewingFile, fileText, errors | init + per directory |
+| ContainersViewModel | status, error | polled while the Containers tab is visible |
+
+Rules (DESIGN.md "States"): `null` data = never loaded → `SkeletonRows`; error with no data →
+`FullScreenError` (cause + "Is Tailscale on? Is the runner awake?" + Retry); refresh with data →
+content stays + 2dp `LinearProgressIndicator` (`RefreshableBox`); pull-to-refresh on every list.
+Home with stale data + failed refresh → "Runner offline" banner + rows at 50% alpha.
+Action errors (new chat, create project, containers up/down) → Snackbar.
+
+Every call: `RelayApiClient.forRunner(runner)` → `RelayApiService` (Retrofit+OkHttp+Moshi) →
 `X-Relay-Key` header on every call → runner's `shared/API.md` v1 endpoints. **Network only — no
-local cache of sessions/messages anymore**, so an unreachable runner means an error message, not
-stale data.
+local cache of sessions/messages**; ViewModels only keep the last answer while their back-stack
+entry lives.
 
 ChatScreen polls `GET /v1/sessions/{id}` every 1s while `busy`, 3s while `waiting`, and stops
 when `idle` — no WebSocket/SSE; "streaming" is the runner merging text chunks into the transcript
@@ -93,9 +144,9 @@ Noun" default — deleted; a random name nobody chose is worse than the address.
 
 Files: QrScanScreen.kt, RunnerListScreen.kt
 
-RunnerListScreen's "+" FAB → `QrScanScreen` (full-screen, replaces the whole screen content
-while open — see the `if (showQrScan) { ...; return }` early-return at the top of
-`RunnerListScreen`) → requests CAMERA permission → CameraX preview + ML Kit on-device barcode
+RunnerListScreen's "Pair runner" ExtendedFAB → `QrScanScreen` (full-screen, replaces the whole
+screen content while open — the `Crossfade(showQrScan)` at the top of `RunnerListScreen`, 200ms
+fade) → requests CAMERA permission → CameraX preview + ML Kit on-device barcode
 decode → `parseRelayQrContent(rawValue)` → on a valid `relay://host:port?key=...` match:
 
 - **dedup check first** (`runners.find { it.hostname == scanned.hostname }`) — a re-scan of an
@@ -132,7 +183,7 @@ To change the wording or add another exception type: `network/RelayApiClient.kt`
 
 Files: RunnerListScreen.kt (`suspendRunner`), network/RelayApiService.kt (`suspend()`)
 
-RunnerListScreen row → **"Sleep" button** → confirm dialog (explains: refused if busy) →
+RunnerListScreen row ⋮ → **Sleep** → confirm dialog (explains: refused if busy) →
 `RelayApiClient.forRunner(runner).suspend()` called **directly from a coroutine on the screen**
 → every outcome Toasted, because 409/503 are the normal answers to this button, not crashes:
 
@@ -150,56 +201,59 @@ call is both simpler and the only way the result is actually visible.
 
 To change: `ui/screens/RunnerListScreen.kt` (`suspendRunner`).
 
-"Remove runner" (overflow ⋮ menu) → confirm dialog → `repository.removeRunner(hostname)` —
+"Rename" (row ⋮) → `NameRunnerDialog` prefilled with the current display name →
+`updateRunner(copy(displayName))`.
+
+"Remove" (row ⋮, error colour) → confirm dialog → `repository.removeRunner(hostname)` —
 local-only, the runner itself is untouched; re-adding is just a rescan since the runner's key
 never changes.
 
 ## New project: scaffold vs. register existing folder
 
-Files: ProjectListScreen.kt, FolderPickerScreen.kt
+Files: HomeScreen.kt, FolderPickerScreen.kt
 
-ProjectListScreen's "+" FAB opens a small `DropdownMenu`: "Scaffold new empty project"
-(`POST /v1/projects {name}`) or "Register existing folder" → `onPickFolder` →
+Home's "Add project" ExtendedFAB opens a `ModalBottomSheet`: "New empty project"
+(`POST /v1/projects {name}` via `HomeViewModel.createProject`) or "Register existing folder" →
 `FolderPickerScreen`.
 
 `FolderPickerScreen` is an unscoped filesystem browser (`GET /v1/browse`, see runner/FLOWS.md) —
-deliberately separate from `FileBrowserScreen`, which is read-only and scoped to one
+deliberately separate from `FileBrowserContent`, which is read-only and scoped to one
 already-registered project. It opens at `~` (the runner resolves that to the user's Documents
 folder) → the response's `path`/`parent` become `resolvedPath`/`parentPath` → a ".." row pushes
 `parentPath`, so the user can walk up from Documents. Path history is a stack of paths (`~` first,
 empty string = the drive-list view), same local-state back-navigation pattern as
-`FileBrowserScreen`; child paths are built from `resolvedPath`, never from the stack. Its
+`FileBrowserViewModel`; child paths are built from `resolvedPath`, never from the stack. Its
 "select this folder" FAB (hidden while `parentPath` is null — registering `/` or the drive list
 is nonsensical) calls `POST /v1/projects {path}` **directly from this screen**, then hands the
-resulting `Project` to `onRegistered` — registration happens here, not back in
-`ProjectListScreen`, specifically to avoid the awkwardness of popping back to a list screen that
-has no way to know it should re-fetch.
+resulting `Project` to `onRegistered` — registration happens here, not back on Home,
+so nothing depends on Home noticing it should re-fetch.
 
 `RelayNavHost`'s `FOLDER_PICKER` route wires `onRegistered` to navigate straight into that
-project's session list (`popUpTo` the project list), skipping an intermediate "now go tap the
+project (Chats tab, `popUpTo` Home), skipping an intermediate "now go tap the
 project you just made" step.
 
-To change: `ui/screens/FolderPickerScreen.kt`, `ui/screens/ProjectListScreen.kt`'s add-menu.
+To change: `ui/screens/FolderPickerScreen.kt`, `ui/screens/HomeScreen.kt` (add sheet).
 
 ## File browser (read-only)
 
 Files: FileBrowserScreen.kt, RelayApiService.kt
 
-ProjectListScreen row → folder icon → `FileBrowserScreen`. Directory drill-down and file viewing
-are both local Compose state here, not `RelayNavHost` routes — tapping a directory appends to a
-`pathSegments` list, tapping a file sets `viewingFile` and fetches its content; the
-hardware/gesture back button (`BackHandler`) steps back one level (out of a file, then up one
-directory) before finally calling `onBack` to leave the screen. `GET /v1/projects/{id}/files`
-lists a directory, `GET /v1/projects/{id}/files/content` returns one file's text — see
-runner/FLOWS.md "File viewing" for the server side. Read-only — no edit/save affordance exists.
+Project › Files tab (or Home row ⋮ → Files) → `FileBrowserContent(FileBrowserViewModel)`.
+Directory drill-down and file viewing are ViewModel state, not routes — `openDir` appends to
+`pathSegments`, `openFile` sets `viewingFile` and fetches its content; a "↑ path" row and
+`BackHandler` (enabled only while `canStepBack`) step out of a file, then up one directory; at the
+root back falls through to normal navigation. `GET /v1/projects/{id}/files` lists a directory,
+`GET /v1/projects/{id}/files/content` returns one file's text — see runner/FLOWS.md "File
+viewing". Read-only — no edit/save affordance exists. Folder position survives tab switches and
+chat round-trips (ViewModel on the Project entry).
 
 To change: `ui/screens/FileBrowserScreen.kt`.
 
 ## FCM device registration
 
 `RelayFirebaseMessagingService.onNewToken(token)` → enqueues `RegisterDeviceWorker` (WorkManager)
-→ loops every known runner from KnownRunnersRepository → POSTs `{"fcmToken": token}` to
-`/v1/devices` on each, using that runner's own key. One unreachable runner logs + is skipped;
+→ loops every known runner from KnownRunnersRepository → POSTs `{"fcmToken": token, "runnerRef":
+runner.hostname}` to `/v1/devices` on each, using that runner's own key. One unreachable runner logs + is skipped;
 does not block the others.
 
 `MainActivity.registerCurrentFcmTokenWithAllRunners()` does the same thing once at app startup
@@ -212,7 +266,12 @@ A real Firebase project (`relay-sizonenko`) exists — `google-services.json` is
 without it (any fresh clone) still builds, just without live FCM. The try/catch in
 `MainActivity.registerCurrentFcmTokenWithAllRunners()` stays as a safety net for that case.
 
-`onMessageReceived` posts a real Android notification — tapping it opens `MainActivity`.
+`onMessageReceived` posts a real Android notification → `contentIntentFor(data)`: push has
+`runnerRef` + `projectId` + `sessionId` and `runnerRef` is a known runner's `hostname` → ACTION_VIEW
+`relay://r/{runnerRef}/p/{projectId}/s/{sessionId}` (manifest intent-filter scheme `relay`, host
+`r`) → NavController deep link on `Routes.CHAT` → Chat (back stack: Home, Chat). Otherwise
+(empty/unknown `runnerRef`, `runner_suspending`) → plain launch (last route restored).
+To change: `RelayFirebaseMessagingService.contentIntentFor()`, `Routes.CHAT_DEEP_LINK`.
 Requires POST_NOTIFICATIONS granted at runtime on API 33+ (requested once at startup in
 `MainActivity.requestNotificationPermissionIfNeeded()`); if denied, pushes still arrive and
 register but no banner shows (Android silently drops it, not something this code can detect).
@@ -272,6 +331,28 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
 
 ## Technology notes
 
+- **ViewModel lifetime = back-stack entry.** Going Home → Project → back keeps Home's
+  ViewModel (no spinner, background refresh). Popping an entry (back from it) destroys its
+  ViewModels; process death loses all of them (nothing in `SavedStateHandle`) — the screen
+  reloads from network with skeleton rows. A ViewModel captures the `KnownRunner` it was built
+  with; re-pairing (new key) while a Project entry is open keeps using the old key until that
+  entry is popped.
+- **Last route is persisted in DataStore, restored only on a cold launch with no deep link**
+  (`savedInstanceState == null && intent.data == null`). Validation: runner must still be known
+  (else stay on Home); a deleted project is caught after load by `ProjectViewModel.missing` →
+  `goHome()`; a deleted session just shows ChatScreen's error. If DataStore is slow, nothing
+  renders until the first read completes (`produceState` gate in RelayNavHost).
+- **Deep links** use the runner's `hostname` as `{host}` — the same string sent as `runnerRef` at
+  registration. A runner re-paired under a different address won't match old pushes until the
+  token is re-registered (startup does this). Navigation's handling of a NEW_TASK deep-link
+  intent restarts the activity task with a synthetic stack (Home, Chat) — the project screen is
+  not in between. `relay://` is not verified (custom scheme): any app can fire it, but it can only
+  open a chat on a runner already paired here.
+- **Runner switcher lamps** = `GET /v1/health` per runner, 3s timeout, only when the dropdown
+  opens (plus the current runner on every Home refresh). Not polled.
+- **Project row "last activity" is [NOT IMPLEMENTED]** — `Project` has no activity field and
+  computing it would need every session of every project; rows show the path instead.
+
 - **Cleartext HTTP was blocked on every real device until 2026-09-16.** `RelayApiClient` talks
   plain `http://` deliberately (ARCHITECTURE.md: Tailscale's tunnel is the transport security,
   not app-level TLS), but Android has blocked cleartext traffic by default since API 28 and the
@@ -291,9 +372,9 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
   transcript. The Room cache that used to back this was deleted 2026-09-20 (it was a
   write-through mirror, so nothing unrecoverable was stored in it). If offline reading is wanted
   back, it's a fresh decision, not a revert.
-- **Project list fans out one `GET …/containers` per project** (each runs `docker ps` on the
-  runner) every time the list loads. Fine for a handful of projects; with dozens it's dozens of
-  docker calls per screen entry. Docker down/slow on the runner → chips just don't appear.
+- **Home fans out one `GET …/containers` per project** (each runs `docker ps` on the
+  runner) every time the list loads (incl. each return to Home). Fine for a handful of projects; with dozens it's dozens of
+  docker calls per screen entry. Docker down/slow on the runner → lamps just don't appear.
 - **Always dark theme**: `RelayTheme(darkTheme = true)` ignores the phone's light/dark setting;
   dynamic (wallpaper) colors still apply on Android 12+.
 - **Markdown is hand-rolled** (`MarkdownText.kt`, no library): headings, lists, quotes, rules,
@@ -332,10 +413,27 @@ Removed as premature/broken, so the app is only the core loop. Listed so nobody 
 Per-project `startContainers`/`stopContainers` stayed on `RelayApiService` and are now used by
 ContainersScreen (2026-09-30), which also surfaces failures (`lastError`).
 
+**Replaced 2026-10-03 (stage 3 navigation):** `ProjectListScreen.kt` → HomeScreen;
+`SessionListScreen.kt` (+ its `ContainersRow`, `NewSessionDialog`) → ProjectScreen Chats tab;
+`ContainersChip` button on project rows → lamp + row ⋮ (DESIGN.md "Dropped"); standalone
+Files/Containers routes → Project tabs. The always-visible Sleep button → runner row ⋮.
+
 ## Change Index
 
 | Thing | Where |
 |---|---|
+| Routes / deep link pattern / transitions | `ui/navigation/RelayNavHost.kt` (`Routes`, `forwardEnter`…`backExit`) |
+| Last-route restore | `ui/navigation/RelayNavHost.kt` (`RESTORE_PATTERN`, restore `LaunchedEffect`), `MainActivity.kt` (`restoreLastRoute`) |
+| Current runner / last route / last provider prefs | `data/AppPrefsRepository.kt` |
+| Provider list on New chat long-press | `data/AppPrefsRepository.kt` (`KNOWN_PROVIDERS`, `DEFAULT_PROVIDER`) |
+| Home layout (Needs you, project rows, row ⋮, add sheet, switcher) | `ui/screens/HomeScreen.kt` |
+| Home data loading / container lamps / up-down from row | `ui/screens/HomeViewModel.kt` |
+| Project tabs, chat rows, New chat FAB, first-message composer | `ui/screens/ProjectScreen.kt` |
+| Chat list sort / project-missing check | `ui/screens/ProjectViewModel.kt` (`refresh`) |
+| Skeleton / full-screen error / pull-to-refresh / relative time | `ui/components/ScreenStates.kt` |
+| Session state → chip colour | `ui/components/ScreenStates.kt` (`sessionStatus`) |
+| Push tap target (deep link vs plain launch) | `fcm/RelayFirebaseMessagingService.kt` (`contentIntentFor`) |
+| Deep-link intent-filter | `app/src/main/AndroidManifest.xml` |
 | Known runners storage | `data/KnownRunnersRepository.kt`, `model/Models.kt` (`KnownRunner`) |
 | Default runner port (7777) | `model/Models.kt` (`KnownRunner.DEFAULT_PORT`) |
 | Chat transcript rendering (bubbles, tool rows, permission card, Stop, mode picker) | `ui/screens/ChatScreen.kt` |
@@ -343,9 +441,8 @@ ContainersScreen (2026-09-30), which also surfaces failures (`lastError`).
 | Markdown in agent replies | `ui/screens/MarkdownText.kt` (`parseBlocks`, `inline`) |
 | Dark/light theme | `ui/theme/Theme.kt` (`RelayTheme` `darkTheme` default) |
 | Notification text per push type | `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
-| Containers screen (per-file Up/Down/Switch cards, take-everything-down) | `ui/screens/ContainersScreen.kt` |
-| Project-row container chip | `ui/screens/ContainersScreen.kt` (`ContainersChip`), `ui/screens/ProjectListScreen.kt` |
-| Session-list Containers row + its summary text | `ui/screens/SessionListScreen.kt` (`ContainersRow`) |
+| Containers tab (per-file Up/Down/Switch cards, take-everything-down, polling) | `ui/screens/ContainersScreen.kt` (`ContainersContent`, `ContainersViewModel`) |
+| Project-row containers lamp | `ui/screens/HomeScreen.kt` (`ProjectRow`) |
 | Runner error text in error messages | `network/RelayApiClient.kt` (`friendlyErrorMessage`) |
 | QR pairing content parsing | `ui/screens/QrScanScreen.kt` (`parseRelayQrContent`) |
 | Runner display name / blank fallback | `model/Models.kt` (`.displayName`, `.label`), `ui/screens/RunnerListScreen.kt` (`NameRunnerDialog`, `AddRunnerDialog`) |
@@ -354,14 +451,14 @@ ContainersScreen (2026-09-30), which also surfaces failures (`lastError`).
 | Connection error wording | `network/RelayApiClient.kt` (`friendlyErrorMessage`) |
 | Navigation graph / routes | `ui/navigation/RelayNavHost.kt` (`Routes`) |
 | Chat poll intervals | `ui/screens/ChatScreen.kt` (`POLL_BUSY_MS`, `POLL_WAITING_MS`) |
-| Sleep button + its 409/503/error Toasts | `ui/screens/RunnerListScreen.kt` (`suspendRunner`) |
+| Sleep (row ⋮) + its 409/503/error Toasts | `ui/screens/RunnerListScreen.kt` (`suspendRunner`) |
+| Rename runner | `ui/screens/RunnerListScreen.kt` (`renamingRunner`, `NameRunnerDialog`) |
 | Remove runner | `data/KnownRunnersRepository.kt` (`removeRunner`), `ui/screens/RunnerListScreen.kt` |
-| Session provider list ("claude"/"codex") | `ui/screens/SessionListScreen.kt` (`KNOWN_PROVIDERS`) |
-| Register existing folder / new-project menu | `ui/screens/ProjectListScreen.kt`, `ui/screens/FolderPickerScreen.kt` |
-| File browser screen | `ui/screens/FileBrowserScreen.kt` |
+| Register existing folder / new-project sheet | `ui/screens/HomeScreen.kt`, `ui/screens/FolderPickerScreen.kt` |
+| File browser tab | `ui/screens/FileBrowserScreen.kt` (`FileBrowserContent`, `FileBrowserViewModel`) |
 | FCM token registration (on refresh) | `fcm/RelayFirebaseMessagingService.kt` |
 | FCM token registration (on app startup) | `MainActivity.kt` |
-| FCM registration background call (loops all runners) | `fcm/RegisterDeviceWorker.kt` |
+| FCM registration background call (loops all runners, sends `runnerRef`) | `fcm/RegisterDeviceWorker.kt` |
 | Notification content/channel | `fcm/RelayFirebaseMessagingService.onMessageReceived()` |
 | Cleartext HTTP opt-in | `app/src/main/AndroidManifest.xml` (`android:usesCleartextTraffic`) |
 | Gradle/Kotlin/Compose versions | `app/build.gradle.kts`, `build.gradle.kts`, `gradle/wrapper/gradle-wrapper.properties` |

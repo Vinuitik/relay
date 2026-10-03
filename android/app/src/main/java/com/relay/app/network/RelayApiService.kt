@@ -20,7 +20,9 @@ data class HealthResponse(val ok: Boolean)
 data class NewProjectRequest(val name: String, val path: String? = null)
 data class NewSessionRequest(val provider: String)
 data class MessageRequest(val text: String)
-data class DeviceRegistrationRequest(val fcmToken: String)
+/** [runnerRef] = the address this phone uses for the runner (its `hostname`); echoed back in every
+ * push so a notification can deep-link to the right runner. */
+data class DeviceRegistrationRequest(val fcmToken: String, val runnerRef: String? = null)
 data class StartContainersRequest(val file: String)
 data class SetModeRequest(val modeId: String)
 data class PermissionRequest(val optionId: String)
@@ -60,6 +62,11 @@ interface RelayApiService {
         @Path("projectId") projectId: String,
         @Body request: NewSessionRequest,
     ): Session
+
+    /** Sessions across every project (Home's "Needs you"). [state] = comma list, e.g.
+     * `"waiting,busy"`; null = every state. Runner sorts waiting first, then busy, newest first. */
+    @GET("v1/sessions")
+    suspend fun listAllSessions(@Query("state") state: String? = null): List<Session>
 
     @GET("v1/sessions/{sessionId}")
     suspend fun getSession(@Path("sessionId") sessionId: String): Session
@@ -116,7 +123,7 @@ interface RelayApiService {
     suspend fun suspend(): Response<ResponseBody>
 
     /** Lists a directory within a project — `path` omitted/blank means the project root. See
-     * shared/API.md and [com.relay.app.ui.screens.FileBrowserScreen]. Read-only. */
+     * shared/API.md and [com.relay.app.ui.screens.FileBrowserContent]. Read-only. */
     @GET("v1/projects/{projectId}/files")
     suspend fun listFiles(
         @Path("projectId") projectId: String,

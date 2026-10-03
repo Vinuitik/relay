@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -15,6 +16,10 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.relay.app.MainActivity
 import com.relay.app.R
+import com.relay.app.data.KnownRunnersRepository
+import com.relay.app.ui.navigation.Routes
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 
 /**
  * Job-done and runner-suspending notifications are delivered via FCM (see ARCHITECTURE.md
@@ -51,11 +56,12 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
         val title = message.notification?.title ?: message.data["title"] ?: defaultTitle
         val body = message.notification?.body ?: message.data["body"] ?: defaultBody
 
+        val notificationId = System.currentTimeMillis().toInt()
         val contentIntent = PendingIntent.getActivity(
             this,
-            0,
-            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
-            PendingIntent.FLAG_IMMUTABLE,
+            notificationId,
+            contentIntentFor(message.data),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -69,7 +75,31 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
 
         // NotificationManagerCompat.notify silently no-ops if POST_NOTIFICATIONS (API 33+) was
         // never granted - there is nothing to catch here, Android just drops it.
-        NotificationManagerCompat.from(this).notify(System.currentTimeMillis().toInt(), notification)
+        NotificationManagerCompat.from(this).notify(notificationId, notification)
+    }
+
+    /**
+     * Tap target: the session's chat via deep link `relay://r/{runnerRef}/p/{projectId}/s/{sessionId}`
+     * (RelayNavHost `Routes.CHAT_DEEP_LINK`) when the push names a session on a runner this phone
+     * knows by that hostname; otherwise (old runner sending no `runnerRef`, runner since removed,
+     * `runner_suspending`) a plain app launch. Runs on FCM's background thread, so the blocking
+     * DataStore read is fine.
+     */
+    private fun contentIntentFor(data: Map<String, String>): Intent {
+        val runnerRef = data["runnerRef"].orEmpty()
+        val projectId = data["projectId"].orEmpty()
+        val sessionId = data["sessionId"].orEmpty()
+        val known = runnerRef.isNotEmpty() && projectId.isNotEmpty() && sessionId.isNotEmpty() &&
+            runCatching {
+                runBlocking { KnownRunnersRepository(applicationContext).runners.first() }
+                    .any { it.hostname == runnerRef }
+            }.getOrDefault(false)
+        val intent = if (known) {
+            Intent(Intent.ACTION_VIEW, Uri.parse(Routes.chatDeepLink(runnerRef, projectId, sessionId)), this, MainActivity::class.java)
+        } else {
+            Intent(this, MainActivity::class.java)
+        }
+        return intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
     }
 
     /**

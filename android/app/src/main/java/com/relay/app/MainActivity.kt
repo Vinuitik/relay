@@ -17,6 +17,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.google.firebase.messaging.FirebaseMessaging
+import com.relay.app.data.AppPrefsRepository
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.fcm.RegisterDeviceWorker
 import com.relay.app.ui.navigation.RelayNavHost
@@ -35,6 +36,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val runnersRepository = KnownRunnersRepository(applicationContext)
+        val prefs = AppPrefsRepository(applicationContext)
+        // Cold launch without a push deep link -> reopen where the user was (DESIGN.md flow).
+        val restoreLastRoute = savedInstanceState == null && intent?.data == null
 
         registerCurrentFcmTokenWithAllRunners()
         requestNotificationPermissionIfNeeded()
@@ -42,7 +46,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             RelayTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    RelayNavHost(runnersRepository = runnersRepository)
+                    RelayNavHost(
+                        runnersRepository = runnersRepository,
+                        prefs = prefs,
+                        restoreLastRoute = restoreLastRoute,
+                    )
                 }
             }
         }
