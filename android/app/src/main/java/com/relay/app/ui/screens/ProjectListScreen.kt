@@ -35,11 +35,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.relay.app.model.ContainersStatus
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
 import com.relay.app.network.NewProjectRequest
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.friendlyErrorMessage
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 @Composable
@@ -47,6 +51,7 @@ fun ProjectListScreen(
     runner: KnownRunner,
     onProjectSelected: (Project) -> Unit,
     onFilesSelected: (Project) -> Unit,
+    onContainersSelected: (Project) -> Unit,
     onPickFolder: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -58,13 +63,21 @@ fun ProjectListScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
     var showAddMenu by remember { mutableStateOf(false) }
-
+    // Per-project compose status for the row chips, fetched in parallel after the list loads.
+    // A project whose check fails (or has no compose file) just gets no chip.
+    var containers by remember { mutableStateOf<Map<String, ContainersStatus>>(emptyMap()) }
 
     suspend fun refresh() {
         loading = true
         error = null
         try {
             projects = api.listProjects()
+            containers = coroutineScope {
+                projects.map { p -> async { p.id to runCatching { api.containers(p.id) }.getOrNull() } }
+                    .awaitAll()
+                    .mapNotNull { (id, st) -> st?.let { id to it } }
+                    .toMap()
+            }
         } catch (e: Exception) {
             error = friendlyErrorMessage(e, runner)
         } finally {
@@ -123,11 +136,14 @@ fun ProjectListScreen(
                             headlineContent = { Text(project.name) },
                             supportingContent = { Text(project.path) },
                             trailingContent = {
-                                IconButton(onClick = { onFilesSelected(project) }) {
-                                    Icon(
-                                        imageVector = Icons.Default.Folder,
-                                        contentDescription = "Browse files",
-                                    )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    ContainersChip(containers[project.id]) { onContainersSelected(project) }
+                                    IconButton(onClick = { onFilesSelected(project) }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Folder,
+                                            contentDescription = "Browse files",
+                                        )
+                                    }
                                 }
                             },
                             modifier = Modifier.clickable { onProjectSelected(project) },

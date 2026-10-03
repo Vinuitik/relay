@@ -73,6 +73,9 @@ fun RelayNavHost(
                     onFilesSelected = { project ->
                         navController.navigate(Routes.files(hostname, project.id))
                     },
+                    onContainersSelected = { project ->
+                        navController.navigate(Routes.containers(hostname, project.id))
+                    },
                     onPickFolder = { navController.navigate(Routes.folderPicker(hostname)) },
                     onBack = { navController.popBackStack() },
                 )

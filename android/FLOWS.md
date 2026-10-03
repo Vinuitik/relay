@@ -20,16 +20,25 @@ MainActivity → RelayNavHost →
 RunnerListScreen → ProjectListScreen(runner) → SessionListScreen(runner, project)
 → ChatScreen(runner, project, session)
 
-Side branches off ProjectListScreen: FileBrowserScreen (read-only, per project) and
-FolderPickerScreen (register an existing folder as a project). Off SessionListScreen:
-ContainersScreen — its top-bar icon only appears if `GET …/containers` reports compose files or a
-Dockerfile.
+Side branches off ProjectListScreen: FileBrowserScreen (read-only, per project),
+FolderPickerScreen (register an existing folder as a project), and ContainersScreen via the
+per-row `ContainersChip` ("● 2 up" / "○ down"). Chips come from one `GET …/containers` per project,
+fired in parallel after the list loads; a failed check or no compose file → no chip.
+Off SessionListScreen: an always-visible "Containers" row at the top (summary: "N running" /
+"Everything is down" / "No compose file" / "Unavailable: <error>") → ContainersScreen.
 
-ContainersScreen → radio list of compose files (preselected = runner's `activeFile`) → button
-"Start X" / "Switch to X" (switch when another file is active and something is running) →
-`startContainers(file)` → runner answers `202` immediately → screen polls every 2s while
-`operation` is non-empty, 10s otherwise → `lastError`/`dockerError` shown in red.
-To change the labels/polling: ContainersScreen.kt.
+ContainersScreen → status card (dot + "Up · N of M running" / "Everything is down" /
+in-flight operation + progress bar, "from <file>", then request/`lastError`/`dockerError` in red)
+→ one card per compose file with its own button:
+- that file's stack is up → **Down** (`stopContainers`)
+- another file's stack is up → **Switch here** (`startContainers(file)`; runner downs the old one first)
+- nothing up → **Up** (`startContainers(file)`)
+→ full-width red **Take everything down** (`stopContainers`, enabled whenever no operation is in
+flight - compose down is idempotent) → Services list (dot, service, file, state).
+"Which file is up" = the `composeFile` of the first running container, falling back to
+`activeFile` - truer than `activeFile` alone if someone ran compose by hand on the runner.
+Runner answers `202` immediately → screen polls every 2s while `operation` is non-empty, 10s otherwise.
+To change the labels/polling/button rules: ContainersScreen.kt (`ComposeFileCard`, `StatusCard`).
 
 To add a screen: RelayNavHost.kt
 
@@ -279,6 +288,9 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
   transcript. The Room cache that used to back this was deleted 2026-09-20 (it was a
   write-through mirror, so nothing unrecoverable was stored in it). If offline reading is wanted
   back, it's a fresh decision, not a revert.
+- **Project list fans out one `GET …/containers` per project** (each runs `docker ps` on the
+  runner) every time the list loads. Fine for a handful of projects; with dozens it's dozens of
+  docker calls per screen entry. Docker down/slow on the runner → chips just don't appear.
 - **Always dark theme**: `RelayTheme(darkTheme = true)` ignores the phone's light/dark setting;
   dynamic (wallpaper) colors still apply on Android 12+.
 - **Markdown is hand-rolled** (`MarkdownText.kt`, no library): headings, lists, quotes, rules,
@@ -327,8 +339,9 @@ ContainersScreen (2026-09-30), which also surfaces failures (`lastError`).
 | Markdown in agent replies | `ui/screens/MarkdownText.kt` (`parseBlocks`, `inline`) |
 | Dark/light theme | `ui/theme/Theme.kt` (`RelayTheme` `darkTheme` default) |
 | Notification text per push type | `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
-| Containers screen (compose file picker, start/switch/stop) | `ui/screens/ContainersScreen.kt` |
-| When the Containers icon shows | `ui/screens/SessionListScreen.kt` (`hasDocker`) |
+| Containers screen (per-file Up/Down/Switch cards, take-everything-down) | `ui/screens/ContainersScreen.kt` |
+| Project-row container chip | `ui/screens/ContainersScreen.kt` (`ContainersChip`), `ui/screens/ProjectListScreen.kt` |
+| Session-list Containers row + its summary text | `ui/screens/SessionListScreen.kt` (`ContainersRow`) |
 | Runner error text in error messages | `network/RelayApiClient.kt` (`friendlyErrorMessage`) |
 | QR pairing content parsing | `ui/screens/QrScanScreen.kt` (`parseRelayQrContent`) |
 | Runner display name / blank fallback | `model/Models.kt` (`.displayName`, `.label`), `ui/screens/RunnerListScreen.kt` (`NameRunnerDialog`, `AddRunnerDialog`) |

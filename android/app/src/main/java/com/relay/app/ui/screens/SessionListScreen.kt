@@ -3,6 +3,8 @@ package com.relay.app.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material3.AlertDialog
@@ -37,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.relay.app.model.ContainersStatus
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Session
 import com.relay.app.network.NewSessionRequest
@@ -65,9 +69,10 @@ fun SessionListScreen(
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var showNewSessionDialog by remember { mutableStateOf(false) }
-    // Only offer the Containers screen when the runner found something docker-shaped in the
-    // project. A failed check (old runner without the endpoint, docker trouble) just hides it.
-    var hasDocker by remember { mutableStateOf(false) }
+    // Drives the always-visible Containers row's summary text; the row itself never hides, so
+    // a failed check shows up as text instead of a missing button.
+    var containers by remember { mutableStateOf<ContainersStatus?>(null) }
+    var containersError by remember { mutableStateOf<String?>(null) }
 
     suspend fun refresh() {
         if (sessions.isEmpty()) loading = true
@@ -83,9 +88,11 @@ fun SessionListScreen(
 
     LaunchedEffect(projectId) {
         refresh()
-        hasDocker = runCatching {
-            api.containers(projectId).let { it.composeFiles.isNotEmpty() || it.hasDockerfile }
-        }.getOrDefault(false)
+        try {
+            containers = api.containers(projectId)
+        } catch (e: Exception) {
+            containersError = friendlyErrorMessage(e, runner)
+        }
     }
 
     Scaffold(
@@ -97,13 +104,6 @@ fun SessionListScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
-                actions = {
-                    if (hasDocker) {
-                        IconButton(onClick = onContainersSelected) {
-                            Icon(Icons.Default.Dns, contentDescription = "Containers")
-                        }
-                    }
-                },
             )
         },
         floatingActionButton = {
@@ -112,23 +112,27 @@ fun SessionListScreen(
             }
         },
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-            when {
-                loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                error != null && sessions.isEmpty() -> Text(
-                    text = "Error: $error",
-                    modifier = Modifier.align(Alignment.Center).padding(16.dp),
-                )
-                sessions.isEmpty() -> Text("No sessions yet.", modifier = Modifier.align(Alignment.Center))
-                else -> LazyColumn {
-                    items(sessions, key = { it.id }) { session ->
-                        ListItem(
-                            headlineContent = { Text(session.provider) },
-                            supportingContent = { Text(session.createdAt) },
-                            trailingContent = { StateBadge(session.state) },
-                            modifier = Modifier.clickable { onSessionSelected(session) },
-                        )
-                        HorizontalDivider()
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            ContainersRow(containers, containersError, onContainersSelected)
+            HorizontalDivider()
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                when {
+                    loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    error != null && sessions.isEmpty() -> Text(
+                        text = "Error: $error",
+                        modifier = Modifier.align(Alignment.Center).padding(16.dp),
+                    )
+                    sessions.isEmpty() -> Text("No sessions yet.", modifier = Modifier.align(Alignment.Center))
+                    else -> LazyColumn {
+                        items(sessions, key = { it.id }) { session ->
+                            ListItem(
+                                headlineContent = { Text(session.provider) },
+                                supportingContent = { Text(session.createdAt) },
+                                trailingContent = { StateBadge(session.state) },
+                                modifier = Modifier.clickable { onSessionSelected(session) },
+                            )
+                            HorizontalDivider()
+                        }
                     }
                 }
             }
@@ -152,6 +156,25 @@ fun SessionListScreen(
             },
         )
     }
+}
+
+@Composable
+private fun ContainersRow(status: ContainersStatus?, error: String?, onClick: () -> Unit) {
+    val running = status?.containers?.count { it.state == "running" } ?: 0
+    val summary = when {
+        error != null -> "Unavailable: $error"
+        status == null -> "Checking…"
+        status.composeFiles.isEmpty() -> "No compose file"
+        running > 0 -> "$running running"
+        else -> "Everything is down"
+    }
+    ListItem(
+        leadingContent = { Icon(Icons.Default.Dns, contentDescription = null) },
+        headlineContent = { Text("Containers") },
+        supportingContent = { Text(summary, maxLines = 1) },
+        trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+        modifier = Modifier.clickable(onClick = onClick),
+    )
 }
 
 @Composable
