@@ -57,3 +57,13 @@ func TestRegisterDevice_RequiresAuth(t *testing.T) {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
+
+func TestRegisterDevice_StoresRunnerRef(t *testing.T) {
+	s := newTestServer(t)
+	rec := doRequest(t, s.Routes(), "POST", "/v1/devices", testKey, map[string]string{"fcmToken": "tok-a", "runnerRef": "my-pc"})
+	var d notify.Device
+	decodeBody(t, rec, &d)
+	if d.RunnerRef != "my-pc" {
+		t.Fatalf("RunnerRef = %q, want my-pc", d.RunnerRef)
+	}
+}

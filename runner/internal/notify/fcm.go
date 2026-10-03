@@ -105,23 +105,53 @@ func parsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 // wiring in internal/session - logs and continues rather than failing the
 // session transition.
 func (n *fcmNotifier) NotifySessionFinished(device Device, session Session) error {
-	return n.sendData(device, map[string]string{
-		"type":      "session_finished",
-		"sessionId": session.ID,
-		"projectId": session.ProjectID,
-		"problem":   session.Problem,
-	})
+	return n.sendData(device, sessionFinishedData(device, session))
 }
 
 // NotifySessionNeedsInput sends a data-only FCM message telling device an
 // agent is waiting on a permission decision. Same best-effort contract as
 // NotifySessionFinished.
 func (n *fcmNotifier) NotifySessionNeedsInput(device Device, session Session) error {
-	return n.sendData(device, map[string]string{
+	return n.sendData(device, sessionNeedsInputData(device, session))
+}
+
+// NotifyRunnerSuspending sends a data-only FCM message telling device this
+// runner is about to power off. Same best-effort contract as
+// NotifySessionFinished: errors are returned to the caller, which per
+// idle.Monitor's wiring in cmd/runnerd/main.go logs and moves on rather than
+// blocking or retrying the actual shutdown.
+func (n *fcmNotifier) NotifyRunnerSuspending(device Device, hostname string) error {
+	return n.sendData(device, runnerSuspendingData(device, hostname))
+}
+
+// The *Data builders produce each push's FCM data map (shared/API.md "FCM
+// message data.type values"). Every payload carries runnerRef - the
+// device's registered address for this runner, "" if it never sent one.
+func sessionFinishedData(device Device, session Session) map[string]string {
+	return map[string]string{
+		"type":      "session_finished",
+		"sessionId": session.ID,
+		"projectId": session.ProjectID,
+		"problem":   session.Problem,
+		"runnerRef": device.RunnerRef,
+	}
+}
+
+func sessionNeedsInputData(device Device, session Session) map[string]string {
+	return map[string]string{
 		"type":      "session_needs_input",
 		"sessionId": session.ID,
 		"projectId": session.ProjectID,
-	})
+		"runnerRef": device.RunnerRef,
+	}
+}
+
+func runnerSuspendingData(device Device, hostname string) map[string]string {
+	return map[string]string{
+		"type":      "runner_suspending",
+		"hostname":  hostname,
+		"runnerRef": device.RunnerRef,
+	}
 }
 
 // sendData sends one data-only FCM message to device.
@@ -135,52 +165,6 @@ func (n *fcmNotifier) sendData(device Device, data map[string]string) error {
 		"message": map[string]any{
 			"token": device.FCMToken,
 			"data":  data,
-		},
-	}
-	body, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal FCM message: %w", err)
-	}
-
-	sendURL := fmt.Sprintf("https://fcm.googleapis.com/v1/projects/%s/messages:send", n.cred.ProjectID)
-	req, err := http.NewRequest(http.MethodPost, sendURL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := n.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("send FCM message: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("FCM send failed: %s: %s", resp.Status, string(respBody))
-	}
-	return nil
-}
-
-// NotifyRunnerSuspending sends a data-only FCM message telling device this
-// runner is about to power off. Same best-effort contract as
-// NotifySessionFinished: errors are returned to the caller, which per
-// idle.Monitor's wiring in cmd/runnerd/main.go logs and moves on rather than
-// blocking or retrying the actual shutdown.
-func (n *fcmNotifier) NotifyRunnerSuspending(device Device, hostname string) error {
-	token, err := n.accessTokenFor()
-	if err != nil {
-		return fmt.Errorf("obtain FCM access token: %w", err)
-	}
-
-	msg := map[string]any{
-		"message": map[string]any{
-			"token": device.FCMToken,
-			"data": map[string]string{
-				"type":     "runner_suspending",
-				"hostname": hostname,
-			},
 		},
 	}
 	body, err := json.Marshal(msg)

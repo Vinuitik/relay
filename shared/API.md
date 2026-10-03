@@ -28,6 +28,8 @@ Session {
   createdAt: string
   finishedAt: string?  // null while not finished
   messages: Message[]
+  title: string        // first user message, one line, <=80 runes ("…" if cut); "" if none
+  preview: string      // last non-empty agent message, one line, <=120 runes ("…" if cut); "" if none
   // ACP providers only (claude), omitted otherwise:
   mode?: string                         // current permission mode id, e.g. "bypassPermissions"
   modes?: {id, name, description?}[]    // what the agent offers
@@ -57,6 +59,7 @@ Device {
   id: string           // stable id for this phone install, generated client-side
   fcmToken: string
   registeredAt: string // RFC3339
+  runnerRef: string    // address the phone uses for this runner, as sent at registration; "" if never sent
 }
 
 FileEntry {
@@ -104,6 +107,7 @@ BrowseResult {
 | GET | `/v1/browse?path=<absolute>` | - | `200 BrowseResult` | lists subdirectories of `path` — **unscoped**, unlike the project file-viewing endpoints, since its purpose is finding a directory to register via `POST /v1/projects {path}` before any project-level scoping exists. `path` omitted/empty lists filesystem roots; `path=~` lists the user's Documents folder (falls back to home) - where the picker opens. `400` if `path` isn't absolute or isn't a directory. |
 | GET | `/v1/projects/{projectId}/sessions` | - | `200 Session[]` | includes finished sessions not yet purged by weekly cleanup |
 | POST | `/v1/projects/{projectId}/sessions` | `{provider: string}` | `201 Session` | spawns the configured CLI command for `provider`, scoped to the project dir |
+| GET | `/v1/sessions?state=<s1,s2>` | - | `200 Session[]` | sessions across **all** projects (the app's "Needs you" strip). `state` optional, comma list (e.g. `waiting,busy`); omitted = every state. Sorted: `waiting` first, then `busy`, then the rest; within each, `lastActiveAt` (else `createdAt`) newest first. |
 | GET | `/v1/sessions/{sessionId}` | - | `200 Session` | full transcript so far |
 | POST | `/v1/sessions/{sessionId}/message` | `{text: string}` | `202 {}` | appends a user message and starts a turn; the reply streams into `messages` (poll `GET`). `409` while the previous turn is still running. |
 | POST | `/v1/sessions/{sessionId}/stop` | - | `200 Session` | kills the subprocess, marks session `finished` |
@@ -113,7 +117,7 @@ BrowseResult {
 | GET | `/v1/projects/{projectId}/containers` | - | `200 ContainersStatus` | compose files found at the project's top level (`docker-compose.yml`, `docker-compose.dev.yml`, `compose-prod.yaml`, ...), the active one, and every container compose started from this directory. Only calls docker if a compose file exists; docker failures go in `dockerError`, not an HTTP error. |
 | POST | `/v1/projects/{projectId}/containers/start` | `{file?: string}` (body optional) | `202 ContainersStatus` | turns on `file` (default: the active file) with `docker compose -f <file> up -d`. If a different file was active it's brought down first - a **switch**, so only one compose file runs per project. The choice is persisted. Runs in the background: poll GET until `operation` is `""`, then check `lastError`. `400` if no compose file, `file` isn't one of `composeFiles`, or several exist and none is chosen yet; `409` if an operation is already running. |
 | POST | `/v1/projects/{projectId}/containers/stop` | - | `202 ContainersStatus` | `docker compose -f <active> down --remove-orphans` in the background - removes containers from any of the project's compose files. Same `400`/`409` as start. |
-| POST | `/v1/devices` | `{fcmToken: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner, so the runner can notify it on session-finish (or on suspend, see below). Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
+| POST | `/v1/devices` | `{fcmToken: string, runnerRef?: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner (`runnerRef`: the address the phone uses for this runner, e.g. its Tailscale hostname - stored and echoed in every push; re-registering overwrites it), so the runner can notify it on session-finish (or on suspend, see below). Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
 | POST | `/v1/suspend` | - | `202 {}` | manually suspends this machine to sleep (S3 on Linux, Modern Standby on Windows) right now, instead of waiting for the idle timeout. `409` if any session is currently busy (never kills active work); `503` if the runner wasn't started with `RELAY_IDLE_SUSPEND_ENABLED=true` — this endpoint deliberately reuses that same opt-in gate, see runner/FLOWS.md "Idle-suspend". |
 | POST | `/v1/activity` | - | `202 {}` | tells the runner "the phone app is in the foreground right now" — one of the signals idle-suspend uses to decide whether to suspend the machine, alongside session busy/idle state and local keyboard/mouse input. Call every 30s while, and only while, the app is in the foreground; stop calling when it's backgrounded or closed. Always accepted, even if idle-suspend is disabled on this runner — see runner/FLOWS.md "Idle-suspend". |
 | GET | `/v1/projects/{projectId}/files?path=<relative>` | - | `200 FileEntry[]` | lists a directory within the project. `path` omitted/empty = project root. `400` if `path` escapes the project directory (`../`) or isn't a directory. Read-only — see ARCHITECTURE.md "Runner responsibilities". |
@@ -124,13 +128,15 @@ Errors: `4xx/5xx` bodies are `{"error": string}`.
 ## FCM message `data.type` values
 
 Every push the runner sends is data-only (no `notification` block — the app builds its own, see
-`RelayFirebaseMessagingService.notificationContentFor`). `data.type` is:
+`RelayFirebaseMessagingService.notificationContentFor`). Every payload below also carries
+`runnerRef` — the value this device registered via `POST /v1/devices` (`""` if it never sent one),
+so the app knows which runner sent the push. `data.type` is:
 
-- `session_finished` — `data: {type, sessionId, projectId, problem}` (once per completed agent turn;
+- `session_finished` — `data: {type, sessionId, projectId, problem, runnerRef}` (once per completed agent turn;
   `problem` is `"quota"` / `"auth"` when the turn ended on that provider problem, `""` otherwise)
-- `session_needs_input` — `data: {type, sessionId, projectId}`, the agent is paused on a
+- `session_needs_input` — `data: {type, sessionId, projectId, runnerRef}`, the agent is paused on a
   permission request (session `waiting`)
-- `runner_suspending` — `data: {type, hostname}`, sent best-effort right before the runner
+- `runner_suspending` — `data: {type, hostname, runnerRef}`, sent best-effort right before the runner
   suspends to sleep (never on a manual `/v1/sessions/{id}/stop`) — see runner/FLOWS.md "Idle-suspend".
 
 An older app build (or a message missing `type` entirely) falls back to the `session_finished`

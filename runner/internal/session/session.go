@@ -107,6 +107,11 @@ type Session struct {
 	// LastActiveAt is when the session last changed, bumped every ~30s
 	// while the agent works (see store.go). RFC3339.
 	LastActiveAt string `json:"lastActiveAt,omitempty"`
+	// Title and Preview are derived on every snapshot (see cloneSession /
+	// summary.go), never set directly: the first user message and the last
+	// agent message, each flattened to one line and truncated. "" if none.
+	Title   string `json:"title"`
+	Preview string `json:"preview"`
 }
 
 // ProviderCommand is the command run for a given provider name.
@@ -552,6 +557,7 @@ func cloneSession(s Session) Session {
 		ts := *s.FinishedAt
 		out.FinishedAt = &ts
 	}
+	out.Title, out.Preview = summarize(out.Messages)
 	return out
 }
 

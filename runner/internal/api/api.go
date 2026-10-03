@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,6 +76,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/browse", s.auth(s.handleBrowse))
 	mux.HandleFunc("GET /v1/projects/{projectId}/sessions", s.auth(s.handleListSessions))
 	mux.HandleFunc("POST /v1/projects/{projectId}/sessions", s.auth(s.handleStartSession))
+	mux.HandleFunc("GET /v1/sessions", s.auth(s.handleListAllSessions))
 	mux.HandleFunc("GET /v1/sessions/{sessionId}", s.auth(s.handleGetSession))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/message", s.auth(s.handleSendMessage))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/stop", s.auth(s.handleStopSession))
@@ -237,6 +239,19 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.Sessions.ListByProject(projectID))
 }
 
+// handleListAllSessions lists sessions across every project (the app's
+// "Needs you" strip), optionally filtered by ?state=waiting,busy, sorted
+// waiting > busy > rest, most recent first - see session.Manager.ListAll.
+func (s *Server) handleListAllSessions(w http.ResponseWriter, r *http.Request) {
+	var states []string
+	for _, st := range strings.Split(r.URL.Query().Get("state"), ",") {
+		if st = strings.TrimSpace(st); st != "" {
+			states = append(states, st)
+		}
+	}
+	writeJSON(w, http.StatusOK, s.Sessions.ListAll(states))
+}
+
 type startSessionRequest struct {
 	Provider string `json:"provider"`
 }
@@ -364,6 +379,9 @@ func writeSessionResult(w http.ResponseWriter, sess session.Session, err error) 
 
 type registerDeviceRequest struct {
 	FCMToken string `json:"fcmToken"`
+	// RunnerRef (optional) is the address the phone uses for this runner,
+	// echoed back in every push so the app knows which runner sent it.
+	RunnerRef string `json:"runnerRef"`
 }
 
 // handleRegisterDevice registers/updates this phone's FCM push token, per
@@ -383,7 +401,7 @@ func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "device registry not configured")
 		return
 	}
-	device := s.Devices.Register(req.FCMToken)
+	device := s.Devices.Register(req.FCMToken, req.RunnerRef)
 	writeJSON(w, http.StatusOK, device)
 }
 

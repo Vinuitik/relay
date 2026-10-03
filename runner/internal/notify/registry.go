@@ -21,6 +21,11 @@ type Device struct {
 	ID           string `json:"id"`
 	FCMToken     string `json:"fcmToken"`
 	RegisteredAt string `json:"registeredAt"`
+	// RunnerRef is the address the phone uses for this runner (e.g. its
+	// Tailscale hostname), sent at registration and echoed in every push's
+	// data so the app can tell which runner a push came from. "" when the
+	// phone never sent one (older app builds, older devices.json files).
+	RunnerRef string `json:"runnerRef"`
 }
 
 // Session is the minimal session info a Notifier needs to describe which
@@ -117,17 +122,18 @@ func (r *Registry) loadLocked() {
 }
 
 // Register adds a new device for fcmToken, or - if that token is already
-// registered - updates its registeredAt timestamp in place rather than
-// creating a duplicate entry. The registry is persisted to disk afterward;
+// registered - updates its registeredAt timestamp and runnerRef in place
+// rather than creating a duplicate entry. The registry is persisted to disk afterward;
 // a persist failure is logged but does not fail the registration, since an
 // in-memory registration is still better than none for the current process.
-func (r *Registry) Register(fcmToken string) Device {
+func (r *Registry) Register(fcmToken, runnerRef string) Device {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	var out Device
 	if d, ok := r.devices[fcmToken]; ok {
 		d.RegisteredAt = now()
+		d.RunnerRef = runnerRef
 		out = *d
 	} else {
 		r.nextID++
@@ -135,6 +141,7 @@ func (r *Registry) Register(fcmToken string) Device {
 			ID:           fmt.Sprintf("dev%d-%d", time.Now().UnixNano(), r.nextID),
 			FCMToken:     fcmToken,
 			RegisteredAt: now(),
+			RunnerRef:    runnerRef,
 		}
 		r.devices[fcmToken] = d
 		out = *d

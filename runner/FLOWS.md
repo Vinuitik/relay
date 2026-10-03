@@ -61,6 +61,16 @@ POST /v1/projects/{id}/sessions → session.Manager.Start(projectID, provider) �
 `"codex"` → bare `codex` (raw, untested) → ACP or raw path below.
 To add a provider: `autoDetectProviders` (ACP: set `ACP: true`), or env `RELAY_ACP_<NAME>`.
 
+Every Session snapshot (`cloneSession`) derives `title` (first user message) + `preview` (last
+non-empty agent message) via `summary.go summarize` → whitespace collapsed to one line, cut to
+80 / 120 runes with "…". `messages` is still returned in full alongside.
+To change caps: `titleMaxRunes` / `previewMaxRunes` (summary.go).
+
+GET /v1/sessions[?state=waiting,busy] → api.handleListAllSessions → session.Manager.ListAll(states)
+→ every in-memory session, all projects, filtered by state (empty = all) → `SortForAttention`:
+waiting > busy > rest, then `lastActiveAt` (else `createdAt`) desc → 200 Session[]
+(the app's "Needs you" strip). To change order: `SortForAttention` (summary.go).
+
 ### Sessions (ACP) - claude
 
 Agent Client Protocol: JSON-RPC over the agent's stdin/stdout, one provider-neutral protocol
@@ -308,9 +318,9 @@ To change path-escape rules: `internal/project/project.go` (`Registry.ResolvePat
 
 Files: registry.go, notifier.go, fcm.go
 
-POST /v1/devices → api.handleRegisterDevice → notify.Registry.Register(fcmToken)
+POST /v1/devices {fcmToken, runnerRef?} → api.handleRegisterDevice → notify.Registry.Register(fcmToken, runnerRef)
 → new device (server-generated id) or, if that token is already registered, updates its
-  registeredAt in place (no duplicate) → persists the full device list to
+  registeredAt + runnerRef in place (no duplicate) → persists the full device list to
   `$RELAY_HOME/devices.json` (atomic temp-file + rename, mode 0o600) → 200 Device
 
 notify.NewRegistry() (called from `main.go`, unchanged signature) resolves the devices file
@@ -330,6 +340,11 @@ session.Manager.awaitExit / session.Manager.Stop → on transition to StateFinis
 session.Manager.notifyFinished (async, via `Manager.OnFinished` hook set in main.go)
 → for each notify.Registry.List() device → notify.Notifier.NotifySessionFinished(device, session)
   (failures are logged, never block or fail the session transition)
+
+Push data: every payload (`sessionFinishedData` / `sessionNeedsInputData` / `runnerSuspendingData`
+in fcm.go) carries `runnerRef` = the device's registered value ("" if the phone never sent one)
+→ the app maps a push back to the runner that sent it. devices.json files written before
+runnerRef existed load fine (field just empty until the phone re-registers).
 
 To change the notifier: env `RELAY_FCM_CREDENTIALS` → path to a Google service-account JSON key.
 Unset/missing/unreadable/malformed → `notify.NewNotifier` returns a no-op that logs "FCM not
@@ -689,6 +704,10 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | WoL broadcast send / SO_BROADCAST | `internal/wol/broadcast_unix.go`, `broadcast_windows.go` |
 | WoL target port / broadcast address | `internal/wol/wol.go` constants |
 | Device registration (dedupe by token) | `internal/notify/registry.go` (`Registry.Register`) |
+| Device `runnerRef` (stored per device, echoed in pushes) | `internal/notify/registry.go` (`Device.RunnerRef`), `internal/api/api.go` (`registerDeviceRequest`) |
+| FCM data payload fields per push type | `internal/notify/fcm.go` (`sessionFinishedData`, `sessionNeedsInputData`, `runnerSuspendingData`) |
+| Runner-wide session list (filter/sort) | `internal/session/summary.go` (`Manager.ListAll`, `SortForAttention`), `internal/api/api.go` (`handleListAllSessions`) |
+| Session `title` / `preview` derivation + rune caps | `internal/session/summary.go` (`summarize`, `oneLine`, `titleMaxRunes`, `previewMaxRunes`), called from `cloneSession` |
 | Device registry persistence path | env `RELAY_HOME` → `internal/notify/registry.go` (`devicesFilePath`), falls back to `~/.relay/devices.json` |
 | Device registry path-injecting constructor (tests) | `internal/notify/registry.go` (`NewRegistryAt`) |
 | FCM credential path | env `RELAY_FCM_CREDENTIALS` → `internal/notify/notifier.go` (`NewNotifier`) |
