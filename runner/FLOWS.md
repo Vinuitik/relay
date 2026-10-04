@@ -269,6 +269,11 @@ To change the phone-activity freshness window: `internal/activity/activity.go`
 To change how local input is read (Windows): `internal/activity/local_windows.go`
 (`LocalIdleTime`).
 
+## Usage recording (decide whether wake/sleep is worth it)
+
+Always-on per-minute activity log + turn spans → `GET /v1/usage` sleep simulation. Full flow:
+`internal/usage/FLOWS.md`.
+
 ## Register an existing project folder + unscoped browse
 
 Files: internal/project/project.go (`RegisterExisting`, `BrowseDir`), internal/project/roots_unix.go,

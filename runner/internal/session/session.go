@@ -136,6 +136,7 @@ type record struct {
 	acp        *acp.Client
 	acpSession string
 	turnActive bool            // a session/prompt call is in flight
+	turnStart  time.Time       // when the in-flight turn began (sendACP); read by runTurn for OnTurn
 	permID     json.RawMessage // JSON-RPC id of the open permission request, nil if none
 	// dormant: an ACP session restored from disk (or whose agent process
 	// died) with no process; the next message resumes it - see ensureAgent.
@@ -197,6 +198,13 @@ type Manager struct {
 	// meaningful one; a raw provider has no notion of turns, so it only ever
 	// fires once, at process exit.
 	OnFinished func(Session)
+
+	// OnTurn, if set, is called (in its own goroutine) once per completed
+	// ACP turn with when the user's message started it and when the agent
+	// finished - however the turn ended (end_turn, cancelled, error). Wired
+	// to internal/usage's recorder in cmd/runnerd/main.go; like OnFinished
+	// it's a hook so session doesn't import usage.
+	OnTurn func(sessionID string, start, end time.Time)
 }
 
 // NewManager creates a session Manager. resolveDir looks up a project's

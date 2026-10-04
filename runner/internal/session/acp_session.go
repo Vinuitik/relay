@@ -204,6 +204,7 @@ func (m *Manager) sendACP(rec *record, text string) error {
 		return ErrTurnInProgress
 	}
 	rec.turnActive = true
+	rec.turnStart = nowT()
 	rec.data.State = StateBusy
 	rec.data.Messages = append(rec.data.Messages, Message{Role: "user", Text: text, At: now()})
 	rec.mu.Unlock()
@@ -224,6 +225,9 @@ func (m *Manager) runTurn(rec *record, text string) {
 
 	rec.mu.Lock()
 	rec.turnActive = false
+	if m.OnTurn != nil {
+		go m.OnTurn(rec.data.ID, rec.turnStart, nowT())
+	}
 	if rec.stopped || isTerminal(rec.data.State) {
 		// Stop() already finalized the session.
 		rec.mu.Unlock()

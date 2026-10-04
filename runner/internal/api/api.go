@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
+	"relay/runner/internal/usage"
 )
 
 // Version is the API version reported by GET /v1/runner/info.
@@ -54,6 +56,9 @@ type Server struct {
 	// ClaudeAuth drives the phone-initiated Claude Code re-login
 	// (/v1/auth/claude*, see auth.go). nil → those endpoints return 503.
 	ClaudeAuth *auth.Manager
+	// Usage serves GET /v1/usage (recorded activity + sleep simulation,
+	// see internal/usage). nil → 503.
+	Usage *usage.Recorder
 
 	// opsMu guards containerOps: per-project background compose
 	// operations (see containers.go). runSync makes them run inline, for
@@ -93,6 +98,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleRegisterDevice))
 	mux.HandleFunc("POST /v1/activity", s.auth(s.handleActivity))
 	mux.HandleFunc("POST /v1/suspend", s.auth(s.handleSuspend))
+	mux.HandleFunc("GET /v1/usage", s.auth(s.handleUsage))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files", s.auth(s.handleListFiles))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files/content", s.auth(s.handleFileContent))
 	mux.HandleFunc("GET /v1/auth/claude", s.auth(s.handleClaudeAuthStatus))
@@ -190,6 +196,42 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		s.Activity.Mark()
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{})
+}
+
+// handleUsage reports recorded usage over the last ?days=N (default 14,
+// 1-90) and simulates idle-suspend for ?limits=5,15,30,60 (minutes).
+func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	if s.Usage == nil {
+		writeError(w, http.StatusServiceUnavailable, "usage recording is not available")
+		return
+	}
+	days := 14
+	if v := r.URL.Query().Get("days"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > usage.RetentionDays {
+			writeError(w, http.StatusBadRequest, "days must be 1-90")
+			return
+		}
+		days = n
+	}
+	limits := usage.DefaultLimits
+	if v := r.URL.Query().Get("limits"); v != "" {
+		limits = nil
+		for _, f := range strings.Split(v, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(f))
+			if err != nil || n < 1 || n > 24*60 {
+				writeError(w, http.StatusBadRequest, "limits must be comma-separated minutes, 1-1440")
+				return
+			}
+			limits = append(limits, n)
+		}
+	}
+	rep, err := s.Usage.Report(days, limits)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {

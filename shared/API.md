@@ -113,6 +113,31 @@ ClaudeAuthResult {
 }
 ```
 
+### UsageReport
+
+```
+UsageReport {
+  from: string, to: string,          // RFC3339 window asked for (now - days .. now)
+  spanMinutes: number,               // from the first recorded minute (or `from`, if later) to `to`
+  observedMinutes: number,           // minutes the runner was up and recording
+  uptimePct: number,                 // observedMinutes / spanMinutes
+  activeMinutes: number,             // minutes with any activity source live
+  bySource: {turn, app, local},      // minutes per source (a minute can count for several)
+  limits: [{
+    idleMinutes: number,             // simulated idle-suspend timeout
+    awakePct: number,                // % of observed minutes it would have been awake
+    wakeups: number,                 // activity arrived while it would have been asleep
+    remoteWakeups: number,           // ...with no local input that minute (needs a wake device)
+    wakeupsPerDay: number, remoteWakeupsPerDay: number
+  }],
+  heatmapActive: number[7][24],      // [weekday 0=Monday][hour], runner's local zone, active minutes
+  heatmapObserved: number[7][24],    // same shape, observed minutes (the denominator)
+  turns: Stats,                      // agent turn durations
+  replyLatency: Stats                // agent turn end -> next user message, same session
+}
+Stats { count, medianSec, p90Sec, meanSec, totalSec }
+```
+
 ## Endpoints
 
 | Method | Path | Body | Response | Notes |
@@ -137,6 +162,7 @@ ClaudeAuthResult {
 | POST | `/v1/devices` | `{fcmToken: string, runnerRef?: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner (`runnerRef`: the address the phone uses for this runner, e.g. its Tailscale hostname - stored and echoed in every push; re-registering overwrites it), so the runner can notify it on session-finish (or on suspend, see below). Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
 | POST | `/v1/suspend` | - | `202 {}` | manually suspends this machine to sleep (S3 on Linux, Modern Standby on Windows) right now, instead of waiting for the idle timeout. `409` if any session is currently busy (never kills active work); `503` if the runner wasn't started with `RELAY_IDLE_SUSPEND_ENABLED=true` — this endpoint deliberately reuses that same opt-in gate, see runner/FLOWS.md "Idle-suspend". |
 | POST | `/v1/activity` | - | `202 {}` | tells the runner "the phone app is in the foreground right now" — one of the signals idle-suspend uses to decide whether to suspend the machine, alongside session busy/idle state and local keyboard/mouse input. Call every 30s while, and only while, the app is in the foreground; stop calling when it's backgrounded or closed. Always accepted, even if idle-suspend is disabled on this runner — see runner/FLOWS.md "Idle-suspend". |
+| GET | `/v1/usage?days=<1-90>&limits=<m1,m2,...>` | - | `200 UsageReport` | recorded activity + idle-suspend simulation (nothing is ever suspended). `days` default 14, `limits` default `5,15,30,60` (minutes, 1-1440). Recording is always on, independent of `RELAY_IDLE_SUSPEND_ENABLED`; data is kept 90 days. `400` bad params, `503` recorder failed to start. See runner/internal/usage/FLOWS.md. |
 | GET | `/v1/projects/{projectId}/files?path=<relative>` | - | `200 FileEntry[]` | lists a directory within the project. `path` omitted/empty = project root. `400` if `path` escapes the project directory (`../`) or isn't a directory. Read-only — see ARCHITECTURE.md "Runner responsibilities". |
 | GET | `/v1/projects/{projectId}/files/content?path=<relative>` | - | `200 FileContent` | returns one file's text content. `400` if `path` is missing/escapes the project dir/is a directory, `404` if it doesn't exist, `413` if over 1MiB, `415` if it looks binary (a null byte in the first 512 bytes). |
 | GET | `/v1/auth/claude` | - | `200 ClaudeAuthStatus` | Claude Code login state on this runner. `503` if the `claude` CLI isn't found (`RELAY_CLAUDE_CLI` / PATH). |

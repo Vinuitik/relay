@@ -25,6 +25,7 @@ import (
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
+	"relay/runner/internal/usage"
 )
 
 func main() {
@@ -140,6 +141,21 @@ func main() {
 	// and only when idle-suspend is enabled below). See internal/activity.
 	tracker := activity.NewTracker()
 	srv.Activity = tracker
+
+	// Usage recorder: always on (independent of idle-suspend) - logs which
+	// activity sources were live each minute plus every agent turn, so
+	// GET /v1/usage can simulate how much this machine would sleep. See
+	// internal/usage.
+	if rec, err := usage.NewRecorder(filepath.Join(cfg.RelayHome, "usage")); err != nil {
+		log.Printf("usage recording disabled: %v", err)
+	} else {
+		rec.Busy = func() bool { busy, _ := sessions.IdleStatus(); return busy }
+		rec.AppLast = tracker.LastActive
+		rec.LocalIdle = activity.LocalIdleTime
+		sessions.OnTurn = rec.RecordTurn
+		srv.Usage = rec
+		go rec.Run(make(chan struct{}))
+	}
 
 	// Claude re-login from the phone (/v1/auth/claude*). After a successful
 	// login, idle claude agents are restarted so they read the new
