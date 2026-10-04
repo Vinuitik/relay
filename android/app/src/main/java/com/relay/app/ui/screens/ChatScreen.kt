@@ -12,7 +12,9 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -78,7 +80,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -303,8 +307,12 @@ private fun Transcript(vm: ChatViewModel, session: Session, onSignIn: () -> Unit
                     when {
                         isTool(message) -> ToolRow(message)
                         message.kind == "quota" || message.kind == "auth" -> ProblemCard(message, onSignIn)
-                        message.role == "user" -> UserBubble(message.text, optimistic = index >= messages.size)
-                        else -> MarkdownText(text = message.text, color = MaterialTheme.colorScheme.onSurface)
+                        message.role == "user" -> MessageActions(message.text, onEdit = { vm.input = it }) {
+                            UserBubble(message.text, optimistic = index >= messages.size)
+                        }
+                        else -> MessageActions(message.text, onEdit = null) {
+                            MarkdownText(text = message.text, color = MaterialTheme.colorScheme.onSurface)
+                        }
                     }
                 }
             }
@@ -365,6 +373,38 @@ private fun AppearOnce(animate: Boolean, modifier: Modifier, content: @Composabl
             translationY = (1f - progress.value) * shift
         },
     ) { content() }
+}
+
+/**
+ * Long-press a message → Copy, and for your own messages "Edit & resend" (puts the text back in
+ * the composer). One haptic on open.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MessageActions(text: String, onEdit: ((String) -> Unit)?, content: @Composable () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    val haptics = LocalHapticFeedback.current
+    Box(
+        Modifier.fillMaxWidth().combinedClickable(
+            onClick = {},
+            onLongClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); open = true },
+        ),
+    ) {
+        content()
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text("Copy") },
+                onClick = { clipboard.setText(AnnotatedString(text)); open = false },
+            )
+            if (onEdit != null) {
+                DropdownMenuItem(
+                    text = { Text("Edit & resend") },
+                    onClick = { onEdit(text); open = false },
+                )
+            }
+        }
+    }
 }
 
 @Composable

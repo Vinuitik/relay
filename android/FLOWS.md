@@ -265,7 +265,8 @@ Files: UsageScreen.kt, UsageViewModel.kt (`savings()`), AppPrefsRepository.kt (`
 MainActivity.kt (`pingActivityWhileForeground`), RelayApiService.kt (`usage()`, `activity()`)
 
 ```
-RunnerListScreen row ⋮ → Usage → Routes.USAGE "r/{host}/usage"
+RunnerListScreen row ⋮ → Usage  |  Home runner switcher ▾ → "Usage · <runner>" (or Home ⋮ with one runner)
+  → Routes.USAGE "r/{host}/usage"
   → UsageViewModel.refresh() → GET /v1/usage?days=N  (7/14/30/90 chips, default 14)
   → UsageScreen: Measured · If it slept when idle (per limit) · When you use it (heatmap) ·
                  Agent turns · Assumptions
@@ -526,6 +527,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Last-route restore | `ui/navigation/RelayNavHost.kt` (`RESTORE_PATTERN`, restore `LaunchedEffect`), `MainActivity.kt` (`restoreLastRoute`) |
 | Current runner / last route / last provider prefs | `data/AppPrefsRepository.kt` |
 | Usage screen layout / heatmap | `ui/screens/UsageScreen.kt` |
+| Chat long-press: Copy / Edit & resend | `ui/screens/ChatScreen.kt` (`MessageActions`) |
 | £/yr + payback math | `ui/screens/UsageViewModel.kt` (`savings()`) |
 | Usage cost defaults / storage | `data/AppPrefsRepository.kt` (`UsageCosts`, `usageCosts()`) |
 | Foreground activity ping | `MainActivity.kt` (`pingActivityWhileForeground`, `ACTIVITY_PING_MS`) |

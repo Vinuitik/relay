@@ -199,6 +199,7 @@ fun RelayNavHost(
                 lastProvider = lastProvider,
                 onSwitchRunner = { r -> scope.launch { prefs.setCurrentRunner(r.hostname) } },
                 onManageRunners = { goRunners(navController) },
+                onUsage = { navController.navigate(Routes.usage(runner.hostname)) },
                 onOpenProject = { pid, tab -> navController.navigate(Routes.project(runner.hostname, pid, tab)) },
                 onOpenChat = { pid, sid -> navController.navigate(Routes.chat(runner.hostname, pid, sid)) },
                 onPickFolder = { navController.navigate(Routes.folderPicker(runner.hostname)) },

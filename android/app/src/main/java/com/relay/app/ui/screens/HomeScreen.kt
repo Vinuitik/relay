@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -94,6 +95,7 @@ fun HomeScreen(
     lastProvider: String,
     onSwitchRunner: (KnownRunner) -> Unit,
     onManageRunners: () -> Unit,
+    onUsage: () -> Unit,
     onOpenProject: (projectId: String, tab: String) -> Unit,
     onOpenChat: (projectId: String, sessionId: String) -> Unit,
     onPickFolder: () -> Unit,
@@ -120,6 +122,7 @@ fun HomeScreen(
                             onOpen = { vm.checkOnline(runners) },
                             onSwitch = onSwitchRunner,
                             onManageRunners = onManageRunners,
+                            onUsage = onUsage,
                         )
                     }
                 },
@@ -135,6 +138,11 @@ fun HomeScreen(
                                     text = { Text("Manage runners") },
                                     leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
                                     onClick = { menu = false; onManageRunners() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Usage") },
+                                    leadingIcon = { Icon(Icons.Outlined.Insights, contentDescription = null) },
+                                    onClick = { menu = false; onUsage() },
                                 )
                             }
                         }
@@ -253,6 +261,7 @@ private fun RunnerSwitcher(
     onOpen: () -> Unit,
     onSwitch: (KnownRunner) -> Unit,
     onManageRunners: () -> Unit,
+    onUsage: () -> Unit,
 ) {
     val single = runners.size <= 1
     var expanded by remember { mutableStateOf(false) }
@@ -299,6 +308,11 @@ private fun RunnerSwitcher(
                 text = { Text("Manage runners") },
                 leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
                 onClick = { expanded = false; onManageRunners() },
+            )
+            DropdownMenuItem(
+                text = { Text("Usage · ${current.label}") },
+                leadingIcon = { Icon(Icons.Outlined.Insights, contentDescription = null) },
+                onClick = { expanded = false; onUsage() },
             )
         }
     }
