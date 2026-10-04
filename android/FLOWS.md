@@ -248,6 +248,15 @@ To change wording/error mapping: `SignInViewModel.explain()`; steps/layout: `Cod
 `ApprovalStep`; provider rows: `ProviderRow`. Runner side (recipes, CLI process, URL/code
 capture): runner/FLOWS.md "Sign-in relay".
 
+## Runner can't update (banner)
+
+Files: HomeViewModel.kt (`updateStuck`), HomeScreen.kt (`UpdateStuckBanner`), model/Models.kt (`UpdateStatus`)
+
+`HomeViewModel.refresh` → `runnerInfo()` (failure ignored) → `update.stuck` (`failures >= 3`, ~30 min of
+failed keeperd checks) → red banner at the top of Home: "Runner can't update · failing since <time>" +
+the last error. Cleared on the next refresh after a working check. Server side: runner/FLOWS.md "keeperd".
+To change the threshold: `UpdateStatus.stuck`.
+
 ## Manual suspend ("Sleep") / remove runner
 
 Files: RunnerListScreen.kt (`suspendRunner`), network/RelayApiService.kt (`suspend()`)
@@ -575,6 +584,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Last-route restore | `ui/navigation/RelayNavHost.kt` (`RESTORE_PATTERN`, restore `LaunchedEffect`), `MainActivity.kt` (`restoreLastRoute`) |
 | Current runner / last route / last provider prefs | `data/AppPrefsRepository.kt` |
 | "On this computer" chats (VS Code's) | `ui/screens/ProjectViewModel.kt` (`laptopChats`, `continueLaptopChat`), `ProjectScreen.kt` (`LaptopChatRow`), `RelayApiService.listAgentChats` |
+| "Runner can't update" banner | `ui/screens/HomeScreen.kt` (`UpdateStuckBanner`), `HomeViewModel.updateStuck`, `UpdateStatus.stuck` |
 | Usage screen layout / heatmap | `ui/screens/UsageScreen.kt` |
 | Chat long-press: Copy / Edit & resend | `ui/screens/ChatScreen.kt` (`MessageActions`) |
 | Model / effort / fast picker (chip above composer) | `ui/screens/ChatScreen.kt` (`AgentConfigChip`), `ChatViewModel.setConfig`, runner `session/config.go` |

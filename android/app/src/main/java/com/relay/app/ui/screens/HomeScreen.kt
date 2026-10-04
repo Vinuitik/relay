@@ -63,6 +63,7 @@ import com.relay.app.model.ContainersStatus
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
 import com.relay.app.model.Session
+import com.relay.app.model.UpdateStatus
 import com.relay.app.ui.components.FullScreenError
 import com.relay.app.ui.components.RefreshableBox
 import com.relay.app.ui.components.SessionStateChip
@@ -175,6 +176,7 @@ fun HomeScreen(
                     needsYou = vm.needsYou,
                     containers = vm.containers,
                     offline = error != null,
+                    updateStuck = vm.updateStuck,
                     onRetry = { vm.refresh() },
                     onAddProject = { showAddSheet = true },
                     onOpenProject = onOpenProject,
@@ -335,12 +337,35 @@ private fun OnlineLamp(online: Boolean?) {
     )
 }
 
+/** keeperd can't update this runner - shown so a stuck updater isn't silent (runner/FLOWS.md "keeperd"). */
+@Composable
+private fun UpdateStuckBanner(st: UpdateStatus) {
+    val since = st.failingSince?.let { relativeTime(it) }.orEmpty()
+    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text(
+                if (since.isNotEmpty()) "Runner can't update · failing since $since" else "Runner can't update",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            st.lastError?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun HomeList(
     projects: List<Project>,
     needsYou: List<Session>,
     containers: Map<String, ContainersStatus>,
     offline: Boolean,
+    updateStuck: UpdateStatus?,
     onRetry: () -> Unit,
     onAddProject: () -> Unit,
     onOpenProject: (String, String) -> Unit,
@@ -367,6 +392,9 @@ private fun HomeList(
                     }
                 }
             }
+        }
+        if (updateStuck != null) {
+            item(key = "update-stuck") { UpdateStuckBanner(updateStuck) }
         }
         if (needsYou.isNotEmpty()) {
             item(key = "needs-header") { SectionLabel("Needs you") }

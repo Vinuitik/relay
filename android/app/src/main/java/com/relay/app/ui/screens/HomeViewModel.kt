@@ -9,6 +9,7 @@ import com.relay.app.model.ContainersStatus
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
 import com.relay.app.model.Session
+import com.relay.app.model.UpdateStatus
 import com.relay.app.network.NewProjectRequest
 import com.relay.app.network.NewSessionRequest
 import com.relay.app.network.RelayApiClient
@@ -48,6 +49,10 @@ class HomeViewModel : ViewModel() {
     var online by mutableStateOf<Map<String, Boolean>>(emptyMap())
         private set
 
+    /** keeperd's updates have been failing for a while (see [UpdateStatus.stuck]); null if fine/unknown. */
+    var updateStuck by mutableStateOf<UpdateStatus?>(null)
+        private set
+
     private var loadJob: Job? = null
     private val containerJobs = mutableMapOf<String, Job>()
 
@@ -58,6 +63,7 @@ class HomeViewModel : ViewModel() {
         if (switched) {
             projects = null
             needsYou = emptyList()
+            updateStuck = null
             containers = emptyMap()
             error = null
         }
@@ -77,6 +83,7 @@ class HomeViewModel : ViewModel() {
                 online = online + (r.hostname to true)
                 // "Needs you" is secondary - its failure doesn't fail the screen.
                 needsYou = runCatching { api.listAllSessions("waiting,busy") }.getOrDefault(needsYou)
+                runCatching { api.runnerInfo() }.onSuccess { info -> updateStuck = info.update?.takeIf { it.stuck } }
                 list.forEach { refreshContainers(it.id) }
             } catch (e: Exception) {
                 error = friendlyErrorMessage(e, r)

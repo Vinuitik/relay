@@ -84,7 +84,21 @@ data class RunnerInfo(
     val version: String,
     // This runner's LAN network in CIDR form (e.g. "192.168.1.0/24"), null if undetectable.
     val localSubnet: String? = null,
+    // keeperd's last self-update check; null if the runner isn't managed by keeperd (or it's too old).
+    val update: UpdateStatus? = null,
 )
+
+/** keeperd's record of its update checks (runner/internal/updatestatus). */
+data class UpdateStatus(
+    val keeperVersion: String,
+    val lastCheckAt: String,
+    val lastError: String? = null,
+    val failingSince: String? = null,
+    val failures: Int = 0,
+) {
+    /** Worth warning about: 3+ checks in a row failed (~30 min), not one network hiccup. */
+    val stuck: Boolean get() = failures >= 3
+}
 
 /** A runner the phone has been manually pointed at (see ARCHITECTURE.md "Registration"). */
 data class KnownRunner(
