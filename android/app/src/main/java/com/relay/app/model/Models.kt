@@ -144,3 +144,18 @@ data class ContainerInfo(
     val state: String, // docker's state: "running", "exited", ...
     val composeFile: String,
 )
+
+/**
+ * Claude Code's login on the runner - response of `GET /v1/auth/claude` and of
+ * `POST /v1/auth/claude/start` / `finish` (those fill only [state] + [url] / [message]).
+ * [state]: "idle" | "awaiting_code" | "signed_in" | "failed". See
+ * [com.relay.app.ui.components.ClaudeSignInSheet].
+ */
+data class ClaudeAuthStatus(
+    val state: String,
+    /** The Claude sign-in page to open on the phone (present while "awaiting_code"). */
+    val url: String? = null,
+    val message: String? = null,
+    val loggedIn: Boolean = false,
+    val email: String? = null,
+)

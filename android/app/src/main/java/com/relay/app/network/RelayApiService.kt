@@ -1,6 +1,7 @@
 package com.relay.app.network
 
 import com.relay.app.model.BrowseResult
+import com.relay.app.model.ClaudeAuthStatus
 import com.relay.app.model.ContainersStatus
 import com.relay.app.model.Device
 import com.relay.app.model.FileContent
@@ -26,6 +27,8 @@ data class DeviceRegistrationRequest(val fcmToken: String, val runnerRef: String
 data class StartContainersRequest(val file: String)
 data class SetModeRequest(val modeId: String)
 data class PermissionRequest(val optionId: String)
+/** The code the Claude sign-in page shows after login, pasted on the phone. */
+data class ClaudeAuthFinishRequest(val code: String)
 
 /**
  * Retrofit mirror of shared/API.md's v1 endpoint table. Endpoints whose response body carries no
@@ -137,4 +140,18 @@ interface RelayApiService {
         @Path("projectId") projectId: String,
         @Query("path") path: String,
     ): FileContent
+
+    /** Claude Code's login state on the runner (+ account email when signed in). */
+    @GET("v1/auth/claude")
+    suspend fun claudeAuthStatus(): ClaudeAuthStatus
+
+    /** Starts `claude` sign-in on the runner; returns `awaiting_code` + the sign-in page [url].
+     * `503` = the runner can't find the claude CLI. */
+    @POST("v1/auth/claude/start")
+    suspend fun claudeAuthStart(): ClaudeAuthStatus
+
+    /** Hands the pasted code to the waiting sign-in. `400` empty code, `409` no sign-in in
+     * progress, `503` claude CLI not found. Returns `signed_in` or `failed` + message. */
+    @POST("v1/auth/claude/finish")
+    suspend fun claudeAuthFinish(@Body request: ClaudeAuthFinishRequest): ClaudeAuthStatus
 }

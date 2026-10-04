@@ -46,6 +46,7 @@ import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.model.KnownRunner
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.friendlyErrorMessage
+import com.relay.app.ui.components.ClaudeSignInSheet
 import com.relay.app.ui.components.EmptyState
 import com.relay.app.ui.theme.codeSmall
 import kotlinx.coroutines.launch
@@ -66,6 +67,7 @@ fun RunnerListScreen(
     var confirmRemoveRunner by remember { mutableStateOf<KnownRunner?>(null) }
     var confirmSuspendRunner by remember { mutableStateOf<KnownRunner?>(null) }
     var renamingRunner by remember { mutableStateOf<KnownRunner?>(null) }
+    var signingInRunner by remember { mutableStateOf<KnownRunner?>(null) }
 
     /**
      * Calls `POST /v1/suspend` on the runner directly (no WorkManager indirection - the user is
@@ -126,6 +128,7 @@ fun RunnerListScreen(
             onRunnerSelected = onRunnerSelected,
             onRename = { renamingRunner = it },
             onSleep = { confirmSuspendRunner = it },
+            onSignIn = { signingInRunner = it },
             onRemove = { confirmRemoveRunner = it },
         )
     }
@@ -200,6 +203,11 @@ fun RunnerListScreen(
         )
     }
 
+    // Success state stays up (with Done) - there's no chat here to go back to.
+    signingInRunner?.let { runner ->
+        ClaudeSignInSheet(runner = runner, onDismiss = { signingInRunner = null }, onSignedIn = {})
+    }
+
     confirmSuspendRunner?.let { runner ->
         AlertDialog(
             onDismissRequest = { confirmSuspendRunner = null },
@@ -223,8 +231,8 @@ fun RunnerListScreen(
 }
 
 /**
- * Manage runners body. Row tap = make it the current runner (Home). Rename / Sleep / Remove live
- * in the row ⋮; Sleep and Remove are confirmed by the caller's dialogs.
+ * Manage runners body. Row tap = make it the current runner (Home). Rename / Sleep / Sign in to
+ * Claude / Remove live in the row ⋮; Sleep and Remove are confirmed by the caller's dialogs.
  */
 @Composable
 private fun RunnerList(
@@ -234,6 +242,7 @@ private fun RunnerList(
     onRunnerSelected: (KnownRunner) -> Unit,
     onRename: (KnownRunner) -> Unit,
     onSleep: (KnownRunner) -> Unit,
+    onSignIn: (KnownRunner) -> Unit,
     onRemove: (KnownRunner) -> Unit,
 ) {
     Scaffold(
@@ -286,6 +295,10 @@ private fun RunnerList(
                                         DropdownMenuItem(
                                             text = { Text("Sleep") },
                                             onClick = { showMenu = false; onSleep(runner) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Sign in to Claude") },
+                                            onClick = { showMenu = false; onSignIn(runner) },
                                         )
                                         HorizontalDivider()
                                         DropdownMenuItem(

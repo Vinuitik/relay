@@ -85,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import com.relay.app.model.Message
 import com.relay.app.model.PendingPermission
 import com.relay.app.model.Session
+import com.relay.app.ui.components.ClaudeSignInSheet
 import com.relay.app.ui.components.FullScreenError
 import com.relay.app.ui.components.SkeletonRows
 import com.relay.app.ui.theme.FullShape
@@ -106,6 +107,8 @@ fun ChatScreen(
     val session = vm.session
     val haptics = LocalHapticFeedback.current
     val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var signInOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(vm) {
         vm.events.collect { ev ->
@@ -137,7 +140,7 @@ fun ChatScreen(
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when {
-                    session != null -> Transcript(vm, session)
+                    session != null -> Transcript(vm, session, onSignIn = { signInOpen = true })
                     vm.loadError != null -> FullScreenError(vm.loadError.orEmpty(), onRetry = vm::retryLoad)
                     else -> SkeletonRows(count = 4)
                 }
@@ -174,6 +177,19 @@ fun ChatScreen(
                 },
             )
         }
+    }
+
+    // Login-expired card → phone-side sign-in. The card stays in history; on success the sheet
+    // closes and the Snackbar says what to do next.
+    if (signInOpen) {
+        ClaudeSignInSheet(
+            runner = vm.runner,
+            onDismiss = { signInOpen = false },
+            onSignedIn = {
+                signInOpen = false
+                scope.launch { snackbar.showSnackbar("Signed in - send your message again", withDismissAction = true) }
+            },
+        )
     }
 }
 
@@ -213,7 +229,7 @@ private fun ChatOverflow(onOpenFiles: () -> Unit) {
  * → "↓ New" pill instead.
  */
 @Composable
-private fun Transcript(vm: ChatViewModel, session: Session) {
+private fun Transcript(vm: ChatViewModel, session: Session, onSignIn: () -> Unit) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val messages = session.messages
@@ -286,7 +302,7 @@ private fun Transcript(vm: ChatViewModel, session: Session) {
                 AppearOnce(animate, Modifier.padding(top = top)) {
                     when {
                         isTool(message) -> ToolRow(message)
-                        message.kind == "quota" || message.kind == "auth" -> ProblemCard(message)
+                        message.kind == "quota" || message.kind == "auth" -> ProblemCard(message, onSignIn)
                         message.role == "user" -> UserBubble(message.text, optimistic = index >= messages.size)
                         else -> MarkdownText(text = message.text, color = MaterialTheme.colorScheme.onSurface)
                     }
@@ -488,23 +504,30 @@ private fun PermissionCard(pp: PendingPermission, onChoose: (String) -> Unit, mo
 
 /**
  * A provider problem the runner flagged (Message.kind): quota used up, or login expired.
- * Shown as an interlock card so it can't be mistaken for an agent reply.
+ * Shown as an interlock card so it can't be mistaken for an agent reply. Login expired gets a
+ * "Sign in again" button → [ClaudeSignInSheet] (via [onSignIn]).
  */
 @Composable
-private fun ProblemCard(message: Message) {
-    val (title, hint) = when (message.kind) {
-        "quota" -> "Quota exhausted" to "Your Claude subscription limit is used up. Sessions work " +
-            "again once it resets."
-        else -> "Claude login expired" to "Sign in again on the runner (claude auth login)."
+private fun ProblemCard(message: Message, onSignIn: () -> Unit) {
+    val auth = message.kind != "quota"
+    val (title, hint) = if (auth) {
+        "Claude login expired" to null
+    } else {
+        "Quota exhausted" to "Your Claude subscription limit is used up. Sessions work again once it resets."
     }
     InterlockCard(
         container = MaterialTheme.colorScheme.errorContainer,
         content = MaterialTheme.colorScheme.onErrorContainer,
     ) {
         Text(title, style = MaterialTheme.typography.titleSmall)
-        Text(text = hint, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+        if (hint != null) {
+            Text(text = hint, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+        }
         // The provider's own wording carries the reset time ("resets 5pm").
         Text(text = message.text, style = MaterialTheme.typography.codeSmall, modifier = Modifier.padding(top = 8.dp))
+        if (auth) {
+            Button(onClick = onSignIn, modifier = Modifier.padding(top = 12.dp)) { Text("Sign in again") }
+        }
     }
 }
 
