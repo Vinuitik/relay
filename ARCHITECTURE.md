@@ -53,7 +53,10 @@ wanting to keep a laptop on all day to bridge the gap.
   - track busy/idle state explicitly (own state file written by the agent-runner wrapper,
     not inferred from CPU/session presence) — this is what the idle-suspend script checks
     before ever suspending
-  - file read/write scoped to that project's directory only, never the whole filesystem
+  - file reading scoped to that project's directory only, never the whole filesystem
+  - git (status/diff/stage/commit/branches/push/pull) on the project's repo - the one way the
+    phone changes project files (decided 2026-10-04; there is still no general file write)
+  - sign-in relay: runs CLI logins (claude, gh, gcloud) and hands the browser step to the phone
   - create-new-project endpoint (scaffolds a dir, registers it)
 - **Wake path:** Android app sends WoL magic packet over the tailnet to the target machine's
   always-reachable Tailscale peer — or, if the target machine is fully off (and thus off the

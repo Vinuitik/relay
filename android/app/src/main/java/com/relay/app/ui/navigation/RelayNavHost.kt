@@ -43,6 +43,7 @@ import com.relay.app.model.KnownRunner
 import com.relay.app.ui.screens.ChatScreen
 import com.relay.app.ui.screens.ChatViewModel
 import com.relay.app.ui.screens.ContainersViewModel
+import com.relay.app.ui.screens.GitViewModel
 import com.relay.app.ui.screens.FileBrowserViewModel
 import com.relay.app.ui.screens.FolderPickerScreen
 import com.relay.app.ui.screens.HomeScreen
@@ -267,10 +268,12 @@ fun RelayNavHost(
             val vm: ProjectViewModel = viewModel(factory = viewModelFactory { initializer { ProjectViewModel(runner, projectId) } })
             val filesVm: FileBrowserViewModel = viewModel(factory = viewModelFactory { initializer { FileBrowserViewModel(runner, projectId) } })
             val containersVm: ContainersViewModel = viewModel(factory = viewModelFactory { initializer { ContainersViewModel(runner, projectId) } })
+            val gitVm: GitViewModel = viewModel(factory = viewModelFactory { initializer { GitViewModel(runner, projectId) } })
             ProjectScreen(
                 vm = vm,
                 filesVm = filesVm,
                 containersVm = containersVm,
+                gitVm = gitVm,
                 initialTab = entry.arguments?.getString("tab") ?: ProjectTab.CHATS,
                 lastProvider = lastProvider,
                 onProviderUsed = { p -> scope.launch { prefs.setLastProvider(p) } },

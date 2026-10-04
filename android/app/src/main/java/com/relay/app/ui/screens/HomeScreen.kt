@@ -79,6 +79,7 @@ import kotlinx.coroutines.launch
 object ProjectTab {
     const val CHATS = "chats"
     const val FILES = "files"
+    const val GIT = "git"
     const val CONTAINERS = "containers"
 }
 

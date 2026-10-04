@@ -59,10 +59,10 @@ import com.relay.app.ui.components.relativeTime
 import com.relay.app.ui.theme.RelayMotion
 import kotlinx.coroutines.launch
 
-private val TABS = listOf(ProjectTab.CHATS to "Chats", ProjectTab.FILES to "Files", ProjectTab.CONTAINERS to "Containers")
+private val TABS = listOf(ProjectTab.CHATS to "Chats", ProjectTab.FILES to "Files", ProjectTab.GIT to "Git", ProjectTab.CONTAINERS to "Containers")
 
 /**
- * Project screen: title = project name, tabs Chats | Files | Containers (crossfade 150ms, no
+ * Project screen: title = project name, tabs Chats | Files | Git | Containers (crossfade 150ms, no
  * slide - DESIGN.md Motion). Each tab's state lives in its own ViewModel scoped to this back-stack
  * entry, so tab switches and returning from a chat never blank the content.
  */
@@ -71,6 +71,7 @@ fun ProjectScreen(
     vm: ProjectViewModel,
     filesVm: FileBrowserViewModel,
     containersVm: ContainersViewModel,
+    gitVm: GitViewModel,
     initialTab: String,
     lastProvider: String,
     onProviderUsed: (String) -> Unit,
@@ -128,6 +129,7 @@ fun ProjectScreen(
         ) { t ->
             when (t) {
                 ProjectTab.FILES -> FileBrowserContent(filesVm)
+                ProjectTab.GIT -> GitContent(gitVm)
                 ProjectTab.CONTAINERS -> ContainersContent(containersVm)
                 else -> ChatsContent(
                     vm = vm,

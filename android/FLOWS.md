@@ -11,7 +11,7 @@ RelayFirebaseMessagingService.kt, RegisterDeviceWorker.kt
 ## Scope
 
 The app is deliberately down to one core loop: **pair a runner → Home (projects + Needs you) →
-Project (Chats | Files | Containers) → chat**, plus a read-only file browser and FCM push. A 2026-09-20 pass deleted everything built
+Project (Chats | Files | Git | Containers) → chat**, plus a read-only file browser, a Git tab and FCM push. A 2026-09-20 pass deleted everything built
 ahead of that loop — home-screen widget, uptime dashboard, Room offline cache, Wake-on-LAN
 config, generated friendly names, in-app update prompt, bulk container start/stop, and the
 old auth-login relay (rebuilt 2026-10-04 as a sign-in sheet - see "Sign-in relay"). See
@@ -25,7 +25,7 @@ Design source: DESIGN.md "Navigation & flow". Routes in `RelayNavHost.Routes`:
 |---|---|---|
 | `home` | HomeScreen | current runner = `AppPrefsRepository.currentRunner` (fallback: first runner) |
 | `runners` | RunnerListScreen ("Manage runners") | start destination when no runners exist |
-| `r/{host}/p/{projectId}?tab={chats\|files\|containers}` | ProjectScreen | tab arg = initial tab |
+| `r/{host}/p/{projectId}?tab={chats\|files\|git\|containers}` | ProjectScreen | tab arg = initial tab |
 | `r/{host}/p/{projectId}/s/{sessionId}` | ChatScreen | deep link `relay://r/{host}/p/{projectId}/s/{sessionId}` |
 | `r/{host}/pick-folder` | FolderPickerScreen | |
 
@@ -43,12 +43,12 @@ MainActivity → RelayNavHost → waits for first DataStore read (runners, lastR
   ExtendedFAB "Add project" → ModalBottomSheet: Register existing folder → `pick-folder`;
   New empty project → name dialog → `POST /v1/projects {name}`.
   To change: HomeScreen.kt (`HomeList`, `ProjectRow`, `RunnerSwitcher`, `Wordmark`).
-- Project: title = project name, `PrimaryTabRow` Chats | Files | Containers, Crossfade 150ms.
+- Project: title = project name, `PrimaryTabRow` Chats | Files | Git | Containers, Crossfade 150ms.
   Chats: rows = `Session.displayTitle` (title, else provider) · relative time + preview · StatusChip,
   sorted waiting first then newest `activityAt`. ExtendedFAB "New chat" → create with
   `lastProvider` → Chat; long-press → provider list (`AppPrefsRepository.KNOWN_PROVIDERS`).
   Empty → inline composer: first message = `createSession` + `sendMessage` → Chat.
-  Files tab = `FileBrowserContent`, Containers tab = `ContainersContent` (no own top bar).
+  Files tab = `FileBrowserContent`, Git tab = `GitContent`, Containers tab = `ContainersContent` (no own top bar).
   To change: ProjectScreen.kt (`ChatsContent`, `NewChatFab`, `FirstMessageComposer`).
 - Manage runners: tap row → becomes current runner → Home. Row ⋮ = Rename / Usage / Sign-ins / Sleep / Remove
   (Sleep + Remove confirmed). ExtendedFAB "Pair runner" → QR (Crossfade 200ms, same screen).
@@ -105,6 +105,7 @@ Screen state lives in ViewModels scoped to the NavBackStackEntry (`viewModel()` 
 | ProjectViewModel | project (name), sessions, refreshing, error, creating, missing | init + `refreshIfLoaded()` on return |
 | FileBrowserViewModel | pathSegments, entries, viewingFile, fileText, errors | init + per directory |
 | ContainersViewModel | status, error, opStartedAt | polled while the Containers tab is visible |
+| GitViewModel | status, log, branches, loadError, actionError, busy, message, diff | polled while the Git tab is visible |
 | ChatViewModel | session, loadError, projectName, input, sending, pendingText, events (Snackbar) | init → poll loop; `listProjects` once for the subtitle |
 
 Rules (DESIGN.md "States"): `null` data = never loaded → `SkeletonRows`; error with no data →
@@ -338,6 +339,36 @@ chat round-trips (ViewModel on the Project entry).
 
 To change: `ui/screens/FileBrowserScreen.kt`.
 
+## Git tab
+
+Files: ui/screens/GitScreen.kt (`GitViewModel`, `GitContent`), network/RelayApiService.kt
+(`git*`), model/Models.kt (`GitStatus`, `GitFile`, `GitDiff`, `GitCommit`, `GitBranch`)
+
+Project › Git → `GitContent(GitViewModel)` → `pollWhileVisible`: `GET …/git` every 10s, 1.5s while
+a push/pull/fetch runs; log re-fetched only when branch/ahead/behind changed or an op ended.
+Not a repo → `EmptyState`. Pull-to-refresh = status + `fetch` (so ↓ counts are real).
+
+LazyColumn:
+- `BranchCard`: branch ▾ → `BranchMenu` ("New branch…" → `NewBranchDialog` → switch -c; local
+  branches ✓ current; remote-only ones dimmed → `switch --track`) · "origin/main · ↑1 ↓0" / "Not
+  published yet" / "No remote" · Fetch | Pull n | Push n / Publish · 4dp progress slot ·
+  `OpResult`: "Pushing…" / "Pushed." / git's error. Auth failure with a provider → "Sign in to
+  GitHub and retry" → `SignInSheet(provider)` → on success `retryLast()` (re-POSTs the same op);
+  without one (ssh, other host) → "no working credentials for this remote" + git's text.
+- `CommitBox`: message (≤4 lines) + "Commit N staged" / "Stage all & commit" (stages first).
+- "Staged (n)" + Unstage all, "Changes (n)" + Stage all: `FileRow` = checkbox (stage/unstage
+  that path) · name + dir / "from <old>" / conflict · XY letter (`StatusLetter`). A partially staged
+  file shows in both lists. Tap → `DiffView` (in place, Back closes): +/- lines on success/error
+  chip colours, hunks in primary, header lines dropped.
+- "Recent commits": subject · short hash · author · relative time; the first `ahead` are
+  marked "not pushed".
+
+Errors: local action refusals → `actionError` (git's `{error}` text) in the branch card until the
+next action; load failure with no data → `FullScreenError`.
+
+To change polling: `GitViewModel.pollWhileVisible`. Labels/buttons: `BranchCard`, `OpResult`,
+`CommitBox`. Runner side: runner/FLOWS.md "Git".
+
 ## FCM device registration
 
 `RelayFirebaseMessagingService.onNewToken(token)` → enqueues `RegisterDeviceWorker` (WorkManager)
@@ -558,6 +589,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Permission card (sticky) + interlock bar | `ui/screens/ChatScreen.kt` (`StickyPermission`, `PermissionCard`, `InterlockCard`) |
 | Chat follow-bottom / "↓ New" pill / item enter animation | `ui/screens/ChatScreen.kt` (`Transcript`, `STICK_DELTA`, `AppearOnce`) |
 | Sign-in sheet (steps, wording, 503/409/404/400 mapping, device-flow polling) | `ui/components/SignInSheet.kt` (`SignInSheet`, `SignInViewModel.explain`, `POLL_MS`) |
+| Git tab (branch card, commit box, file lists, diff, sign-in retry) | `ui/screens/GitScreen.kt` |
 | Runner ⋮ Sign-ins list | `ui/components/SignInSheet.kt` (`SignInsSheet`, `ProviderRow`) |
 | Re-login entry points | `ui/screens/ChatScreen.kt` (`ProblemCard` "Sign in again", `signInOpen` + Snackbar), `ui/screens/RunnerListScreen.kt` (row ⋮ "Sign-ins", `signingInRunner`) |
 | Re-login API calls / types | `network/RelayApiService.kt` (`claudeAuthStatus`/`claudeAuthStart`/`claudeAuthFinish`, `ClaudeAuthFinishRequest`), `model/Models.kt` (`ClaudeAuthStatus`) |

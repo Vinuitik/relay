@@ -60,11 +60,12 @@ type Server struct {
 	// see internal/usage). nil → 503.
 	Usage *usage.Recorder
 
-	// opsMu guards containerOps: per-project background compose
+	// opsMu guards containerOps and gitOps: per-project background compose
 	// operations (see containers.go). runSync makes them run inline, for
 	// tests.
 	opsMu        sync.Mutex
 	containerOps map[string]containerOp
+	gitOps       map[string]gitOp // per-project git operations (git.go), same opsMu
 	runSync      bool
 }
 
@@ -100,6 +101,17 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/activity", s.auth(s.handleActivity))
 	mux.HandleFunc("POST /v1/suspend", s.auth(s.handleSuspend))
 	mux.HandleFunc("GET /v1/usage", s.auth(s.handleUsage))
+	mux.HandleFunc("GET /v1/projects/{projectId}/git", s.auth(s.handleGitStatus))
+	mux.HandleFunc("GET /v1/projects/{projectId}/git/diff", s.auth(s.handleGitDiff))
+	mux.HandleFunc("GET /v1/projects/{projectId}/git/log", s.auth(s.handleGitLog))
+	mux.HandleFunc("GET /v1/projects/{projectId}/git/branches", s.auth(s.handleGitBranches))
+	mux.HandleFunc("POST /v1/projects/{projectId}/git/stage", s.auth(s.handleGitStage))
+	mux.HandleFunc("POST /v1/projects/{projectId}/git/unstage", s.auth(s.handleGitUnstage))
+	mux.HandleFunc("POST /v1/projects/{projectId}/git/commit", s.auth(s.handleGitCommit))
+	mux.HandleFunc("POST /v1/projects/{projectId}/git/switch", s.auth(s.handleGitSwitch))
+	mux.HandleFunc("POST /v1/projects/{projectId}/git/push", s.auth(s.handleGitPush))
+	mux.HandleFunc("POST /v1/projects/{projectId}/git/pull", s.auth(s.handleGitPull))
+	mux.HandleFunc("POST /v1/projects/{projectId}/git/fetch", s.auth(s.handleGitFetch))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files", s.auth(s.handleListFiles))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files/content", s.auth(s.handleFileContent))
 	mux.HandleFunc("GET /v1/auth", s.auth(s.handleAuthList))

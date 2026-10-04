@@ -104,6 +104,33 @@ BrowseResult {
 
 `Project` also gains `activeComposeFile?: string`.
 
+### GitStatus (and Git types)
+
+All paths are relative to the **repository root** (the project dir may be a subfolder of it).
+
+```
+GitStatus {
+  isRepo: boolean,          // false = plain folder; every other field empty
+  branch: string,           // "" when detached
+  detached: boolean,
+  upstream?: string,        // "origin/main"; absent = branch not published yet
+  ahead: number, behind: number,   // vs upstream, as of the last fetch
+  files: GitFile[],         // at most 500
+  truncated?: boolean,      // more changed paths than that
+  remoteUrl?: string,       // push remote URL, embedded credentials removed
+  operation: "" | "pushing" | "pulling" | "fetching" | "local",
+  lastOp?: "push" | "pull" | "fetch",   // last finished network op (in memory, lost on restart)
+  lastError?: string,       // its failure, git's own message
+  lastOutput?: string,      // its output on success
+  authFailed?: boolean,     // lastError was missing/invalid credentials
+  needsAuth?: string        // sign-in relay provider that fixes it ("github"), if any
+}
+GitFile { path, origPath?, index, worktree, untracked?, conflicted? }  // index/worktree = git XY letter, "." = unchanged
+GitDiff { path, staged, diff, truncated? }   // unified diff, capped at 256 KiB
+GitCommit { hash, short, author, time /* unix s */, subject }
+GitBranch { name /* "origin/x" for a remote one */, remote, current, upstream? }
+```
+
 ### AuthStatus / AuthResult (sign-in relay)
 
 `{provider}` is one of `claude` (paste-code), `github` (device flow, `gh`), `gcloud` (paste-code).
@@ -179,6 +206,17 @@ Stats { count, medianSec, p90Sec, meanSec, totalSec }
 | POST | `/v1/activity` | - | `202 {}` | tells the runner "the phone app is in the foreground right now" — one of the signals idle-suspend uses to decide whether to suspend the machine, alongside session busy/idle state and local keyboard/mouse input. Call every 30s while, and only while, the app is in the foreground; stop calling when it's backgrounded or closed. Always accepted, even if idle-suspend is disabled on this runner — see runner/FLOWS.md "Idle-suspend". |
 | GET | `/v1/usage?days=<1-90>&limits=<m1,m2,...>` | - | `200 UsageReport` | recorded activity + idle-suspend simulation (nothing is ever suspended). `days` default 14, `limits` default `5,15,30,60` (minutes, 1-1440). Recording is always on, independent of `RELAY_IDLE_SUSPEND_ENABLED`; data is kept 90 days. `400` bad params, `503` recorder failed to start. See runner/internal/usage/FLOWS.md. |
 | GET | `/v1/projects/{projectId}/files?path=<relative>` | - | `200 FileEntry[]` | lists a directory within the project. `path` omitted/empty = project root. `400` if `path` escapes the project directory (`../`) or isn't a directory. Read-only — see ARCHITECTURE.md "Runner responsibilities". |
+| GET | `/v1/projects/{projectId}/git` | - | `200 GitStatus` | working tree + last network op. Not a repo → `200 {isRepo:false}`. `503` git not installed. |
+| GET | `/v1/projects/{projectId}/git/diff?path=&staged=` | - | `200 GitDiff` | `staged=true`: index vs HEAD; else worktree vs index (whole file for an untracked one). `400` absolute/escaping path. |
+| GET | `/v1/projects/{projectId}/git/log?limit=` | - | `200 GitCommit[]` | HEAD's last `limit` commits (default 30, max 100); `[]` before the first commit. |
+| GET | `/v1/projects/{projectId}/git/branches` | - | `200 GitBranch[]` | local branches, then remote ones no local branch tracks. |
+| POST | `/v1/projects/{projectId}/git/stage` | `{paths?: string[], all?: bool}` | `200 GitStatus` | `git add --all -- paths` (or everything). |
+| POST | `/v1/projects/{projectId}/git/unstage` | `{paths?: string[], all?: bool}` | `200 GitStatus` | `git reset -q -- paths` (or everything); keeps worktree changes. |
+| POST | `/v1/projects/{projectId}/git/commit` | `{message}` | `200 GitStatus` | commits what's staged. `400` empty message / nothing staged. |
+| POST | `/v1/projects/{projectId}/git/switch` | `{branch, create?, remote?}` | `200 GitStatus` | `switch` / `switch -c` / `switch --track <remote>/<b>`. `400` bad name; `409 {error}` = git refused (e.g. local changes would be overwritten). |
+| POST | `/v1/projects/{projectId}/git/push` | - | `202 GitStatus` | background; no upstream → `push -u <remote> HEAD`. Poll GET until `operation` is "". |
+| POST | `/v1/projects/{projectId}/git/pull` | - | `202 GitStatus` | background `pull --ff-only` (never merges; diverged → `lastError`). |
+| POST | `/v1/projects/{projectId}/git/fetch` | - | `202 GitStatus` | background `fetch --prune`. |
 | GET | `/v1/projects/{projectId}/files/content?path=<relative>` | - | `200 FileContent` | returns one file's text content. `400` if `path` is missing/escapes the project dir/is a directory, `404` if it doesn't exist, `413` if over 1MiB, `415` if it looks binary (a null byte in the first 512 bytes). |
 | GET | `/v1/auth` | - | `200 AuthStatus[]` | every provider's login state, in a fixed order (statuses run in parallel, ≤10s each). Missing CLI → `cliFound:false`, not an error. |
 | GET | `/v1/auth/{provider}` | - | `200 AuthStatus` | one provider's login state. `404` unknown provider, `503` if its CLI isn't found (`RELAY_<CLI>_CLI` / PATH). |
@@ -186,6 +224,9 @@ Stats { count, medianSec, p90Sec, meanSec, totalSec }
 | POST | `/v1/auth/{provider}/finish` | `{code: string}` | `200 AuthResult` | paste-code providers only: sends the code from the callback page to the waiting login (can take up to ~60s): `{state:"signed_in", message}` or `{state:"failed", message}`. claude: on success, idle Claude sessions restart their agent silently and resume on the next message (busy ones are left alone). `400` empty code or device-flow provider, `409` no login in progress, `404` / `503` as above. |
 
 Errors: `4xx/5xx` bodies are `{"error": string}`.
+
+Every git endpoint: `404` unknown project, `409` not a repo (except GET `/git`) or another git
+operation running for the project, `503` git not installed.
 
 ## FCM message `data.type` values
 

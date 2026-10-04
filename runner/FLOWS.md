@@ -1,6 +1,6 @@
 # Runner flows
 
-Files: main.go, config.go, project.go, session.go, compose.go, api.go,
+Files: main.go, config.go, project.go, session.go, compose.go, api.go, git.go (internal/git + api),
 registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go
 
 This file covers **`runnerd`** only — the per-machine daemon that runs projects/sessions and
@@ -321,10 +321,48 @@ directory, anything over `maxViewableFileSize` (1MiB), and anything that looks b
 byte in the first 512 bytes, `isBinary`) → `FileContent{path, content}`.
 
 Read-only by design, per ARCHITECTURE.md "Runner responsibilities" - no write/delete/rename
-endpoint exists or is planned for v1.
+(the only way the phone changes files is git, see "Git")endpoint exists or is planned for v1.
 
 To change the size cap: `internal/api/api.go` (`maxViewableFileSize`).
 To change path-escape rules: `internal/project/project.go` (`Registry.ResolvePath`).
+
+## Git (the phone's Git tab)
+
+Files: internal/git/git.go, internal/api/git.go
+
+Every command shells out to the machine's own `git` (`git.run` / `git.runNet`) at the **repo
+root** (`git.Root` = `rev-parse --show-toplevel` of the project dir) with `GIT_TERMINAL_PROMPT=0`,
+`GCM_INTERACTIVE=never`, `GIT_OPTIONAL_LOCKS=0`, `LC_ALL=C`, stdin closed, and a timeout
+(`LocalTimeout` 30s, `NetworkTimeout` 3 min). Nobody is at the PC to answer a prompt, so a missing
+credential fails fast and gets relayed instead of hanging.
+
+GET /v1/projects/{id}/git → `api.gitStatus` → not a repo (`ErrNotRepo`) → `{isRepo:false}` →
+else `git.GetStatus` (`status --porcelain=v2 --branch -z --untracked-files=all` → `ParseStatus`,
+≤ `MaxFiles`) + `remoteURL` (upstream's remote, else origin, else first; `RedactURL` strips
+user:token@) + the project's in-memory `gitOp` (operation, lastOp, lastError, lastOutput,
+needsAuth, authFailed).
+
+Local actions (stage / unstage / commit / switch) → `api.gitLocal` → refused (409) while any git
+op runs for the project (`beginGitOp`) → `git.Stage` (`add --all -- paths`), `Unstage`
+(`reset -q -- paths`), `Commit` (`diff --cached --quiet` → `ErrNothingStaged`; `commit -q -m`),
+`Switch` (`check-ref-format --branch`; `switch` / `-c` / `--track`) → fresh status. git's own
+refusals come back as `409 {error: <git's message>}`. Paths: `checkPath` rejects absolute and `..`.
+
+Network actions (push / pull / fetch) → `api.gitNetwork` → `beginGitOp("pushing"…)` → 202 →
+background: `git.Push` (no upstream → `push -u <remote> HEAD`), `Pull` (`pull --ff-only` - a pull
+from the phone never merges or leaves conflicts), `Fetch` (`fetch --prune`) → on error:
+`IsAuthError(output)` (regex `authFailRe`: "could not read Username", "Authentication failed",
+"Permission denied (publickey)", GCM's "Cannot prompt…", 401/403) → `authFailed` +
+`AuthProvider(remoteURL)` → "github" for https://github.com remotes, else "" → stored as `needsAuth`.
+The phone then opens that sign-in (see "Sign-in relay") and re-POSTs the same op.
+
+To change what counts as an auth failure: `git.authFailRe`. To map another host to a provider:
+`git.AuthProvider`. To change pull strategy: `git.Pull`. Diff: `git.GetDiff` (`--cached` for
+staged; untracked → `diff --no-index -- /dev/null <path>`, exit 1 accepted), capped at `MaxDiffBytes`.
+
+Verified 2026-10-04 on Windows (Git 2.54, natively-run test binary) and Linux (Git 2.39): status,
+stage/unstage, commit, publish/push, fetch, ff pull, branch switch incl. remote tracking. A real
+no-credential https push fails with "could not read Username … terminal prompts disabled".
 
 ## Device registration + notify-on-finish
 
@@ -580,6 +618,19 @@ literal junk directory with that exact garbled name behind on disk (found and de
 now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code path).
 
 ## Technology notes
+
+- **Git runs as the runner's user with that user's config and credentials.** Commits are authored
+  with that user's `user.name`/`user.email` (unset → git refuses, message shown on the phone).
+  Push auth = whatever git is configured with (on this PC: gh for github.com, GCM for the rest).
+  GCM can't pop its window (`GCM_INTERACTIVE=never`); ssh keys with a passphrase and no agent
+  fail - there is no passphrase relay `[NOT IMPLEMENTED]`.
+- **Git op state is in memory and per project**: `lastOp`/`lastError` are lost on runner restart;
+  one op at a time per project (409 otherwise). Agents editing the same repo at the same time can
+  still collide on `index.lock` - git's error is shown as is.
+- **`pull --ff-only` only**: a diverged branch can't be pulled from the phone (no merge/rebase,
+  no conflict resolution `[NOT IMPLEMENTED]`); ask an agent or do it at the PC.
+- **Status is not fetched automatically**: ahead/behind are as of the last fetch (the phone's
+  pull-to-refresh also fetches).
 
 - **The sign-in relay depends on each CLI's output wording**: URLs/codes are found by regex
   (`Provider.URLRe` / `CodeRe`), success by exit 0 or `SuccessText`. A CLI update that changes
@@ -837,6 +888,11 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Unscoped directory browse (project picking) | `internal/project/project.go` (`BrowseDir`), `internal/api/api.go` (`handleBrowse`) |
 | Filesystem roots listing | `internal/project/roots_unix.go`, `roots_windows.go` (`listRoots`) |
 | Folder picker start folder (Documents) | `internal/project/project.go` (`documentsDir`, `StartPath`), `roots_*.go` (`knownDocumentsDir`) |
+| Git endpoints, op state, HTTP status mapping | `internal/api/git.go` (`handleGit*`, `gitLocal`, `gitNetwork`, `beginGitOp`, `writeGitError`) |
+| Git commands, env, timeouts | `internal/git/git.go` (`run`, `runNet`, `env`, `LocalTimeout`, `NetworkTimeout`) |
+| Status parsing / limits | `internal/git/git.go` (`ParseStatus`, `MaxFiles`, `MaxDiffBytes`, `MaxLog`) |
+| Push/pull/fetch behaviour | `internal/git/git.go` (`Push`, `Pull`, `Fetch`) |
+| Auth-failure detection → sign-in provider | `internal/git/git.go` (`authFailRe`, `IsAuthError`, `AuthProvider`) |
 | Sign-in relay endpoints / HTTP status mapping | `internal/api/auth.go` (`handleAuth*`, `authManager`, `writeAuthError`) |
 | Add / change a sign-in provider (CLI, args, URL/code regex, status parse) | `internal/auth/providers.go` (`Providers`, `Claude`, `GitHub`, `GoogleCloud`) |
 | Login process, state machine, timeouts | `internal/auth/auth.go` (`Manager.Start`/`Finish`/`awaitApproval`/`complete`/`expire`, `NewManager`) |

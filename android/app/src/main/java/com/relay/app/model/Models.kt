@@ -169,6 +169,49 @@ data class AuthStatus(
     val cliFound: Boolean = true,
 )
 
+/** Mirrors shared/API.md `GitStatus` - `GET /v1/projects/{id}/git` and every git action's answer. */
+data class GitStatus(
+    val isRepo: Boolean = false,
+    /** "" when detached. */
+    val branch: String = "",
+    val detached: Boolean = false,
+    val upstream: String? = null,
+    val ahead: Int = 0,
+    val behind: Int = 0,
+    val files: List<GitFile> = emptyList(),
+    val truncated: Boolean = false,
+    val remoteUrl: String? = null,
+    /** "" | "pushing" | "pulling" | "fetching" (| "local" for an instant). */
+    val operation: String = "",
+    /** "push" | "pull" | "fetch" - the last finished network operation. */
+    val lastOp: String? = null,
+    val lastError: String? = null,
+    val lastOutput: String? = null,
+    /** Sign-in relay provider that would fix [lastError] ("github"), else null. */
+    val needsAuth: String? = null,
+    val authFailed: Boolean = false,
+)
+
+/** One changed path; [index]/[worktree] are git's XY letters ("." = unchanged). */
+data class GitFile(
+    val path: String,
+    val origPath: String? = null,
+    val index: String = ".",
+    val worktree: String = ".",
+    val untracked: Boolean = false,
+    val conflicted: Boolean = false,
+) {
+    val staged: Boolean get() = !untracked && index != "."
+    val unstaged: Boolean get() = untracked || worktree != "."
+}
+
+data class GitDiff(val path: String, val staged: Boolean, val diff: String, val truncated: Boolean = false)
+
+data class GitCommit(val hash: String, val short: String, val author: String, val time: Long, val subject: String)
+
+/** [name] is "origin/feature" for a remote branch with no local branch yet. */
+data class GitBranch(val name: String, val remote: Boolean = false, val current: Boolean = false, val upstream: String? = null)
+
 /** Mirrors shared/API.md `UsageReport` - `GET /v1/usage`: recorded activity + idle-suspend simulation. */
 data class UsageReport(
     val from: String,

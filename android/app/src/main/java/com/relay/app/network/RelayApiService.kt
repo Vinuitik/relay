@@ -2,6 +2,10 @@ package com.relay.app.network
 
 import com.relay.app.model.BrowseResult
 import com.relay.app.model.AuthStatus
+import com.relay.app.model.GitBranch
+import com.relay.app.model.GitCommit
+import com.relay.app.model.GitDiff
+import com.relay.app.model.GitStatus
 import com.relay.app.model.ContainersStatus
 import com.relay.app.model.Device
 import com.relay.app.model.FileContent
@@ -29,6 +33,9 @@ data class StartContainersRequest(val file: String)
 data class SetModeRequest(val modeId: String)
 data class SetConfigRequest(val configId: String, val value: String)
 data class PermissionRequest(val optionId: String)
+data class GitPathsRequest(val paths: List<String> = emptyList(), val all: Boolean = false)
+data class GitCommitRequest(val message: String)
+data class GitSwitchRequest(val branch: String, val create: Boolean = false, val remote: Boolean = false)
 /** The code a paste-code sign-in page shows after login, pasted on the phone. */
 data class AuthFinishRequest(val code: String)
 
@@ -157,6 +164,46 @@ interface RelayApiService {
         @Path("projectId") projectId: String,
         @Query("path") path: String,
     ): FileContent
+
+    /** Git tab (shared/API.md "Git"). `isRepo:false` for a plain folder - not an error. */
+    @GET("v1/projects/{projectId}/git")
+    suspend fun gitStatus(@Path("projectId") projectId: String): GitStatus
+
+    @GET("v1/projects/{projectId}/git/diff")
+    suspend fun gitDiff(
+        @Path("projectId") projectId: String,
+        @Query("path") path: String,
+        @Query("staged") staged: Boolean,
+    ): GitDiff
+
+    @GET("v1/projects/{projectId}/git/log")
+    suspend fun gitLog(@Path("projectId") projectId: String, @Query("limit") limit: Int = 30): List<GitCommit>
+
+    @GET("v1/projects/{projectId}/git/branches")
+    suspend fun gitBranches(@Path("projectId") projectId: String): List<GitBranch>
+
+    /** Local actions answer with fresh [GitStatus]; git's refusals are `409 {error}`, bad input `400`. */
+    @POST("v1/projects/{projectId}/git/stage")
+    suspend fun gitStage(@Path("projectId") projectId: String, @Body request: GitPathsRequest): GitStatus
+
+    @POST("v1/projects/{projectId}/git/unstage")
+    suspend fun gitUnstage(@Path("projectId") projectId: String, @Body request: GitPathsRequest): GitStatus
+
+    @POST("v1/projects/{projectId}/git/commit")
+    suspend fun gitCommit(@Path("projectId") projectId: String, @Body request: GitCommitRequest): GitStatus
+
+    @POST("v1/projects/{projectId}/git/switch")
+    suspend fun gitSwitch(@Path("projectId") projectId: String, @Body request: GitSwitchRequest): GitStatus
+
+    /** Network actions: `202` + status with `operation` set; poll [gitStatus] until it's "". */
+    @POST("v1/projects/{projectId}/git/push")
+    suspend fun gitPush(@Path("projectId") projectId: String): GitStatus
+
+    @POST("v1/projects/{projectId}/git/pull")
+    suspend fun gitPull(@Path("projectId") projectId: String): GitStatus
+
+    @POST("v1/projects/{projectId}/git/fetch")
+    suspend fun gitFetch(@Path("projectId") projectId: String): GitStatus
 
     /** Every sign-in the runner can relay, with login state (sign-in relay). */
     @GET("v1/auth")
