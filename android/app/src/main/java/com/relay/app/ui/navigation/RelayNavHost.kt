@@ -133,7 +133,9 @@ fun RelayNavHost(
     val runners by runnersRepository.runners.collectAsState(initial = init.runners)
     val currentHost by prefs.currentRunner.collectAsState(initial = init.currentHost)
     val lastProvider by prefs.lastProvider.collectAsState(initial = AppPrefsRepository.DEFAULT_PROVIDER)
-    val startDestination = remember { if (init.runners.isEmpty()) Routes.RUNNERS else Routes.HOME }
+    // Runner selection is always the root, so Back from Home lands on it (then exits the app).
+    // With runners paired, Home is pushed on top at launch.
+    val startDestination = Routes.RUNNERS
 
     fun runnerFor(entry: NavBackStackEntry): KnownRunner? {
         val host = entry.arguments?.getString("host").orEmpty()
@@ -149,11 +151,16 @@ fun RelayNavHost(
         onDispose { navController.removeOnDestinationChangedListener(listener) }
     }
 
-    // Restore once per cold launch; a stale project is caught by ProjectViewModel.missing.
+    // Once per launch: push Home over the runner list, then (cold launch only) restore the last
+    // Project/Chat. Skipped when a push deep link already opened a chat. A stale project is
+    // caught by ProjectViewModel.missing.
     var restored by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        if (restored || !restoreLastRoute || startDestination != Routes.HOME) return@LaunchedEffect
+        if (restored) return@LaunchedEffect
         restored = true
+        if (init.runners.isEmpty() || navController.currentDestination?.route != Routes.RUNNERS) return@LaunchedEffect
+        navController.navigate(Routes.HOME)
+        if (!restoreLastRoute) return@LaunchedEffect
         val m = RESTORE_PATTERN.find(init.lastRoute.orEmpty()) ?: return@LaunchedEffect
         val host = Uri.decode(m.groupValues[1])
         if (init.runners.none { it.hostname == host }) return@LaunchedEffect
@@ -176,10 +183,8 @@ fun RelayNavHost(
         composable(Routes.HOME) {
             val runner = runners.find { it.hostname == currentHost } ?: runners.firstOrNull()
             if (runner == null) {
-                // Last runner removed - Manage runners becomes the root.
-                LaunchedEffect(Unit) {
-                    navController.navigate(Routes.RUNNERS) { popUpTo(Routes.HOME) { inclusive = true } }
-                }
+                // Last runner removed - back to the runner list (the root).
+                LaunchedEffect(Unit) { goRunners(navController) }
                 return@composable
             }
             val vm: HomeViewModel = viewModel()
@@ -189,7 +194,7 @@ fun RelayNavHost(
                 runners = runners,
                 lastProvider = lastProvider,
                 onSwitchRunner = { r -> scope.launch { prefs.setCurrentRunner(r.hostname) } },
-                onManageRunners = { navController.navigate(Routes.RUNNERS) },
+                onManageRunners = { goRunners(navController) },
                 onOpenProject = { pid, tab -> navController.navigate(Routes.project(runner.hostname, pid, tab)) },
                 onOpenChat = { pid, sid -> navController.navigate(Routes.chat(runner.hostname, pid, sid)) },
                 onPickFolder = { navController.navigate(Routes.folderPicker(runner.hostname)) },
@@ -276,12 +281,19 @@ fun RelayNavHost(
     }
 }
 
-/** Back to Home, reusing it if it's on the stack (keeps its ViewModel), else as the new root. */
+/** Back to Home, reusing it if it's on the stack (keeps its ViewModel), else right above the runner list. */
 private fun goHome(navController: NavHostController) {
     if (!navController.popBackStack(Routes.HOME, inclusive = false)) {
         navController.navigate(Routes.HOME) {
-            popUpTo(navController.graph.id) { inclusive = true }
+            popUpTo(Routes.RUNNERS)
         }
+    }
+}
+
+/** Back to the runner list - always the root of the back stack. */
+private fun goRunners(navController: NavHostController) {
+    if (!navController.popBackStack(Routes.RUNNERS, inclusive = false)) {
+        navController.navigate(Routes.RUNNERS) { popUpTo(navController.graph.id) { inclusive = true } }
     }
 }
 

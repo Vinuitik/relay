@@ -239,7 +239,7 @@ private fun RunnerList(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Manage runners") },
+                title = { Text("Runners") },
                 navigationIcon = {
                     if (onBack != null) {
                         IconButton(onClick = onBack) {
