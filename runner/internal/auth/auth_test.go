@@ -120,7 +120,7 @@ func (r *fakeRunner) Output(ctx context.Context, name string, args ...string) ([
 }
 
 func newTestManager(r *fakeRunner) *Manager {
-	m := NewManager()
+	m := NewManager(Claude())
 	m.Runner = r
 	m.FindCLI = func() (string, error) { return "claude", nil }
 	m.URLTimeout = 300 * time.Millisecond

@@ -38,7 +38,7 @@ class ChatEvent(val message: String, val retry: (() -> Unit)?)
  * user bubble ([pendingText]) shown until the runner echoes it.
  */
 class ChatViewModel(
-    /** Public for the login-expired card's [com.relay.app.ui.components.ClaudeSignInSheet]. */
+    /** Public for the login-expired card's [com.relay.app.ui.components.SignInSheet]. */
     val runner: KnownRunner,
     private val projectId: String,
     private val sessionId: String,

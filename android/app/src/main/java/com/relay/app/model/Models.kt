@@ -148,18 +148,25 @@ data class ContainerInfo(
 )
 
 /**
- * Claude Code's login on the runner - response of `GET /v1/auth/claude` and of
- * `POST /v1/auth/claude/start` / `finish` (those fill only [state] + [url] / [message]).
- * [state]: "idle" | "awaiting_code" | "signed_in" | "failed". See
- * [com.relay.app.ui.components.ClaudeSignInSheet].
+ * One CLI login on the runner (sign-in relay) - response of `GET /v1/auth/{provider}`, one entry
+ * of `GET /v1/auth`, and of `POST …/start` / `finish` (those fill only [state] + [url] /
+ * [userCode] / [message]). [state]: "idle" | "awaiting_code" | "awaiting_approval" | "signed_in" |
+ * "failed". See [com.relay.app.ui.components.SignInSheet].
  */
-data class ClaudeAuthStatus(
+data class AuthStatus(
     val state: String,
-    /** The Claude sign-in page to open on the phone (present while "awaiting_code"). */
+    /** "claude" | "github" | "gcloud" | … - the `{provider}` path segment. */
+    val provider: String = "",
+    val name: String = "",
+    /** The sign-in page to open on the phone (present while awaiting_*). */
     val url: String? = null,
+    /** Device flow only: the one-time code to enter at [url]. */
+    val userCode: String? = null,
     val message: String? = null,
     val loggedIn: Boolean = false,
+    val account: String? = null,
     val email: String? = null,
+    val cliFound: Boolean = true,
 )
 
 /** Mirrors shared/API.md `UsageReport` - `GET /v1/usage`: recorded activity + idle-suspend simulation. */

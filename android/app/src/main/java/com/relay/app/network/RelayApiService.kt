@@ -1,7 +1,7 @@
 package com.relay.app.network
 
 import com.relay.app.model.BrowseResult
-import com.relay.app.model.ClaudeAuthStatus
+import com.relay.app.model.AuthStatus
 import com.relay.app.model.ContainersStatus
 import com.relay.app.model.Device
 import com.relay.app.model.FileContent
@@ -29,8 +29,8 @@ data class StartContainersRequest(val file: String)
 data class SetModeRequest(val modeId: String)
 data class SetConfigRequest(val configId: String, val value: String)
 data class PermissionRequest(val optionId: String)
-/** The code the Claude sign-in page shows after login, pasted on the phone. */
-data class ClaudeAuthFinishRequest(val code: String)
+/** The code a paste-code sign-in page shows after login, pasted on the phone. */
+data class AuthFinishRequest(val code: String)
 
 /**
  * Retrofit mirror of shared/API.md's v1 endpoint table. Endpoints whose response body carries no
@@ -158,17 +158,23 @@ interface RelayApiService {
         @Query("path") path: String,
     ): FileContent
 
-    /** Claude Code's login state on the runner (+ account email when signed in). */
-    @GET("v1/auth/claude")
-    suspend fun claudeAuthStatus(): ClaudeAuthStatus
+    /** Every sign-in the runner can relay, with login state (sign-in relay). */
+    @GET("v1/auth")
+    suspend fun authList(): List<AuthStatus>
 
-    /** Starts `claude` sign-in on the runner; returns `awaiting_code` + the sign-in page [url].
-     * `503` = the runner can't find the claude CLI. */
-    @POST("v1/auth/claude/start")
-    suspend fun claudeAuthStart(): ClaudeAuthStatus
+    /** One provider's login state on the runner (+ account when signed in). */
+    @GET("v1/auth/{provider}")
+    suspend fun authStatus(@Path("provider") provider: String): AuthStatus
 
-    /** Hands the pasted code to the waiting sign-in. `400` empty code, `409` no sign-in in
-     * progress, `503` claude CLI not found. Returns `signed_in` or `failed` + message. */
-    @POST("v1/auth/claude/finish")
-    suspend fun claudeAuthFinish(@Body request: ClaudeAuthFinishRequest): ClaudeAuthStatus
+    /** Starts the provider's CLI login on the runner; returns `awaiting_code` + [AuthStatus.url]
+     * (paste-code) or `awaiting_approval` + url + userCode (device flow). `503` = CLI not found,
+     * `404` = unknown provider. */
+    @POST("v1/auth/{provider}/start")
+    suspend fun authStart(@Path("provider") provider: String): AuthStatus
+
+    /** Hands the pasted code to the waiting sign-in (paste-code providers only). `400` empty code
+     * or device-flow provider, `409` no sign-in in progress, `503` CLI not found. Returns
+     * `signed_in` or `failed` + message. */
+    @POST("v1/auth/{provider}/finish")
+    suspend fun authFinish(@Path("provider") provider: String, @Body request: AuthFinishRequest): AuthStatus
 }

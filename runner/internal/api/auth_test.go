@@ -53,10 +53,24 @@ func TestClaudeAuthEndpoints(t *testing.T) {
 		t.Errorf("unwired status = %d, want 503", rec.Code)
 	}
 
-	m := auth.NewManager()
+	m := auth.NewManager(auth.Claude())
 	m.Runner = stubRunner{}
 	m.FindCLI = func() (string, error) { return "claude", nil }
-	srv.ClaudeAuth = m
+	gh := auth.NewManager(auth.GitHub())
+	gh.FindCLI = func() (string, error) { return "", auth.ErrCLINotFound }
+	srv.Auth = []*auth.Manager{m, gh}
+
+	if rec := doRequest(t, h, http.MethodGet, "/v1/auth/nope", testKey, nil); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown provider = %d, want 404", rec.Code)
+	}
+	if rec := doRequest(t, h, http.MethodPost, "/v1/auth/github/finish", testKey, map[string]string{"code": "x"}); rec.Code != http.StatusBadRequest {
+		t.Errorf("finish on a device-flow provider = %d, want 400", rec.Code)
+	}
+	var list []auth.Status
+	decodeBody(t, doRequest(t, h, http.MethodGet, "/v1/auth", testKey, nil), &list)
+	if len(list) != 2 || list[0].Provider != "claude" || !list[0].CLIFound || !list[0].LoggedIn || list[1].Provider != "github" || list[1].CLIFound {
+		t.Errorf("list = %+v", list)
+	}
 
 	if rec := doRequest(t, h, http.MethodPost, "/v1/auth/claude/start", "", nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("no key = %d, want 401", rec.Code)

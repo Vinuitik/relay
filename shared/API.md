@@ -104,19 +104,25 @@ BrowseResult {
 
 `Project` also gains `activeComposeFile?: string`.
 
-### ClaudeAuthStatus / ClaudeAuthResult
+### AuthStatus / AuthResult (sign-in relay)
+
+`{provider}` is one of `claude` (paste-code), `github` (device flow, `gh`), `gcloud` (paste-code).
 
 ```
-ClaudeAuthStatus {
-  state: "idle" | "awaiting_code" | "signed_in" | "failed",  // last re-login attempt since runner start
-  url?: string,       // only while awaiting_code - open it on the phone to sign in
+AuthStatus {
+  provider: string, name: string,   // "github", "GitHub"
+  state: "idle" | "awaiting_code" | "awaiting_approval" | "signed_in" | "failed",  // last attempt since runner start
+  url?: string,       // only while awaiting_* - open it on the phone to sign in
+  userCode?: string,  // only while awaiting_approval (device flow) - enter it at url
   message?: string,   // failed: why, incl. the CLI's last output lines; signed_in: "Login successful."
-  loggedIn: boolean,  // from `claude auth status --json`, false if unknown
-  email?: string      // the logged-in account, if known
+  loggedIn: boolean,  // from the provider's status command, false if unknown
+  account?: string,   // the logged-in email/username, if known
+  email?: string,     // claude only: same as account (older apps read this)
+  cliFound: boolean   // false = the provider's CLI isn't installed on this runner
 }
-ClaudeAuthResult {
-  state: "awaiting_code" | "signed_in" | "failed",
-  url?: string,       // start only
+AuthResult {
+  state: "awaiting_code" | "awaiting_approval" | "signed_in" | "failed",
+  url?: string, userCode?: string,  // start only
   message?: string
 }
 ```
@@ -174,9 +180,10 @@ Stats { count, medianSec, p90Sec, meanSec, totalSec }
 | GET | `/v1/usage?days=<1-90>&limits=<m1,m2,...>` | - | `200 UsageReport` | recorded activity + idle-suspend simulation (nothing is ever suspended). `days` default 14, `limits` default `5,15,30,60` (minutes, 1-1440). Recording is always on, independent of `RELAY_IDLE_SUSPEND_ENABLED`; data is kept 90 days. `400` bad params, `503` recorder failed to start. See runner/internal/usage/FLOWS.md. |
 | GET | `/v1/projects/{projectId}/files?path=<relative>` | - | `200 FileEntry[]` | lists a directory within the project. `path` omitted/empty = project root. `400` if `path` escapes the project directory (`../`) or isn't a directory. Read-only — see ARCHITECTURE.md "Runner responsibilities". |
 | GET | `/v1/projects/{projectId}/files/content?path=<relative>` | - | `200 FileContent` | returns one file's text content. `400` if `path` is missing/escapes the project dir/is a directory, `404` if it doesn't exist, `413` if over 1MiB, `415` if it looks binary (a null byte in the first 512 bytes). |
-| GET | `/v1/auth/claude` | - | `200 ClaudeAuthStatus` | Claude Code login state on this runner. `503` if the `claude` CLI isn't found (`RELAY_CLAUDE_CLI` / PATH). |
-| POST | `/v1/auth/claude/start` | - | `200 ClaudeAuthResult` | starts `claude auth login` and returns `{state:"awaiting_code", url}` (can take up to ~20s). A login already awaiting a code (< 10 min old) is reused - same `url`. If the CLI never prints a URL: `200 {state:"failed", message}`. The pending login is killed after 10 min without a code. `503` if the CLI isn't found. |
-| POST | `/v1/auth/claude/finish` | `{code: string}` | `200 ClaudeAuthResult` | sends the code shown on the platform.claude.com callback page to the waiting login (can take up to ~60s): `{state:"signed_in", message}` or `{state:"failed", message}`. On success, idle Claude sessions restart their agent silently and resume on the next message (busy ones are left alone). `400` empty code, `409` no login in progress, `503` CLI not found. |
+| GET | `/v1/auth` | - | `200 AuthStatus[]` | every provider's login state, in a fixed order (statuses run in parallel, ≤10s each). Missing CLI → `cliFound:false`, not an error. |
+| GET | `/v1/auth/{provider}` | - | `200 AuthStatus` | one provider's login state. `404` unknown provider, `503` if its CLI isn't found (`RELAY_<CLI>_CLI` / PATH). |
+| POST | `/v1/auth/{provider}/start` | - | `200 AuthResult` | starts the CLI login (can take up to ~20s): paste-code providers → `{state:"awaiting_code", url}`; device flow → `{state:"awaiting_approval", url, userCode}`, then poll `GET /v1/auth/{provider}` until `signed_in`/`failed` (github: runs `gh auth setup-git` after login). A login already waiting (< 10 min old) is reused. If the CLI never prints a URL: `200 {state:"failed", message}`. The pending login is killed after 10 min. `404` / `503` as above. |
+| POST | `/v1/auth/{provider}/finish` | `{code: string}` | `200 AuthResult` | paste-code providers only: sends the code from the callback page to the waiting login (can take up to ~60s): `{state:"signed_in", message}` or `{state:"failed", message}`. claude: on success, idle Claude sessions restart their agent silently and resume on the next message (busy ones are left alone). `400` empty code or device-flow provider, `409` no login in progress, `404` / `503` as above. |
 
 Errors: `4xx/5xx` bodies are `{"error": string}`.
 

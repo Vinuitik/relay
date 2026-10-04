@@ -157,15 +157,18 @@ func main() {
 		go rec.Run(make(chan struct{}))
 	}
 
-	// Claude re-login from the phone (/v1/auth/claude*). After a successful
-	// login, idle claude agents are restarted so they read the new
-	// credentials; busy ones are left alone. See internal/auth.
-	claudeAuth := auth.NewManager()
-	claudeAuth.OnSignedIn = func() {
-		n := sessions.RestartIdleAgents("claude")
-		log.Printf("auth: claude login refreshed; restarted %d idle agent(s)", n)
+	// Sign-in relay (/v1/auth*): one manager per CLI recipe. After a
+	// successful claude login, idle claude agents are restarted so they read
+	// the new credentials; busy ones are left alone. See internal/auth.
+	srv.Auth = auth.NewManagers()
+	for _, m := range srv.Auth {
+		if m.Provider.ID == "claude" {
+			m.OnSignedIn = func() {
+				n := sessions.RestartIdleAgents("claude")
+				log.Printf("auth: claude login refreshed; restarted %d idle agent(s)", n)
+			}
+		}
 	}
-	srv.ClaudeAuth = claudeAuth
 
 	if idleCfg.Enabled {
 		log.Printf("idle: suspend-to-sleep enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)

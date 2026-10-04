@@ -46,7 +46,7 @@ import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.model.KnownRunner
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.friendlyErrorMessage
-import com.relay.app.ui.components.ClaudeSignInSheet
+import com.relay.app.ui.components.SignInsSheet
 import com.relay.app.ui.components.EmptyState
 import com.relay.app.ui.theme.codeSmall
 import kotlinx.coroutines.launch
@@ -207,7 +207,7 @@ fun RunnerListScreen(
 
     // Success state stays up (with Done) - there's no chat here to go back to.
     signingInRunner?.let { runner ->
-        ClaudeSignInSheet(runner = runner, onDismiss = { signingInRunner = null }, onSignedIn = {})
+        SignInsSheet(runner = runner, onDismiss = { signingInRunner = null })
     }
 
     confirmSuspendRunner?.let { runner ->
@@ -304,7 +304,7 @@ private fun RunnerList(
                                             onClick = { showMenu = false; onSleep(runner) },
                                         )
                                         DropdownMenuItem(
-                                            text = { Text("Sign in to Claude") },
+                                            text = { Text("Sign-ins") },
                                             onClick = { showMenu = false; onSignIn(runner) },
                                         )
                                         HorizontalDivider()

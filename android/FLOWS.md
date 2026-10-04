@@ -2,7 +2,7 @@
 
 Files: MainActivity.kt, RelayNavHost.kt, HomeScreen.kt, HomeViewModel.kt, ProjectScreen.kt,
 ProjectViewModel.kt, RunnerListScreen.kt, QrScanScreen.kt, ChatScreen.kt, ChatViewModel.kt, MarkdownText.kt, Theme.kt,
-ClaudeSignInSheet.kt (ClaudeSignInViewModel), UsageScreen.kt (UsageViewModel.kt),
+SignInSheet.kt (SignInViewModel, SignInsSheet), UsageScreen.kt (UsageViewModel.kt),
 FileBrowserScreen.kt (FileBrowserViewModel + FileBrowserContent), ContainersScreen.kt
 (ContainersViewModel + ContainersContent), FolderPickerScreen.kt, ScreenStates.kt,
 KnownRunnersRepository.kt, AppPrefsRepository.kt, RelayApiClient.kt, RelayApiService.kt,
@@ -14,7 +14,7 @@ The app is deliberately down to one core loop: **pair a runner → Home (project
 Project (Chats | Files | Containers) → chat**, plus a read-only file browser and FCM push. A 2026-09-20 pass deleted everything built
 ahead of that loop — home-screen widget, uptime dashboard, Room offline cache, Wake-on-LAN
 config, generated friendly names, in-app update prompt, bulk container start/stop, and the
-old auth-login relay (rebuilt 2026-10-04 as a sign-in sheet - see "Claude re-login"). See
+old auth-login relay (rebuilt 2026-10-04 as a sign-in sheet - see "Sign-in relay"). See
 "Deleted 2026-09-20" at the bottom for what's gone and why, so nobody goes looking for it.
 
 ## Navigation
@@ -50,7 +50,7 @@ MainActivity → RelayNavHost → waits for first DataStore read (runners, lastR
   Empty → inline composer: first message = `createSession` + `sendMessage` → Chat.
   Files tab = `FileBrowserContent`, Containers tab = `ContainersContent` (no own top bar).
   To change: ProjectScreen.kt (`ChatsContent`, `NewChatFab`, `FirstMessageComposer`).
-- Manage runners: tap row → becomes current runner → Home. Row ⋮ = Rename / Usage / Sleep / Remove
+- Manage runners: tap row → becomes current runner → Home. Row ⋮ = Rename / Usage / Sign-ins / Sleep / Remove
   (Sleep + Remove confirmed). ExtendedFAB "Pair runner" → QR (Crossfade 200ms, same screen).
   No runners → `EmptyState` line + "Pair runner" button.
 - Leaving a runner-scoped route for an unknown host → "Unknown runner" placeholder.
@@ -130,7 +130,7 @@ between polls. Poll error with no data → `FullScreenError`; with data → poll
   `agent` → `MarkdownText` on surface (no bubble), `tool` → `ToolRow` (codeSmall, check / error /
   spinner icon). 4dp between consecutive tool rows, 8 otherwise, 16 gutter.
 - Agent message with `kind` `quota`/`auth` → `ProblemCard` (errorContainer + amber interlock bar,
-  provider's own text carries the reset time). `auth` → "Sign in again" Button → see "Claude re-login". FCM `session_finished` with `problem` → push.
+  provider's own text carries the reset time). `auth` → "Sign in again" Button → see "Sign-in relay". FCM `session_finished` with `problem` → push.
 - `pendingPermission` → `StickyPermission` above the composer (not a list item): warning chip
   colours + interlock bar, allow* = Button, reject* = OutlinedButton (error) → `answerPermission`.
   FCM `session_needs_input` → "Agent needs your approval" notification.
@@ -206,29 +206,39 @@ from other devices specifically.
 To change the wording or add another exception type: `network/RelayApiClient.kt`
 (`friendlyErrorMessage`).
 
-## Claude re-login (phone-side `claude auth login`)
+## Sign-in relay (phone-side CLI logins: Claude, GitHub, Google Cloud)
 
-Files: ui/components/ClaudeSignInSheet.kt (`ClaudeSignInSheet`, `ClaudeSignInViewModel`),
-ChatScreen.kt (`ProblemCard`, `signInOpen`), RunnerListScreen.kt (`signingInRunner`),
-network/RelayApiService.kt, model/Models.kt (`ClaudeAuthStatus`)
+Files: ui/components/SignInSheet.kt (`SignInSheet` + `SignInViewModel`, `SignInsSheet` +
+`SignInsViewModel`), ChatScreen.kt (`ProblemCard`, `signInOpen`), RunnerListScreen.kt
+(`signingInRunner`), network/RelayApiService.kt (`authList`/`authStatus`/`authStart`/`authFinish`),
+model/Models.kt (`AuthStatus`)
 
-Entry: Chat `ProblemCard` kind `auth` → "Sign in again" | RunnerListScreen row ⋮ → "Sign in to Claude"
-→ `ClaudeSignInSheet(runner)` (ModalBottomSheet; fresh `ClaudeSignInViewModel` per opening, keyed by a random id)
-→ `init` → `POST /v1/auth/claude/start` → `AwaitingCode(url)` (spinner "Starting sign-in…" meanwhile)
-→ 1 "Open sign-in page" → `Intent.ACTION_VIEW(url)` (no browser → link shown as text)
-→ 2 user signs in, copies the code → "Paste code" field (codeSmall, Paste icon reads clipboard)
-→ "Finish sign-in" → `POST /v1/auth/claude/finish {code}`
-   → `signed_in` → `GET /v1/auth/claude` for email → `SignedIn` → haptic LongPress → `onSignedIn(email)`
-   → `failed` / error → `Failed(message)` + "Try again" (= `start()` again)
-→ Chat: sheet closes + Snackbar "Signed in - send your message again"; the card stays in history.
-→ Runner list: sheet stays on "Signed in as <email> - send your message again" + Done.
+Entries:
+- Chat `ProblemCard` kind `auth` → "Sign in again" → `SignInSheet(provider="claude")`, `doneHint`
+  "send your message again"; on success the sheet closes + Snackbar.
+- Runner row ⋮ → "Sign-ins" → `SignInsSheet` → `GET /v1/auth` → one row per provider: name +
+  account / "Not signed in" / "Not installed on this runner" (disabled) + ✓ or "Sign in" → tap →
+  `SignInSheet(provider)` on top → closing it re-fetches the list.
 
-Errors (`ClaudeSignInViewModel.explain`): 503 → "can't find the claude CLI" + install/PATH hint;
-409 → "sign-in expired before the code arrived"; 400 → inline field error (no restart);
-other → runner's `{error}` or `friendlyErrorMessage`.
+`SignInSheet` (ModalBottomSheet; fresh `SignInViewModel` per opening, keyed by a random id)
+→ `init` → `POST /v1/auth/{provider}/start` (spinner "Starting sign-in…")
+→ `awaiting_code` (claude, gcloud) → `CodeStep`: 1 "Open sign-in page" → `ACTION_VIEW(url)` (no
+  browser → link shown as text) → 2 "Paste code" field (Paste icon reads clipboard) → "Finish
+  sign-in" → `POST …/finish {code}` → `signed_in` → `GET /v1/auth/{provider}` for the account
+→ `awaiting_approval` (github) → `ApprovalStep`: 1 the one-time code, big, + copy icon → 2 "Copy
+  code & open page" (copies, then opens github.com/login/device) → "Waiting for approval - this
+  finishes by itself." → `pollApproval` polls `GET /v1/auth/{provider}` every 2s (`POLL_MS`;
+  transient errors ignored) until `signed_in` / `failed` / anything else (= stopped)
+→ `SignedIn(account)` → haptic LongPress → `onSignedIn(account)`; `Failed(message)` + "Try again".
 
-To change wording/error mapping: `ClaudeSignInViewModel.explain()`; steps/layout: `CodeStep`.
-Runner side (CLI process, URL/code capture): runner/FLOWS.md.
+Errors (`SignInViewModel.explain`): 503 → "can't find the <name> CLI" + install/PATH hint;
+409 → "sign-in expired before the code arrived"; 404 → runner doesn't know this provider (update
+it); 400 on finish → inline field error (no restart); other → runner's `{error}` or
+`friendlyErrorMessage`. `SignInsSheet` on an old runner (404 on `GET /v1/auth`) → "update it".
+
+To change wording/error mapping: `SignInViewModel.explain()`; steps/layout: `CodeStep`,
+`ApprovalStep`; provider rows: `ProviderRow`. Runner side (recipes, CLI process, URL/code
+capture): runner/FLOWS.md "Sign-in relay".
 
 ## Manual suspend ("Sleep") / remove runner
 
@@ -504,7 +514,7 @@ Removed as premature/broken, so the app is only the core loop. Listed so nobody 
 | `data/db/` (Room: Entities/Daos/RelayDatabase), Room+KSP gradle deps, all cache reads/writes in ChatScreen + SessionListScreen | offline cache of sessions/messages | see Technology notes above |
 | `data/WakeViaMatcher.kt`, `KnownRunner.wakeMac`/`wakeViaRunnerId`, "Wake settings" menu item + dialog, "Wake" button, `mac` on `ScannedRunner`, `wake()` API call | Wake-on-LAN config held on the phone | wake is moving to a separate always-on Pi daemon; the phone will not hold wake config |
 | `data/FriendlyNameGenerator.kt` | generated "Adjective Noun" default runner name | replaced by an empty field defaulting to the hostname |
-| "Authenticate agent" menu item, `startAuthLogin()`, `AUTH_LOGIN_CHAT` route, `onAuthLoginStarted` | headless OAuth relay through ChatScreen | premature then; **rebuilt 2026-10-04** as `ClaudeSignInSheet` (login-expired card + runner ⋮) - see "Claude re-login" |
+| "Authenticate agent" menu item, `startAuthLogin()`, `AUTH_LOGIN_CHAT` route, `onAuthLoginStarted` | headless OAuth relay through ChatScreen | premature then; **rebuilt 2026-10-04** as `SignInSheet` (login-expired card + runner ⋮ Sign-ins) - see "Sign-in relay" |
 | `MainActivity.checkForUpdate` / `UpdateAvailableDialog` / `pendingUpdate`, `firebase-appdistribution` dep | in-app "update available" prompt | premature |
 | "Start/Stop all containers" menu items, `ContainersAllWorker`, `startAllContainers()`/`stopAllContainers()`, `ContainerActionResult` | bulk container control per runner | premature; failures were never surfaced |
 
@@ -547,8 +557,9 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Chat state / polling / optimistic send / Snackbar events | `ui/screens/ChatViewModel.kt` (`startPolling`, `send`, `act`) |
 | Permission card (sticky) + interlock bar | `ui/screens/ChatScreen.kt` (`StickyPermission`, `PermissionCard`, `InterlockCard`) |
 | Chat follow-bottom / "↓ New" pill / item enter animation | `ui/screens/ChatScreen.kt` (`Transcript`, `STICK_DELTA`, `AppearOnce`) |
-| Claude re-login sheet (steps, wording, 503/409/400 mapping) | `ui/components/ClaudeSignInSheet.kt` (`ClaudeSignInSheet`, `ClaudeSignInViewModel.explain`) |
-| Re-login entry points | `ui/screens/ChatScreen.kt` (`ProblemCard` "Sign in again", `signInOpen` + Snackbar), `ui/screens/RunnerListScreen.kt` (row ⋮ "Sign in to Claude", `signingInRunner`) |
+| Sign-in sheet (steps, wording, 503/409/404/400 mapping, device-flow polling) | `ui/components/SignInSheet.kt` (`SignInSheet`, `SignInViewModel.explain`, `POLL_MS`) |
+| Runner ⋮ Sign-ins list | `ui/components/SignInSheet.kt` (`SignInsSheet`, `ProviderRow`) |
+| Re-login entry points | `ui/screens/ChatScreen.kt` (`ProblemCard` "Sign in again", `signInOpen` + Snackbar), `ui/screens/RunnerListScreen.kt` (row ⋮ "Sign-ins", `signingInRunner`) |
 | Re-login API calls / types | `network/RelayApiService.kt` (`claudeAuthStatus`/`claudeAuthStart`/`claudeAuthFinish`, `ClaudeAuthFinishRequest`), `model/Models.kt` (`ClaudeAuthStatus`) |
 | Quota / login-expired card + push text | `ui/screens/ChatScreen.kt` (`ProblemCard`), `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
 | Markdown in agent replies | `ui/screens/MarkdownText.kt` (`parseBlocks`, `inline`) |

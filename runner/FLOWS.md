@@ -100,7 +100,7 @@ turn → `markProblemReply` checks this turn's last agent reply (≤300 chars on
 -32000, or text like "OAuth token has expired" / "Please run /login"). `Session.LastProblem()` →
 FCM `session_finished` `problem` field → "Claude quota exhausted" / "Claude login expired" push.
 To change the wording matched: `session/problem.go` (`quotaMarkers`, `authMarkers`).
-Re-login from the phone: see "Claude re-login (from the phone)" below.
+Re-login from the phone: see "Sign-in relay" below.
 
 Permission: agent sends `session/request_permission` → `onRequest`: state `waiting`,
 `Session.pendingPermission {title, toolKind, options}`, `OnNeedsInput` → FCM
@@ -395,46 +395,72 @@ sudo can click a login link. install.sh gets you as close as possible: it
 runs the command and surfaces the URL inline rather than making you run a
 separate step. `claude auth login` / `codex login` are NOT run by
 install.sh. Claude's login (first or expired) is done from the phone instead -
-see "Claude re-login" below. Codex login from the phone: `[NOT IMPLEMENTED]`.
+see "Sign-in relay" below. Codex login from the phone: `[NOT IMPLEMENTED]`.
 
 To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
 
-## Claude re-login (from the phone)
+## Sign-in relay (any CLI login, from the phone)
 
-Files: internal/auth/auth.go, internal/api/auth.go, internal/session/acp_session.go (`RestartIdleAgents`), cmd/runnerd/main.go
+Files: internal/auth/auth.go (`Manager`), internal/auth/providers.go (`Provider` recipes),
+internal/api/auth.go, internal/session/acp_session.go (`RestartIdleAgents`), cmd/runnerd/main.go
 
-For when Claude Code's login expires and nobody is at the PC (the "Claude login expired" push).
+So a missing/expired login (Claude, GitHub, Google Cloud, ...) never needs someone at the PC: the
+runner runs the CLI's own login with no TTY, picks the URL (+ code) out of its output and hands
+the browser part to the phone. One `Manager` per `Provider`; `auth.NewManagers()` builds them all.
 
-Start: POST /v1/auth/claude/start → `api.handleClaudeAuthStart` → `auth.Manager.Start` → already
-`awaiting_code` and < 10 min old? return the same URL → else `FindCLI` (env `RELAY_CLAUDE_CLI`, else
-PATH `claude` / `claude.cmd` / `claude.exe`) → `Runner.Start("claude auth login")` (stdin = pipe, no
-TTY) → `login.watch` streams stdout+stderr, `ParseLoginURL` = first `https://…oauth/authorize…`
-(ANSI stripped) → `{state:"awaiting_code", url}`. No URL within 20s → kill → `failed`.
-To change timeouts: `Manager.URLTimeout` / `CodeTimeout` / `FinishTimeout` in `auth.NewManager`.
+Recipes (`providers.go`, `Providers()` = list order on the phone):
 
-Phone opens the URL → signs in on claude.com → the platform.claude.com callback page shows a code
-→ user pastes it in the app.
+| id | CLI (env override) | login args | shape | after login | status |
+|---|---|---|---|---|---|
+| claude | `claude` (`RELAY_CLAUDE_CLI`) | `auth login` | paste-code | `OnSignedIn` → `RestartIdleAgents("claude")` | `auth status --json` |
+| github | `gh` (`RELAY_GH_CLI`) | `auth login --hostname github.com --git-protocol https --web --scopes workflow` | device flow | `gh auth setup-git --hostname github.com` | `auth status --hostname github.com` |
+| gcloud | `gcloud` (`RELAY_GCLOUD_CLI`) | `auth login --no-launch-browser` | paste-code | - | `auth list --format=json` (ACTIVE) |
 
-Finish: POST /v1/auth/claude/finish `{code}` → `Manager.Finish` → trim → write `code+"\n"` to the
-CLI's stdin → wait ≤ 60s for exit → exit 0 or output contains "Login successful" → `signed_in` →
-`OnSignedIn` → `session.Manager.RestartIdleAgents("claude")`; else `failed`, message = last 5
-output lines (full output in the runner log). The process is always reaped (`login.done`).
-Nobody finishes within 10 min → `Manager.expire` kills it → `failed` ("login timed out").
+- docker: `[NOT IMPLEMENTED]` - `docker login` refuses without a TTY ("cannot perform an
+  interactive login from a non-TTY device"); planned as a phone-typed token → `--password-stdin`.
+- Any other prompt (git askpass, ssh key passphrase): `[NOT IMPLEMENTED]` - planned generic
+  prompt relay.
 
-Restart agents: `RestartIdleAgents` → for each live ACP `claude` session NOT mid-turn (busy or
-waiting on permission are skipped) → detach under `rec.mu` (`acp=nil`, `dormant=true`) → kill the
-agent → `awaitACPExit` sees `rec.acp != client` → no "(agent process exited …)" note → next
-message → `ensureAgent` respawns + `session/resume` with the new credentials. Busy sessions keep
-their old agent (which may still fail on the expired token; the user retries after the turn).
+To add a provider: a `Provider` func in `providers.go` + append it to `Providers()`. Nothing else
+(API routes and the phone's Sign-ins list are generic).
 
-Status: GET /v1/auth/claude → `Manager.Status` → `{state, url (only while awaiting_code),
-message, loggedIn, email}`; loggedIn/email from `claude auth status --json` (10s timeout,
-`ParseAuthStatus`: `loggedIn` must be literally `true`, first `email` found anywhere).
-Errors: 400 empty code, 409 finish with no login in progress, 503 claude CLI not found.
+Start: POST /v1/auth/{provider}/start → `api.handleAuthStart` → `Manager.Start` → a login already
+waiting and < 10 min old? return it → else `Provider.findCLI` → `Runner.Start(cli, LoginArgs)`
+(stdin = pipe) → `login.watch` streams stdout+stderr, `Provider.parse` = `URLRe` (+ `CodeRe`
+group 1 for device flow), ANSI stripped → paste-code: `{state:"awaiting_code", url}`; device
+flow: `{state:"awaiting_approval", url, userCode}` + `awaitApproval` goroutine. Nothing within
+20s → kill → `failed`.
+To change timeouts: `URLTimeout` / `CodeTimeout` / `FinishTimeout` / `StatusTimeout` in `auth.NewManager`.
 
-Verified 2026-10 on Windows (Claude Code 2.1.226): piped stdin prints the URL + "Paste code here
-if prompted >" and "Login successful." on success. The paste-from-another-device step itself is
-not yet verified end-to-end - hence the CLI's last lines in every failure message.
+Paste-code finish: phone opens the URL → signs in → callback page shows a code → user pastes it →
+POST /v1/auth/{provider}/finish `{code}` → `Manager.Finish` → write `code+"\n"` to stdin → wait
+≤ 60s for exit → `complete`.
+
+Device-flow finish: user enters `userCode` at the URL and approves → the CLI notices by itself and
+exits → `awaitApproval` → `complete`. The phone polls GET /v1/auth/{provider} every 2s meanwhile.
+
+`complete`: exit 0 (or `SuccessText` in output) → each `AfterLogin` command (any failure →
+`failed`, "signed in, but `gh auth setup-git` failed") → `signed_in` → `OnSignedIn`; else
+`failed`, message = last 5 output lines (full output in the runner log). The process is always
+reaped (`login.done`). Not finished within 10 min → `Manager.expire` kills it → `failed`.
+
+Restart agents (claude): `RestartIdleAgents` → for each live ACP `claude` session NOT mid-turn
+(busy or waiting on permission are skipped) → detach under `rec.mu` (`acp=nil`, `dormant=true`) →
+kill the agent → `awaitACPExit` sees `rec.acp != client` → no "(agent process exited …)" note →
+next message → `ensureAgent` respawns + `session/resume` with the new credentials.
+
+Status: GET /v1/auth/{provider} → `Manager.Status` → `{provider, name, state, url/userCode (only
+while waiting), message, loggedIn, account, email (claude only), cliFound}`; loggedIn/account from
+the recipe's `ParseStatus` over combined stdout+stderr (gh prints its status to stderr).
+GET /v1/auth → every provider's Status in parallel; a missing CLI is `cliFound:false`, not an error.
+Errors: 400 empty code / finish on a device-flow provider, 404 unknown provider, 409 finish with
+no login in progress, 503 CLI not found.
+
+Verified 2026-10-04 on Windows: claude 2.1.226 (URL + "Paste code here if prompted >"); gh 2.95
+(no TTY → "! First copy your one-time code: XXXX-XXXX" + "https://github.com/login/device", then
+polls, no stdin); gcloud SDK 584 (accounts.google.com URL + "enter the verification code"); all
+three statuses read correctly through the real Manager. The approve-on-phone step itself is not
+yet verified end-to-end for gh/gcloud - hence the CLI's last lines in every failure message.
 
 ## keeperd - keeps the runner running and up to date
 
@@ -555,10 +581,18 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 ## Technology notes
 
-- **Claude re-login depends on the Claude CLI's output wording**: the URL is found by matching
-  `https://…oauth/authorize…`, success by exit 0 or "Login successful". A CLI that changes the
-  URL path, stops printing it without a TTY, or reads the code differently breaks Start/Finish -
-  the failure message carries the CLI's last 5 lines (full output in the runner log).
+- **The sign-in relay depends on each CLI's output wording**: URLs/codes are found by regex
+  (`Provider.URLRe` / `CodeRe`), success by exit 0 or `SuccessText`. A CLI update that changes
+  the URL, the "one-time code:" wording, stops printing without a TTY (docker already refuses), or
+  reads the code differently breaks that provider only - the failure message carries the CLI's
+  last 5 lines (full output in the runner log). Re-probe after CLI upgrades.
+- **`gh auth setup-git` rewrites the runner user's global git config** for github.com
+  (`credential.https://github.com.helper` = "" then `!gh auth git-credential`), which overrides
+  Git Credential Manager for github.com only. gh stores the token in the OS keyring (Windows
+  Credential Manager); on a headless Linux box with no keyring it falls back to plain text in
+  `~/.config/gh/hosts.yml`. Token scopes: repo, read:org, gist, workflow.
+- **One login per provider at a time, state in memory**: a runner restart forgets an in-flight
+  login (the CLI child dies with it); the phone sees `idle` and starts again.
 - **The new credentials are written by the CLI itself** to the runner user's home
   (`~/.claude/.credentials.json`; on macOS the keychain). A runner running as a different user
   than the one whose Claude login the agents use would log the wrong account in. Agents only
@@ -803,11 +837,12 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Unscoped directory browse (project picking) | `internal/project/project.go` (`BrowseDir`), `internal/api/api.go` (`handleBrowse`) |
 | Filesystem roots listing | `internal/project/roots_unix.go`, `roots_windows.go` (`listRoots`) |
 | Folder picker start folder (Documents) | `internal/project/project.go` (`documentsDir`, `StartPath`), `roots_*.go` (`knownDocumentsDir`) |
-| Claude re-login endpoints / HTTP status mapping | `internal/api/auth.go` (`handleClaudeAuth*`, `writeAuthError`) |
-| Claude login process, state machine, timeouts | `internal/auth/auth.go` (`Manager.Start`/`Finish`/`expire`, `NewManager`) |
-| Login URL detection | `internal/auth/auth.go` (`ParseLoginURL`, `loginRe`, `ansiRe`) |
-| `claude auth status --json` parsing | `internal/auth/auth.go` (`ParseAuthStatus`) |
-| claude binary location | env `RELAY_CLAUDE_CLI` → `internal/auth/auth.go` (`FindCLI`) |
-| Restart idle agents after login | `internal/session/acp_session.go` (`RestartIdleAgents`), wired in `cmd/runnerd/main.go` (`claudeAuth.OnSignedIn`) |
-| Fake CLI in tests | `auth.Runner` / `auth.Proc` interfaces (`internal/auth/auth_test.go`) |
+| Sign-in relay endpoints / HTTP status mapping | `internal/api/auth.go` (`handleAuth*`, `authManager`, `writeAuthError`) |
+| Add / change a sign-in provider (CLI, args, URL/code regex, status parse) | `internal/auth/providers.go` (`Providers`, `Claude`, `GitHub`, `GoogleCloud`) |
+| Login process, state machine, timeouts | `internal/auth/auth.go` (`Manager.Start`/`Finish`/`awaitApproval`/`complete`/`expire`, `NewManager`) |
+| Claude login URL detection | `internal/auth/auth.go` (`ParseLoginURL`, `loginRe`, `ansiRe`) |
+| Status parsing | `internal/auth/auth.go` (`ParseAuthStatus`), `providers.go` (`ParseGHStatus`, `ParseGcloudStatus`) |
+| CLI binary locations | env `RELAY_CLAUDE_CLI` / `RELAY_GH_CLI` / `RELAY_GCLOUD_CLI` → `providers.go` (`Provider.findCLI`) |
+| Restart idle agents after claude login | `internal/session/acp_session.go` (`RestartIdleAgents`), wired in `cmd/runnerd/main.go` (claude `OnSignedIn`) |
+| Fake CLIs in tests | `auth.Runner` / `auth.Proc` interfaces (`internal/auth/auth_test.go`, `providers_test.go`) |
 | Laptop auto-start at boot | `install/install-keeperd.ps1` ("Relay keeper" task, see "keeperd"); `start-relay-runner.ps1` is legacy |

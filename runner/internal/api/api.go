@@ -53,9 +53,9 @@ type Server struct {
 	// accepts pings); it's only ever consulted when idle-suspend itself is
 	// enabled, since that's the only thing that reads it.
 	Activity *activity.Tracker
-	// ClaudeAuth drives the phone-initiated Claude Code re-login
-	// (/v1/auth/claude*, see auth.go). nil → those endpoints return 503.
-	ClaudeAuth *auth.Manager
+	// Auth is the sign-in relay, one Manager per provider (/v1/auth*, see
+	// auth.go). Empty → every /v1/auth/{provider} returns 503.
+	Auth []*auth.Manager
 	// Usage serves GET /v1/usage (recorded activity + sleep simulation,
 	// see internal/usage). nil → 503.
 	Usage *usage.Recorder
@@ -102,9 +102,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/usage", s.auth(s.handleUsage))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files", s.auth(s.handleListFiles))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files/content", s.auth(s.handleFileContent))
-	mux.HandleFunc("GET /v1/auth/claude", s.auth(s.handleClaudeAuthStatus))
-	mux.HandleFunc("POST /v1/auth/claude/start", s.auth(s.handleClaudeAuthStart))
-	mux.HandleFunc("POST /v1/auth/claude/finish", s.auth(s.handleClaudeAuthFinish))
+	mux.HandleFunc("GET /v1/auth", s.auth(s.handleAuthList))
+	mux.HandleFunc("GET /v1/auth/{provider}", s.auth(s.handleAuthStatus))
+	mux.HandleFunc("POST /v1/auth/{provider}/start", s.auth(s.handleAuthStart))
+	mux.HandleFunc("POST /v1/auth/{provider}/finish", s.auth(s.handleAuthFinish))
 
 	return mux
 }

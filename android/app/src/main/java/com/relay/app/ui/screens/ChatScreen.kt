@@ -99,7 +99,7 @@ import androidx.compose.ui.unit.dp
 import com.relay.app.model.Message
 import com.relay.app.model.PendingPermission
 import com.relay.app.model.Session
-import com.relay.app.ui.components.ClaudeSignInSheet
+import com.relay.app.ui.components.SignInSheet
 import com.relay.app.ui.components.FullScreenError
 import com.relay.app.ui.components.SkeletonRows
 import com.relay.app.ui.theme.FullShape
@@ -201,8 +201,11 @@ fun ChatScreen(
     // Login-expired card → phone-side sign-in. The card stays in history; on success the sheet
     // closes and the Snackbar says what to do next.
     if (signInOpen) {
-        ClaudeSignInSheet(
+        SignInSheet(
             runner = vm.runner,
+            provider = "claude",
+            providerName = "Claude",
+            doneHint = "send your message again",
             onDismiss = { signInOpen = false },
             onSignedIn = {
                 signInOpen = false
@@ -560,7 +563,7 @@ private fun PermissionCard(pp: PendingPermission, onChoose: (String) -> Unit, mo
 /**
  * A provider problem the runner flagged (Message.kind): quota used up, or login expired.
  * Shown as an interlock card so it can't be mistaken for an agent reply. Login expired gets a
- * "Sign in again" button → [ClaudeSignInSheet] (via [onSignIn]).
+ * "Sign in again" button → [SignInSheet] (via [onSignIn]).
  */
 @Composable
 private fun ProblemCard(message: Message, onSignIn: () -> Unit) {

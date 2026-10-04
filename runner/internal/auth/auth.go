@@ -1,16 +1,22 @@
-// Package auth lets the phone re-log the runner's Claude Code CLI in when
-// its login expires, without anyone at the PC (see runner/FLOWS.md "Claude
-// re-login").
+// Package auth is the sign-in relay: it runs a CLI's login on the runner and
+// hands the browser part to the phone, so an expired or missing login
+// (Claude, GitHub, Google Cloud, ...) never needs someone at the PC (see
+// runner/FLOWS.md "Sign-in relay"). Each CLI is a Provider recipe
+// (providers.go); one Manager per provider.
 //
-//	Start:  spawn `claude auth login` (stdin = pipe) → parse the oauth/authorize
-//	        URL from its output → awaiting_code (process kept alive, killed
-//	        after CodeTimeout without a code)
-//	Finish: write code+"\n" to its stdin → wait for exit → signed_in | failed
-//	        → OnSignedIn (restart idle agents so they pick up the new login)
-//	Status: current state + `claude auth status --json` (loggedIn, email)
+//	Start:  spawn the login (stdin = pipe) → parse URL (+ device code) from
+//	        its output → awaiting_code (paste-code recipes) or
+//	        awaiting_approval (device flow); process kept alive, killed after
+//	        CodeTimeout
+//	Finish: (paste-code only) write code+"\n" to stdin → wait for exit
+//	Device flow: the CLI exits by itself once the user approved → watched in
+//	        the background (awaitApproval)
+//	Either way the exited CLI → complete: AfterLogin commands → signed_in +
+//	        OnSignedIn | failed
+//	Status: current state + the provider's status command (loggedIn, account)
 //
-// Only one login runs at a time. Everything external goes through Runner so
-// tests never spawn the real CLI.
+// Only one login per provider runs at a time. Everything external goes
+// through Runner so tests never spawn the real CLI.
 package auth
 
 import (
@@ -20,10 +26,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -33,17 +37,22 @@ import (
 const (
 	StateIdle         = "idle"          // no login attempted since the runner started
 	StateAwaitingCode = "awaiting_code" // URL handed out, waiting for the code from the phone
-	StateSignedIn     = "signed_in"     // last login attempt succeeded
-	StateFailed       = "failed"        // last login attempt failed / timed out (see Message)
+	// Device flow: URL + UserCode handed out, waiting for the user to approve
+	// in the browser; the phone polls Status until signed_in/failed.
+	StateAwaitingApproval = "awaiting_approval"
+	StateSignedIn         = "signed_in" // last login attempt succeeded
+	StateFailed           = "failed"    // last login attempt failed / timed out (see Message)
 )
 
 var (
-	ErrCLINotFound = errors.New("claude CLI not found on this runner (install Claude Code, or set RELAY_CLAUDE_CLI to its full path)")
-	ErrNoLogin     = errors.New("no login in progress - start one first")
-	ErrEmptyCode   = errors.New("code is required")
+	ErrCLINotFound     = errors.New("CLI not found on this runner")
+	ErrNoLogin         = errors.New("no login in progress - start one first")
+	ErrEmptyCode       = errors.New("code is required")
+	ErrCodeNotNeeded   = errors.New("this sign-in finishes in the browser - there is no code to send")
+	ErrUnknownProvider = errors.New("unknown sign-in provider")
 )
 
-// Proc is a running `claude auth login`.
+// Proc is a running login CLI.
 type Proc interface {
 	// Stdin is the process's stdin pipe.
 	Stdin() io.Writer
@@ -55,45 +64,57 @@ type Proc interface {
 }
 
 // Runner abstracts process execution (cf. compose.Runner) so tests can fake
-// the claude CLI.
+// the CLIs.
 type Runner interface {
 	// Start launches name with args, stdin as a pipe.
 	Start(name string, args ...string) (Proc, error)
-	// Output runs name to completion and returns its stdout.
+	// Output runs name to completion and returns its combined stdout+stderr
+	// (gh prints its status to stderr).
 	Output(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
-// Status is the GET /v1/auth/claude response.
+// Status is the GET /v1/auth/{provider} response.
 type Status struct {
+	Provider string `json:"provider"`
+	Name     string `json:"name"`
 	State    string `json:"state"`
 	URL      string `json:"url,omitempty"`
+	UserCode string `json:"userCode,omitempty"`
 	Message  string `json:"message,omitempty"`
 	LoggedIn bool   `json:"loggedIn"`
-	Email    string `json:"email,omitempty"`
+	// Account is the signed-in email/username. Email repeats it for claude
+	// only (the Claude sheet predates Account).
+	Account string `json:"account,omitempty"`
+	Email   string `json:"email,omitempty"`
+	// CLIFound is false when the provider's CLI isn't installed (GET /v1/auth
+	// lists every provider; the single-provider GET answers 503 instead).
+	CLIFound bool `json:"cliFound"`
 }
 
 // Result is what Start/Finish return.
 type Result struct {
-	State   string `json:"state"`
-	URL     string `json:"url,omitempty"`
-	Message string `json:"message,omitempty"`
+	State    string `json:"state"`
+	URL      string `json:"url,omitempty"`
+	UserCode string `json:"userCode,omitempty"`
+	Message  string `json:"message,omitempty"`
 }
 
-// Manager runs at most one `claude auth login` at a time.
+// Manager runs at most one login for its Provider at a time.
 type Manager struct {
-	Runner Runner
-	// FindCLI resolves the claude binary; ErrCLINotFound if absent.
+	Provider Provider
+	Runner   Runner
+	// FindCLI resolves the binary; ErrCLINotFound if absent.
 	FindCLI func() (string, error)
 	// OnSignedIn, if set, runs (in its own goroutine) after a successful
-	// login - wired to session.Manager.RestartIdleAgents in runnerd.
+	// login - claude: wired to session.Manager.RestartIdleAgents in runnerd.
 	OnSignedIn func()
 
 	URLTimeout    time.Duration // waiting for the login URL to be printed
-	CodeTimeout   time.Duration // awaiting_code lifetime before the process is killed
+	CodeTimeout   time.Duration // awaiting_* lifetime before the process is killed
 	FinishTimeout time.Duration // waiting for exit after the code was written
-	StatusTimeout time.Duration // `claude auth status --json`
+	StatusTimeout time.Duration // the status command, and each AfterLogin command
 
-	opMu sync.Mutex // serializes Start/Finish
+	opMu sync.Mutex // serializes Start/Finish/expire/awaitApproval
 
 	mu      sync.Mutex
 	state   string
@@ -101,11 +122,12 @@ type Manager struct {
 	cur     *login
 }
 
-// NewManager returns a Manager using the real CLI.
-func NewManager() *Manager {
+// NewManager returns a Manager for p using the real CLI.
+func NewManager(p Provider) *Manager {
 	return &Manager{
+		Provider:      p,
 		Runner:        execRunner{},
-		FindCLI:       FindCLI,
+		FindCLI:       p.findCLI,
 		URLTimeout:    20 * time.Second,
 		CodeTimeout:   10 * time.Minute,
 		FinishTimeout: 60 * time.Second,
@@ -114,19 +136,29 @@ func NewManager() *Manager {
 	}
 }
 
-// login is one `claude auth login` process.
+// NewManagers returns one Manager per known provider, in Providers() order.
+func NewManagers() []*Manager {
+	var ms []*Manager
+	for _, p := range Providers() {
+		ms = append(ms, NewManager(p))
+	}
+	return ms
+}
+
+// login is one login CLI process.
 type login struct {
-	proc    Proc
-	url     string
-	started time.Time
-	timer   *time.Timer
+	proc     Proc
+	url      string
+	userCode string
+	started  time.Time
+	timer    *time.Timer
 
 	outMu sync.Mutex
 	out   strings.Builder
 
-	urlCh   chan string   // receives the URL once it appears in the output
-	done    chan struct{} // closed after output EOF + Wait
-	exitErr error         // valid after done
+	urlCh   chan [2]string // receives URL + device code once both appear in the output
+	done    chan struct{}  // closed after output EOF + Wait
+	exitErr error          // valid after done
 }
 
 func (l *login) output() string {
@@ -135,10 +167,11 @@ func (l *login) output() string {
 	return l.out.String()
 }
 
-// watch drains the output (looking for the URL) and reaps the process.
-func (l *login) watch() {
+// watch drains the output (looking for the URL + code) and reaps the
+// process.
+func (l *login) watch(p Provider) {
 	buf := make([]byte, 4096)
-	sentURL := false
+	sent := false
 	r := l.proc.Output()
 	for {
 		n, err := r.Read(buf)
@@ -147,10 +180,10 @@ func (l *login) watch() {
 			l.out.Write(buf[:n])
 			all := l.out.String()
 			l.outMu.Unlock()
-			if !sentURL {
-				if u := ParseLoginURL(all); u != "" {
-					sentURL = true
-					l.urlCh <- u
+			if !sent {
+				if u, c, ok := p.parse(all); ok {
+					sent = true
+					l.urlCh <- [2]string{u, c}
 				}
 			}
 		}
@@ -171,21 +204,52 @@ func (l *login) kill() {
 	select {
 	case <-l.done:
 	case <-time.After(10 * time.Second):
-		log.Printf("auth: claude auth login did not exit 10s after kill")
+		log.Printf("auth: login CLI did not exit 10s after kill")
 	}
 }
 
-// Start begins a login, or returns the one already awaiting a code if it is
-// younger than CodeTimeout.
+// waitState is the state a started login waits in.
+func (p Provider) waitState() string {
+	if p.PasteCode {
+		return StateAwaitingCode
+	}
+	return StateAwaitingApproval
+}
+
+// parse finds the URL (and, for device flow, the code) in the output so
+// far; ok once everything the recipe needs is there.
+func (p Provider) parse(out string) (url, code string, ok bool) {
+	out = ansiRe.ReplaceAllString(out, "")
+	if url = p.URLRe.FindString(out); url == "" {
+		return "", "", false
+	}
+	if p.CodeRe != nil {
+		m := p.CodeRe.FindStringSubmatch(out)
+		if m == nil {
+			return "", "", false
+		}
+		code = m[1]
+	}
+	return url, code, true
+}
+
+// cmdName is "claude auth login" etc., for messages.
+func (p Provider) cmdName() string {
+	return strings.Join(append([]string{p.CLINames[0]}, p.LoginArgs[:min(2, len(p.LoginArgs))]...), " ")
+}
+
+// Start begins a login, or returns the one already waiting if it is younger
+// than CodeTimeout.
 func (m *Manager) Start() (Result, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
+	p := m.Provider
 
 	m.mu.Lock()
 	if l := m.cur; l != nil {
-		if m.state == StateAwaitingCode && time.Since(l.started) < m.CodeTimeout {
+		if m.state == p.waitState() && time.Since(l.started) < m.CodeTimeout {
 			m.mu.Unlock()
-			return Result{State: StateAwaitingCode, URL: l.url}, nil
+			return Result{State: m.state, URL: l.url, UserCode: l.userCode}, nil
 		}
 		m.cur = nil
 		m.mu.Unlock()
@@ -198,36 +262,39 @@ func (m *Manager) Start() (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	proc, err := m.Runner.Start(bin, "auth", "login")
+	proc, err := m.Runner.Start(bin, p.LoginArgs...)
 	if err != nil {
-		return Result{}, fmt.Errorf("start claude auth login: %w", err)
+		return Result{}, fmt.Errorf("start %s: %w", p.cmdName(), err)
 	}
-	l := &login{proc: proc, started: time.Now(), urlCh: make(chan string, 1), done: make(chan struct{})}
-	go l.watch()
+	l := &login{proc: proc, started: time.Now(), urlCh: make(chan [2]string, 1), done: make(chan struct{})}
+	go l.watch(p)
 
 	fail := func(msg string) (Result, error) {
-		log.Printf("auth: %s; full claude output:\n%s", msg, l.output())
+		log.Printf("auth: %s; full %s output:\n%s", msg, p.ID, l.output())
 		msg = withTail(msg, l.output())
 		m.setState(StateFailed, msg, nil)
 		return Result{State: StateFailed, Message: msg}, nil
 	}
 
 	select {
-	case u := <-l.urlCh:
-		l.url = u
+	case uc := <-l.urlCh:
+		l.url, l.userCode = uc[0], uc[1]
 	case <-l.done:
-		if ParseLoginURL(l.output()) == "" {
-			return fail("claude auth login exited without printing a login URL")
+		if _, _, ok := p.parse(l.output()); !ok {
+			return fail(p.cmdName() + " exited without printing a login URL")
 		}
-		return fail("claude auth login exited before a code could be entered")
+		return fail(p.cmdName() + " exited before the sign-in could be finished")
 	case <-time.After(m.URLTimeout):
 		l.kill()
-		return fail(fmt.Sprintf("claude auth login printed no login URL within %s", m.URLTimeout))
+		return fail(fmt.Sprintf("%s printed no login URL within %s", p.cmdName(), m.URLTimeout))
 	}
 
 	l.timer = time.AfterFunc(m.CodeTimeout, func() { m.expire(l) })
-	m.setState(StateAwaitingCode, "", l)
-	return Result{State: StateAwaitingCode, URL: l.url}, nil
+	m.setState(p.waitState(), "", l)
+	if !p.PasteCode {
+		go m.awaitApproval(l)
+	}
+	return Result{State: p.waitState(), URL: l.url, UserCode: l.userCode}, nil
 }
 
 // expire kills a login nobody finished within CodeTimeout.
@@ -241,13 +308,34 @@ func (m *Manager) expire(l *login) {
 	}
 	m.cur = nil
 	m.state = StateFailed
-	m.message = fmt.Sprintf("login timed out: no code entered within %s", m.CodeTimeout)
+	m.message = fmt.Sprintf("login timed out: not finished within %s", m.CodeTimeout)
 	m.mu.Unlock()
 	l.kill()
 }
 
-// Finish feeds the code from the callback page to the waiting login.
+// awaitApproval finishes a device-flow login once its CLI exits by itself
+// (the user approved, or the device code expired).
+func (m *Manager) awaitApproval(l *login) {
+	<-l.done
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.mu.Lock()
+	if m.cur != l { // expired, or replaced by a new Start
+		m.mu.Unlock()
+		return
+	}
+	m.cur = nil
+	m.mu.Unlock()
+	l.timer.Stop()
+	m.complete(l)
+}
+
+// Finish feeds the code from the callback page to the waiting login
+// (paste-code recipes only).
 func (m *Manager) Finish(code string) (Result, error) {
+	if !m.Provider.PasteCode {
+		return Result{}, ErrCodeNotNeeded
+	}
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return Result{}, ErrEmptyCode
@@ -265,27 +353,44 @@ func (m *Manager) Finish(code string) (Result, error) {
 	m.mu.Unlock()
 	l.timer.Stop()
 
-	fail := func(msg string) (Result, error) {
-		out := l.output()
-		log.Printf("auth: %s; full claude output:\n%s", msg, out)
-		msg = withTail(msg, out)
-		m.setState(StateFailed, msg, nil)
-		return Result{State: StateFailed, Message: msg}, nil
-	}
-
+	name := m.Provider.cmdName()
 	if _, err := io.WriteString(l.proc.Stdin(), code+"\n"); err != nil {
 		l.kill()
-		return fail("could not send the code to claude auth login: " + err.Error())
+		return m.fail(l, "could not send the code to "+name+": "+err.Error())
 	}
 	select {
 	case <-l.done:
 	case <-time.After(m.FinishTimeout):
 		l.kill()
-		return fail(fmt.Sprintf("claude auth login did not finish within %s", m.FinishTimeout))
+		return m.fail(l, fmt.Sprintf("%s did not finish within %s", name, m.FinishTimeout))
 	}
-	out := l.output()
-	if l.exitErr != nil && !strings.Contains(out, "Login successful") {
-		return fail("claude auth login failed (" + l.exitErr.Error() + ")")
+	return m.complete(l)
+}
+
+// complete judges an exited login: success → AfterLogin commands →
+// signed_in + OnSignedIn; otherwise failed. Caller holds opMu.
+func (m *Manager) complete(l *login) (Result, error) {
+	p := m.Provider
+	if l.exitErr != nil && (p.SuccessText == "" || !strings.Contains(l.output(), p.SuccessText)) {
+		return m.fail(l, p.cmdName()+" failed ("+l.exitErr.Error()+")")
+	}
+	if len(p.AfterLogin) > 0 {
+		bin, err := m.FindCLI()
+		if err != nil {
+			return m.fail(l, err.Error())
+		}
+		for _, args := range p.AfterLogin {
+			ctx, cancel := context.WithTimeout(context.Background(), m.StatusTimeout)
+			out, err := m.Runner.Output(ctx, bin, args...)
+			cancel()
+			if err != nil {
+				msg := fmt.Sprintf("signed in, but `%s %s` failed (%v)", p.CLINames[0], strings.Join(args, " "), err)
+				log.Printf("auth: %s; output:\n%s", msg, out)
+				msg = withTail(msg, string(out))
+				m.setState(StateFailed, msg, nil)
+				return Result{State: StateFailed, Message: msg}, nil
+			}
+		}
 	}
 	m.setState(StateSignedIn, "Login successful.", nil)
 	if m.OnSignedIn != nil {
@@ -294,19 +399,29 @@ func (m *Manager) Finish(code string) (Result, error) {
 	return Result{State: StateSignedIn, Message: "Login successful."}, nil
 }
 
+// fail records a failed attempt, message = msg + the CLI's last lines.
+func (m *Manager) fail(l *login, msg string) (Result, error) {
+	out := l.output()
+	log.Printf("auth: %s; full %s output:\n%s", msg, m.Provider.ID, out)
+	msg = withTail(msg, out)
+	m.setState(StateFailed, msg, nil)
+	return Result{State: StateFailed, Message: msg}, nil
+}
+
 func (m *Manager) setState(state, msg string, cur *login) {
 	m.mu.Lock()
 	m.state, m.message, m.cur = state, msg, cur
 	m.mu.Unlock()
 }
 
-// Status reports the login state plus what `claude auth status --json`
+// Status reports the login state plus what the provider's status command
 // says (best effort: any failure → loggedIn false).
 func (m *Manager) Status(ctx context.Context) (Status, error) {
+	p := m.Provider
 	m.mu.Lock()
-	st := Status{State: m.state, Message: m.message}
-	if m.cur != nil && m.state == StateAwaitingCode {
-		st.URL = m.cur.url
+	st := Status{Provider: p.ID, Name: p.Name, State: m.state, Message: m.message}
+	if m.cur != nil && m.state == p.waitState() {
+		st.URL, st.UserCode = m.cur.url, m.cur.userCode
 	}
 	m.mu.Unlock()
 
@@ -314,13 +429,14 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return st, err
 	}
+	st.CLIFound = true
 	ctx, cancel := context.WithTimeout(ctx, m.StatusTimeout)
 	defer cancel()
-	out, err := m.Runner.Output(ctx, bin, "auth", "status", "--json")
-	// A logged-out CLI may exit non-zero but still print JSON - parse anyway.
-	st.LoggedIn, st.Email = ParseAuthStatus(out)
-	if err != nil && !st.LoggedIn {
-		log.Printf("auth: claude auth status: %v", err)
+	out, err := m.Runner.Output(ctx, bin, p.StatusArgs...)
+	// A logged-out CLI may exit non-zero but still print its status - parse anyway.
+	st.LoggedIn, st.Account = p.ParseStatus(out, err)
+	if p.ID == "claude" {
+		st.Email = st.Account
 	}
 	return st, nil
 }
@@ -333,7 +449,8 @@ func ParseAuthStatus(out []byte) (loggedIn bool, email string) {
 		s = s[i:]
 	}
 	var v map[string]any
-	if json.Unmarshal([]byte(s), &v) != nil {
+	// Decoder, not Unmarshal: stderr may follow the JSON.
+	if json.NewDecoder(strings.NewReader(s)).Decode(&v) != nil {
 		return false, ""
 	}
 	loggedIn, _ = v["loggedIn"].(bool)
@@ -367,7 +484,7 @@ var (
 )
 
 // ParseLoginURL returns the first https URL containing "oauth/authorize" in
-// the CLI output (ANSI escapes stripped), or "".
+// the CLI output (ANSI escapes stripped), or "" - the claude recipe's URL.
 func ParseLoginURL(out string) string {
 	return loginRe.FindString(ansiRe.ReplaceAllString(out, ""))
 }
@@ -390,27 +507,6 @@ func withTail(msg, out string) string {
 	return msg + ": " + strings.Join(lines, " | ")
 }
 
-// FindCLI resolves the claude binary: $RELAY_CLAUDE_CLI, else PATH
-// ("claude", plus claude.cmd/claude.exe on Windows).
-func FindCLI() (string, error) {
-	if p := strings.TrimSpace(os.Getenv("RELAY_CLAUDE_CLI")); p != "" {
-		if _, err := os.Stat(p); err != nil {
-			return "", fmt.Errorf("%w: RELAY_CLAUDE_CLI=%q: %v", ErrCLINotFound, p, err)
-		}
-		return p, nil
-	}
-	names := []string{"claude"}
-	if runtime.GOOS == "windows" {
-		names = append(names, "claude.cmd", "claude.exe")
-	}
-	for _, n := range names {
-		if p, err := exec.LookPath(n); err == nil {
-			return p, nil
-		}
-	}
-	return "", ErrCLINotFound
-}
-
 // execRunner is the real Runner.
 type execRunner struct{}
 
@@ -431,8 +527,8 @@ func (execRunner) Start(name string, args ...string) (Proc, error) {
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
-	// A killed claude.cmd can leave its node child holding the output pipe
-	// open; don't let Wait hang on it forever.
+	// A killed claude.cmd / gcloud.cmd can leave its child holding the
+	// output pipe open; don't let Wait hang on it forever.
 	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -449,7 +545,7 @@ func (execRunner) Start(name string, args ...string) (Proc, error) {
 func (execRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = 2 * time.Second
-	return cmd.Output()
+	return cmd.CombinedOutput()
 }
 
 func (p *execProc) Stdin() io.Writer  { return p.stdin }
