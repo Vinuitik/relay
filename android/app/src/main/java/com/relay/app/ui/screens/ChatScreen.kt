@@ -50,6 +50,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import com.relay.app.model.ConfigOption
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -175,13 +178,14 @@ fun ChatScreen(
                 },
             )
 
-            session?.configOptions?.filterNot { it.isMode }?.takeIf { it.isNotEmpty() }?.let { opts ->
-                AgentConfigChip(opts, enabled = !working, onSelect = vm::setConfig)
-            }
-
             Composer(
                 vm = vm,
                 working = working,
+                toolbarStart = {
+                    session?.configOptions?.filterNot { it.isMode }?.takeIf { it.isNotEmpty() }?.let { opts ->
+                        AgentConfigChip(opts, enabled = !working, onSelect = vm::setConfig)
+                    }
+                },
                 onSend = {
                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     vm.send()
@@ -582,47 +586,80 @@ private fun ProblemCard(message: Message, onSignIn: () -> Unit) {
     }
 }
 
+/**
+ * VS Code Claude/Copilot-style input: one rounded box. The text grows to [COMPOSER_MAX_LINES]
+ * and then scrolls inside the box (the screen never gets pushed up further); under it a toolbar
+ * row with [toolbarStart] (model/effort chip) on the left and Send/Stop on the right.
+ */
 @Composable
-private fun Composer(vm: ChatViewModel, working: Boolean, onSend: () -> Unit, onStop: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun Composer(
+    vm: ChatViewModel,
+    working: Boolean,
+    toolbarStart: @Composable () -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        OutlinedTextField(
-            value = vm.input,
-            onValueChange = { vm.input = it },
-            modifier = Modifier.weight(1f),
-            placeholder = { Text(if (working) "Agent is working…" else "Message the agent") },
-        )
-        // Send ↔ Stop share one fixed 48dp slot: crossfade + scale 0.9→1, 150 in / 100 out.
-        AnimatedContent(
-            targetState = working,
-            transitionSpec = {
-                (fadeIn(tween(RelayMotion.DurationShort, easing = RelayMotion.EaseOut)) +
-                    scaleIn(tween(RelayMotion.DurationShort, easing = RelayMotion.EaseOut), initialScale = 0.9f)) togetherWith
-                    fadeOut(tween(100, easing = RelayMotion.EaseOut))
-            },
-            contentAlignment = Alignment.Center,
-            modifier = Modifier.padding(start = 4.dp).size(48.dp),
-            label = "sendStop",
-        ) { isWorking ->
-            if (isWorking) {
-                // The brake for no-permission mode: stops this turn, keeps the session.
-                FilledIconButton(
-                    onClick = onStop,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError,
-                    ),
-                ) { Icon(Icons.Default.Stop, contentDescription = "Stop") }
-            } else {
-                IconButton(enabled = vm.input.isNotBlank() && !vm.sending, onClick = onSend) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+        Column {
+            TextField(
+                value = vm.input,
+                onValueChange = { vm.input = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text(if (working) "Agent is working…" else "Message the agent") },
+                minLines = 1,
+                maxLines = COMPOSER_MAX_LINES,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    disabledIndicatorColor = Color.Transparent,
+                ),
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 4.dp),
+            ) {
+                Box(Modifier.weight(1f)) { toolbarStart() }
+                // Send ↔ Stop share one fixed 48dp slot: crossfade + scale 0.9→1, 150 in / 100 out.
+                AnimatedContent(
+                    targetState = working,
+                    transitionSpec = {
+                        (fadeIn(tween(RelayMotion.DurationShort, easing = RelayMotion.EaseOut)) +
+                            scaleIn(tween(RelayMotion.DurationShort, easing = RelayMotion.EaseOut), initialScale = 0.9f)) togetherWith
+                            fadeOut(tween(100, easing = RelayMotion.EaseOut))
+                    },
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.size(48.dp),
+                    label = "sendStop",
+                ) { isWorking ->
+                    if (isWorking) {
+                        // The brake for no-permission mode: stops this turn, keeps the session.
+                        FilledIconButton(
+                            onClick = onStop,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        ) { Icon(Icons.Default.Stop, contentDescription = "Stop") }
+                    } else {
+                        FilledIconButton(enabled = vm.input.isNotBlank() && !vm.sending, onClick = onSend) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                        }
+                    }
                 }
             }
         }
     }
 }
+
+private const val COMPOSER_MAX_LINES = 8
 
 /**
  * "Sonnet · High" above the composer -> bottom sheet with every config option (model, effort,
@@ -637,7 +674,6 @@ private fun AgentConfigChip(options: List<ConfigOption>, enabled: Boolean, onSel
     TextButton(
         onClick = { open = true },
         enabled = enabled,
-        modifier = Modifier.padding(start = 8.dp),
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge)
         Icon(Icons.Default.ArrowDropDown, contentDescription = "Model and effort")

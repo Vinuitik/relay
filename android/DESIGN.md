@@ -128,7 +128,9 @@ Empty: one sentence + the expected filename.
 - Permission card: **sticky above the composer** (always in thumb reach, visible when scrolled up),
   warning chip colours + interlock bar; Allow = Button, Deny = OutlinedButton in error.
 - Quota/login cards: errorContainer + interlock bar (already exist as `ProblemCard`).
-- Composer: failed send restores the text + Snackbar "Retry". Stop stays in the Send slot.
+- Composer (VS Code Claude/Copilot style): one rounded `surfaceContainerHigh` box; text grows to 8
+  lines then scrolls inside; toolbar row below = model/effort chip left, Send/Stop right.
+  Failed send restores the text + Snackbar "Retry". Stop stays in the Send slot.
 - Overflow: Files (check the agent's edits without leaving the chat).
 
 **Manage runners** - QR pairing is primary; name prefilled with hostname, editable inline.
