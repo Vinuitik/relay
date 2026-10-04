@@ -91,6 +91,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/stop", s.auth(s.handleStopSession))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/cancel", s.auth(s.handleCancelTurn))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/mode", s.auth(s.handleSetMode))
+	mux.HandleFunc("POST /v1/sessions/{sessionId}/config", s.auth(s.handleSetConfig))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/permission", s.auth(s.handlePermission))
 	mux.HandleFunc("GET /v1/projects/{projectId}/containers", s.auth(s.handleContainersStatus))
 	mux.HandleFunc("POST /v1/projects/{projectId}/containers/start", s.auth(s.handleContainersStart))
@@ -392,6 +393,24 @@ func (s *Server) handleSetMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess, err := s.Sessions.SetMode(r.PathValue("sessionId"), req.ModeID)
+	writeSessionResult(w, sess, err)
+}
+
+type setConfigRequest struct {
+	ConfigID string `json:"configId"`
+	Value    string `json:"value"`
+}
+
+// handleSetConfig changes one of the session's configOptions (model,
+// effort, fast mode). The choice also becomes this runner's default for
+// new sessions.
+func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
+	var req setConfigRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sess, err := s.Sessions.SetConfig(r.PathValue("sessionId"), req.ConfigID, req.Value)
 	writeSessionResult(w, sess, err)
 }
 

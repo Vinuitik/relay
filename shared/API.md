@@ -33,6 +33,14 @@ Session {
   // ACP providers only (claude), omitted otherwise:
   mode?: string                         // current permission mode id, e.g. "bypassPermissions"
   modes?: {id, name, description?}[]    // what the agent offers
+  configOptions?: {                     // ACP session config options (ACP providers only)
+    id: string,                         // "model" | "effort" | "fast" | "mode" | ...
+    name: string, description?: string,
+    category?: string,                  // "model" | "thought_level" | "model_config" | "mode"
+    type: "select",
+    currentValue: string,
+    options: {value, name, description?}[]
+  }[]
   lastActiveAt?: string                 // RFC3339, last change; bumped ~every 30s while busy
   pendingPermission?: {                 // set while state == "waiting"
     title: string, toolKind: string,
@@ -155,6 +163,7 @@ Stats { count, medianSec, p90Sec, meanSec, totalSec }
 | POST | `/v1/sessions/{sessionId}/stop` | - | `200 Session` | kills the subprocess, marks session `finished` |
 | POST | `/v1/sessions/{sessionId}/cancel` | - | `200 Session` | stops the current turn but keeps the session (the Stop button); the session goes `idle` shortly after. No-op if nothing is running. ACP only, `400` otherwise. |
 | POST | `/v1/sessions/{sessionId}/mode` | `{modeId: string}` | `200 Session` | switches permission mode, one of `modes`. `400` for an unknown id. ACP only. |
+| POST | `/v1/sessions/{sessionId}/config` | `{configId: string, value: string}` | `200 Session` | sets one `configOptions` entry (model, effort, fast). The session's choices are re-applied whenever its agent resumes, and become this runner's default for new sessions (`$RELAY_HOME/session-defaults.json`). `400` unknown option/value or `mode` (use `/mode`). ACP only. |
 | POST | `/v1/sessions/{sessionId}/permission` | `{optionId: string}` | `200 Session` | answers `pendingPermission` with one of its options. `400` if nothing is pending or the option is unknown. |
 | GET | `/v1/projects/{projectId}/containers` | - | `200 ContainersStatus` | compose files found at the project's top level (`docker-compose.yml`, `docker-compose.dev.yml`, `compose-prod.yaml`, ...), the active one, and every container compose started from this directory. Only calls docker if a compose file exists; docker failures go in `dockerError`, not an HTTP error. |
 | POST | `/v1/projects/{projectId}/containers/start` | `{file?: string}` (body optional) | `202 ContainersStatus` | turns on `file` (default: the active file) with `docker compose -f <file> up -d`. If a different file was active it's brought down first - a **switch**, so only one compose file runs per project. The choice is persisted. Runs in the background: poll GET until `operation` is `""`, then check `lastError`. `400` if no compose file, `file` isn't one of `composeFiles`, or several exist and none is chosen yet; `409` if an operation is already running. |

@@ -59,11 +59,11 @@ func (m *Manager) startACP(id, projectID, provider, dir string, pc ProviderComma
 		},
 		idleSince: startTime,
 	}
-	client, sid, modes, err := m.spawnAgent(rec, pc, dir, "")
+	client, sid, setup, err := m.spawnAgent(rec, pc, dir, "")
 	if err != nil {
 		return Session{}, fmt.Errorf("start provider %q: %w", provider, err)
 	}
-	m.attach(rec, client, sid, modes, m.DefaultMode)
+	m.attach(rec, client, sid, setup, m.DefaultMode, m.configDefaults())
 
 	m.mu.Lock()
 	m.sessions[id] = rec
@@ -73,7 +73,7 @@ func (m *Manager) startACP(id, projectID, provider, dir string, pc ProviderComma
 
 // spawnAgent starts the agent process and opens the conversation: a new one
 // (resumeID == "") or an existing one via session/resume.
-func (m *Manager) spawnAgent(rec *record, pc ProviderCommand, dir, resumeID string) (*acp.Client, string, *acp.Modes, error) {
+func (m *Manager) spawnAgent(rec *record, pc ProviderCommand, dir, resumeID string) (*acp.Client, string, acp.SessionSetup, error) {
 	client, err := acp.Start(pc.Name, pc.Args, dir, acp.Handlers{
 		OnNotification: func(method string, params json.RawMessage) { m.onUpdate(rec, method, params) },
 		OnRequest: func(c *acp.Client, reqID json.RawMessage, method string, params json.RawMessage) {
@@ -81,9 +81,9 @@ func (m *Manager) spawnAgent(rec *record, pc ProviderCommand, dir, resumeID stri
 		},
 	})
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", acp.SessionSetup{}, err
 	}
-	fail := func(step string, err error) (*acp.Client, string, *acp.Modes, error) {
+	fail := func(step string, err error) (*acp.Client, string, acp.SessionSetup, error) {
 		_ = client.Cmd().Process.Kill()
 		<-client.Done()
 		_ = client.Cmd().Wait()
@@ -91,28 +91,32 @@ func (m *Manager) spawnAgent(rec *record, pc ProviderCommand, dir, resumeID stri
 		if tail := client.StderrTail(); tail != "" {
 			msg += ": " + lastLine(tail)
 		}
-		return nil, "", nil, fmt.Errorf("%s", msg)
+		return nil, "", acp.SessionSetup{}, fmt.Errorf("%s", msg)
 	}
 	if err := client.Initialize(clientName, clientVersion); err != nil {
 		return fail("initialize", err)
 	}
 	if resumeID == "" {
-		sid, modes, err := client.NewSession(dir)
+		sid, setup, err := client.NewSession(dir)
 		if err != nil {
 			return fail("session/new", err)
 		}
-		return client, sid, modes, nil
+		return client, sid, setup, nil
 	}
-	modes, err := client.ResumeSession(resumeID, dir)
+	setup, err := client.ResumeSession(resumeID, dir)
 	if err != nil {
 		return fail("session/resume", err)
 	}
-	return client, resumeID, modes, nil
+	return client, resumeID, setup, nil
 }
 
-// attach wires a freshly spawned/resumed agent into rec and switches it to
-// wantMode if the agent offers it.
-func (m *Manager) attach(rec *record, client *acp.Client, sid string, modes *acp.Modes, wantMode string) {
+// attach wires a freshly spawned/resumed agent into rec, switches it to
+// wantMode if the agent offers it, then applies wantConfig (model, effort...)
+// in order - a resumed agent comes back at its defaults, so without this a
+// session would silently change model after every restart or re-login.
+func (m *Manager) attach(rec *record, client *acp.Client, sid string, setup acp.SessionSetup, wantMode string, wantConfig []ConfigValue) {
+	modes := setup.Modes
+	opts := applyConfig(rec.data.ID, client, sid, setup.ConfigOptions, wantConfig)
 	mode := ""
 	if modes != nil {
 		mode = modes.CurrentModeID
@@ -133,6 +137,15 @@ func (m *Manager) attach(rec *record, client *acp.Client, sid string, modes *acp
 		rec.data.Modes = modes.AvailableModes
 		rec.data.Mode = mode
 	}
+	if opts != nil {
+		// Mode was set via session/set_mode above; keep its option in step.
+		for i := range opts {
+			if isModeOption(opts[i]) && mode != "" {
+				opts[i].CurrentValue = mode
+			}
+		}
+		rec.data.ConfigOptions = opts
+	}
 	rec.mu.Unlock()
 	go m.awaitACPExit(rec, client)
 }
@@ -141,6 +154,7 @@ func (m *Manager) attach(rec *record, client *acp.Client, sid string, modes *acp
 func (m *Manager) ensureAgent(rec *record) (*acp.Client, error) {
 	rec.mu.Lock()
 	client, sid, provider, projectID, mode := rec.acp, rec.acpSession, rec.data.Provider, rec.data.ProjectID, rec.data.Mode
+	want := chosenConfig(rec.data.ConfigOptions)
 	rec.mu.Unlock()
 	if client != nil {
 		return client, nil
@@ -155,11 +169,11 @@ func (m *Manager) ensureAgent(rec *record) (*acp.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, sid, modes, err := m.spawnAgent(rec, pc, dir, sid)
+	client, sid, setup, err := m.spawnAgent(rec, pc, dir, sid)
 	if err != nil {
 		return nil, fmt.Errorf("resume session: %w", err)
 	}
-	m.attach(rec, client, sid, modes, mode)
+	m.attach(rec, client, sid, setup, mode, want)
 	return client, nil
 }
 
@@ -328,6 +342,10 @@ func (m *Manager) onUpdate(rec *record, method string, params json.RawMessage) {
 	case "current_mode_update":
 		if u.CurrentModeID != "" {
 			rec.data.Mode = u.CurrentModeID
+		}
+	case "config_option_update":
+		if u.ConfigOptions != nil {
+			rec.data.ConfigOptions = u.ConfigOptions
 		}
 	}
 }

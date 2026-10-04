@@ -104,6 +104,9 @@ type Session struct {
 	Mode              string             `json:"mode,omitempty"`
 	Modes             []acp.Mode         `json:"modes,omitempty"`
 	PendingPermission *PendingPermission `json:"pendingPermission,omitempty"`
+	// ConfigOptions: model / effort / fast mode as the agent offers them
+	// (ACP session config options), each with its current value.
+	ConfigOptions []acp.ConfigOption `json:"configOptions,omitempty"`
 	// LastActiveAt is when the session last changed, bumped every ~30s
 	// while the agent works (see store.go). RFC3339.
 	LastActiveAt string `json:"lastActiveAt,omitempty"`
@@ -174,6 +177,10 @@ type Manager struct {
 	createdAt time.Time
 	// storeDir, if set, is where sessions are persisted (store.go).
 	storeDir string
+	// defaults/defaultsFile: config choices (model, effort) new sessions
+	// start with - see config.go.
+	defaults     []ConfigValue
+	defaultsFile string
 
 	// DefaultMode is the ACP mode new sessions are switched to right after
 	// creation, if the agent offers it (env RELAY_DEFAULT_MODE, default
@@ -561,6 +568,8 @@ func cloneSession(s Session) Session {
 	out := s
 	out.Messages = make([]Message, len(s.Messages))
 	copy(out.Messages, s.Messages)
+	// SetConfig updates option values in place; snapshots get their own copy.
+	out.ConfigOptions = append([]acp.ConfigOption(nil), s.ConfigOptions...)
 	if s.FinishedAt != nil {
 		ts := *s.FinishedAt
 		out.FinishedAt = &ts

@@ -111,6 +111,13 @@ Stop button: POST …/cancel → `Manager.Cancel` → answers any open permissio
 `session/cancel` notification → prompt returns `cancelled` → `idle`. Session stays usable.
 Mode switch: POST …/mode `{modeId}` → `session/set_mode`.
 
+Model / effort / fast: POST …/config `{configId, value}` → `Manager.SetConfig` →
+`session/set_config_option` → `Session.configOptions` updated + `setConfigDefaults` writes
+`$RELAY_HOME/session-defaults.json`. New session → `attach(…, configDefaults())`; resume →
+`attach(…, chosenConfig(session's options))` re-applies them (a resumed agent comes back at its
+defaults - this is what silently dropped a session to Sonnet 5 after re-login, 2026-10-04).
+Agent-side changes arrive as `config_option_update`. To change: `session/config.go`.
+
 End session: POST …/stop → `Manager.Stop` → kill agent process → `finished`.
 Process exits on its own → `awaitExit` (waits for `acp.Client.Done()` so stdout is drained, then
 `Wait`) → `finished`/`error`; on error the agent's last stderr lines are added to the transcript.

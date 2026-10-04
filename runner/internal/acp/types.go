@@ -1,6 +1,9 @@
 package acp
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Typed wrappers for the ACP methods the runner uses. Field names follow
 // the v1 spec and were checked against a live claude-agent-acp 0.84.0
@@ -20,6 +23,57 @@ type Modes struct {
 	AvailableModes []Mode `json:"availableModes"`
 }
 
+// ConfigOption is one ACP session config option (model, effort, fast mode,
+// mode...) as claude-agent-acp 0.85 reports it in session/new, session/resume
+// and config_option_update. Category is "model", "thought_level", "mode"...
+type ConfigOption struct {
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description,omitempty"`
+	Category     string         `json:"category,omitempty"`
+	Type         string         `json:"type"`
+	CurrentValue any            `json:"currentValue"`
+	Options      []ConfigChoice `json:"options,omitempty"`
+}
+
+// ConfigChoice is one selectable value. A group (ACP allows grouped
+// options) has no Value and nests its choices in Options.
+type ConfigChoice struct {
+	Value       string         `json:"value,omitempty"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Options     []ConfigChoice `json:"options,omitempty"`
+}
+
+// Current is the option's current value as a string ("" if unset).
+func (o ConfigOption) Current() string {
+	if o.CurrentValue == nil {
+		return ""
+	}
+	return fmt.Sprint(o.CurrentValue)
+}
+
+// Has reports whether value is one of the option's choices (groups included).
+func (o ConfigOption) Has(value string) bool {
+	var walk func([]ConfigChoice) bool
+	walk = func(cs []ConfigChoice) bool {
+		for _, c := range cs {
+			if c.Value == value || walk(c.Options) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(o.Options)
+}
+
+// SessionSetup is what session/new and session/resume return that the
+// runner keeps: modes and config options.
+type SessionSetup struct {
+	Modes         *Modes         `json:"modes"`
+	ConfigOptions []ConfigOption `json:"configOptions"`
+}
+
 // Initialize performs the ACP handshake.
 func (c *Client) Initialize(clientName, clientVersion string) error {
 	params := map[string]any{
@@ -36,31 +90,44 @@ func (c *Client) Initialize(clientName, clientVersion string) error {
 }
 
 // NewSession opens a conversation rooted at cwd (absolute path).
-func (c *Client) NewSession(cwd string) (sessionID string, modes *Modes, err error) {
+func (c *Client) NewSession(cwd string) (sessionID string, setup SessionSetup, err error) {
 	var res struct {
 		SessionID string `json:"sessionId"`
-		Modes     *Modes `json:"modes"`
+		SessionSetup
 	}
 	if err := c.Call("session/new", map[string]any{"cwd": cwd, "mcpServers": []any{}}, &res); err != nil {
-		return "", nil, err
+		return "", SessionSetup{}, err
 	}
-	return res.SessionID, res.Modes, nil
+	return res.SessionID, res.SessionSetup, nil
 }
 
 // ResumeSession reattaches to an existing conversation (e.g. after the agent
 // process or the runner restarted) without replaying its history. Checked
 // against claude-agent-acp 0.84.0: params {sessionId, cwd, mcpServers}, the
 // result carries modes like session/new - but the mode is reset to the
-// agent's default, so callers re-apply their own.
-func (c *Client) ResumeSession(sessionID, cwd string) (*Modes, error) {
-	var res struct {
-		Modes *Modes `json:"modes"`
-	}
+// agent's default, so callers re-apply their own. Config options (model,
+// effort) likewise come back at the agent's defaults.
+func (c *Client) ResumeSession(sessionID, cwd string) (SessionSetup, error) {
+	var res SessionSetup
 	params := map[string]any{"sessionId": sessionID, "cwd": cwd, "mcpServers": []any{}}
 	if err := c.Call("session/resume", params, &res); err != nil {
+		return SessionSetup{}, err
+	}
+	return res, nil
+}
+
+// SetConfigOption sets one config option (session/set_config_option) and
+// returns the full, updated option list - changing the model can change
+// which effort levels exist.
+func (c *Client) SetConfigOption(sessionID, configID, value string) ([]ConfigOption, error) {
+	var res struct {
+		ConfigOptions []ConfigOption `json:"configOptions"`
+	}
+	params := map[string]string{"sessionId": sessionID, "configId": configID, "value": value}
+	if err := c.Call("session/set_config_option", params, &res); err != nil {
 		return nil, err
 	}
-	return res.Modes, nil
+	return res.ConfigOptions, nil
 }
 
 // SetMode switches the session's mode.
@@ -108,6 +175,8 @@ type SessionUpdate struct {
 	Status     string `json:"status,omitempty"` // pending, in_progress, completed, failed
 	// current_mode_update
 	CurrentModeID string `json:"currentModeId,omitempty"`
+	// ConfigOptions: the full list, on "config_option_update".
+	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
 }
 
 // ContentBlock is a text content block (other block types decode with an

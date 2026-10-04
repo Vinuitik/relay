@@ -45,6 +45,7 @@ func (m *Manager) SetStoreDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create sessions dir %q: %w", dir, err)
 	}
+	m.loadConfigDefaults(dir)
 	m.mu.Lock()
 	m.storeDir = dir
 	m.mu.Unlock()
