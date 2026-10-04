@@ -141,6 +141,40 @@ Shutdown (SIGINT/SIGTERM): `Manager.Shutdown` kills agent processes → sessions
 final flush.
 To change intervals: `store.go` (`saveInterval`, `heartbeatInterval`).
 
+### Shared chats (same chat from the phone and VS Code)
+
+Files: internal/session/shared.go (`ListAgentChats`, `Adopt`, `Sync`, `replay`, `transcriptStale`,
+`hasTurn`, `findTranscript`), acp_session.go (`ensureAgent`, `onUpdate`), internal/acp/types.go
+(`LoadSession`, `ListSessions`)
+
+Relay drives the real Claude Code (via claude-agent-acp), which saves every chat to
+`~/.claude/projects/<encoded cwd>/<id>.jsonl` - the same files VS Code's Claude extension reads and
+writes. That file is the **source of truth**; `Session.Messages` is a cache rebuilt from it. A chat
+only shows in VS Code if the Relay project *is* the VS Code folder (register an existing folder,
+below) - scaffolded `~/.relay/projects/*` chats land in their own folder.
+
+List: `GET /v1/projects/{id}/agent-chats` → `ListAgentChats` → spawn agent → `session/list {cwd}`
+(the agent knows Claude's folder encoding, we don't) → kill → each chat + `sessionId` of the live
+Relay session already showing it (`linkedSessions`).
+Adopt: `POST /v1/projects/{id}/sessions {agentSessionId}` → `Adopt` → already linked? return it (200)
+→ else spawn → `session/load` → `replay` (updates go to `rec.replayMsgs` while `rec.replaying`,
+swapped into `Messages` at the end - the phone never sees a half-built transcript;
+`user_message_chunk` only counts during replay) → attach (DefaultMode + config defaults, like a new
+chat) → `markTranscript`.
+Catch-up: `ensureAgent` (every turn) and `Sync` (every `GET /v1/sessions/{id}`, idle only) →
+`transcriptStale`: transcript file bigger than at `markTranscript` **and** the new bytes contain
+`"type":"user"`/`"type":"assistant"` (`hasTurn`) → kill the live agent (its memory is behind) →
+`session/load` again. Growth without a turn (Claude's `mode`/`cost-state` lines on load/exit) just
+moves the mark. Every turn's end → `markTranscript` (our own writes aren't "someone else's").
+`rec.agentMu` serializes ensureAgent between a turn and a Sync.
+To change what counts as a turn: `turnMarkers` in shared.go. Transcript location: `findTranscript`
+(env `CLAUDE_CONFIG_DIR`, else `~/.claude`).
+
+VS Code side: nothing to do - its "Past Conversations" lists the Relay-written chats. A VS Code tab
+left open keeps its own in-memory copy, though: reopen the chat from history after using the phone.
+Forks (both sides typing on stale copies) → **tolerated, not detected or shown**
+[NOT IMPLEMENTED: VS Code-side guard via a `UserPromptSubmit` hook, fork banner].
+
 ### Sessions (raw) - echo-agent, RELAY_PROVIDER_<NAME>
 
 Spawn → `pump` appends each stdout/stderr line as an agent message → `busy` from spawn until the
@@ -819,6 +853,25 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   system the CLI-install step is skipped with a message instead of guessing a package
   manager; everything else in install.sh still runs.
 
+- **Shared chats only work on the runner's own machine.** They share `~/.claude` with VS Code; a
+  runner on another box (or running as another user, or with a different `CLAUDE_CONFIG_DIR`) sees
+  other files. `findTranscript` not finding the file = the session simply never looks stale.
+- **Staleness = file size + two marker strings.** The one bit of Claude's transcript format the
+  runner relies on (`turnMarkers`). If Claude renamed `"type":"user"`/`"type":"assistant"`, VS Code
+  turns would stop showing on the phone - never corruption. Appends over 32 MB are assumed to contain
+  a turn (`maxScan`).
+- **A reload costs a few seconds** (spawn agent + replay), inside the first `GET` after VS Code wrote -
+  that request just takes longer. Replayed messages get `at` = reload time (the replay carries no
+  timestamps).
+- **Forks are possible.** Phone and VS Code both appending on stale copies give the chat two branches
+  (`parentUuid` tree in the jsonl); Claude resumes the newest leaf, the other branch stays in the file
+  but invisible. Rare: Relay always reloads before a turn; only a VS Code tab left open across a phone
+  session writes stale.
+- **`transcriptSize` is persisted** with the session (`$RELAY_HOME/sessions/*.json`). Sessions saved
+  before this feature have none and are caught up silently on first check (no reload).
+- **`session/load` / `session/list`** checked against claude-agent-acp 0.85.1 (2026-10-04, live:
+  listed this repo's 16 VS Code chats, replayed one). `session/fork` exists too, unused.
+
 ## Change Index
 
 | Thing | Where |
@@ -830,6 +883,9 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Provider → command mapping | `internal/session/session.go` (`resolveProvider`, `autoDetectProviders`, env `RELAY_PROVIDER_<NAME>` override) |
 | ACP wire client (JSON-RPC over stdio) | `internal/acp/acp.go` (`Client.Call`, `readLoop`) |
 | ACP method/field shapes | `internal/acp/types.go` |
+| Shared chats: list / adopt / reload from VS Code | `internal/session/shared.go` (`ListAgentChats`, `Adopt`, `Sync`), `GET /v1/projects/{id}/agent-chats` |
+| What counts as "VS Code wrote a turn" | `shared.go` (`turnMarkers`, `hasTurn`, `maxScan`) |
+| Where Claude's transcript is looked up | `shared.go` (`findTranscript`, env `CLAUDE_CONFIG_DIR`) |
 | Transcript from streamed updates (text merge, tool rows) | `internal/session/acp_session.go` (`onUpdate`) |
 | Permission request → waiting → answer | `acp_session.go` (`onRequest`, `RespondPermission`) |
 | Stop button (cancel turn) | `acp_session.go` (`Cancel`), `POST /v1/sessions/{id}/cancel` |

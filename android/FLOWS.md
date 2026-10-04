@@ -48,8 +48,15 @@ MainActivity → RelayNavHost → waits for first DataStore read (runners, lastR
   sorted waiting first then newest `activityAt`. ExtendedFAB "New chat" → create with
   `lastProvider` → Chat; long-press → provider list (`AppPrefsRepository.KNOWN_PROVIDERS`).
   Empty → inline composer: first message = `createSession` + `sendMessage` → Chat.
+  Below the chats, "On this computer": Claude chats for this folder not open in Relay (VS Code, CLI) -
+  `ProjectViewModel.refresh` → `listAgentChats` (in parallel, never blocks the list; failures = no
+  section) → rows minus ones with `sessionId`. Tap → `continueLaptopChat` →
+  `createSession {provider:"claude", agentSessionId}` (runner replays the history, a few s) → Chat.
+  Opening any chat re-reads it, so turns typed in VS Code since show up (runner-side, see
+  runner/FLOWS.md "Shared chats").
   Files tab = `FileBrowserContent`, Git tab = `GitContent`, Containers tab = `ContainersContent` (no own top bar).
-  To change: ProjectScreen.kt (`ChatsContent`, `NewChatFab`, `FirstMessageComposer`).
+  To change: ProjectScreen.kt (`ChatsContent`, `LaptopChatRow`, `NewChatFab`, `FirstMessageComposer`),
+  ProjectViewModel.kt (`laptopChats`, `continueLaptopChat`).
 - Manage runners: tap row → becomes current runner → Home. Row ⋮ = Rename / Usage / Sign-ins / Sleep / Remove
   (Sleep + Remove confirmed). ExtendedFAB "Pair runner" → QR (Crossfade 200ms, same screen).
   No runners → `EmptyState` line + "Pair runner" button.
@@ -567,6 +574,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Routes / deep link pattern / transitions | `ui/navigation/RelayNavHost.kt` (`Routes`, `forwardEnter`…`backExit`) |
 | Last-route restore | `ui/navigation/RelayNavHost.kt` (`RESTORE_PATTERN`, restore `LaunchedEffect`), `MainActivity.kt` (`restoreLastRoute`) |
 | Current runner / last route / last provider prefs | `data/AppPrefsRepository.kt` |
+| "On this computer" chats (VS Code's) | `ui/screens/ProjectViewModel.kt` (`laptopChats`, `continueLaptopChat`), `ProjectScreen.kt` (`LaptopChatRow`), `RelayApiService.listAgentChats` |
 | Usage screen layout / heatmap | `ui/screens/UsageScreen.kt` |
 | Chat long-press: Copy / Edit & resend | `ui/screens/ChatScreen.kt` (`MessageActions`) |
 | Model / effort / fast picker (chip above composer) | `ui/screens/ChatScreen.kt` (`AgentConfigChip`), `ChatViewModel.setConfig`, runner `session/config.go` |
