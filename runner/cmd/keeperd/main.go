@@ -57,7 +57,7 @@ func main() {
 		log.Fatalf("keeper: load runner config: %v", err)
 	}
 	if watchInput {
-		watchLocalInput(rcfg)
+		watchLocalInput(rcfg, cfg.KeeperPath())
 		return
 	}
 	log.Printf("keeper %s: dir %s, runner at %s", version, cfg.Dir, rcfg.ListenAddr)
@@ -159,10 +159,22 @@ func logToFile(path string) {
 // tell someone is using the machine; this reports it for it, as the same
 // POST /v1/activity ping the phone app sends while open - keeping
 // idle-suspend from sleeping the laptop under its user.
-func watchLocalInput(rcfg *config.Config) {
+//
+// When an update replaces keeperd's binary the watcher restarts itself from
+// the new one: otherwise it keeps the old file (renamed .old) open forever
+// and the next update can't clear it - see keeper.clearOld.
+func watchLocalInput(rcfg *config.Config, keeperPath string) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	url := "http://" + rcfg.ListenAddr + "/v1/activity"
+	started, _ := os.Stat(keeperPath)
 	for {
+		if now, err := os.Stat(keeperPath); err == nil && started != nil &&
+			(!now.ModTime().Equal(started.ModTime()) || now.Size() != started.Size()) {
+			log.Printf("input watcher: keeperd was updated, restarting from it")
+			if err := keeper.RelaunchWatcher(keeperPath); err != nil {
+				log.Printf("input watcher: restart: %v", err)
+			}
+		}
 		if idle, err := activity.LocalIdleTime(); err == nil && idle < time.Minute {
 			req, _ := http.NewRequest(http.MethodPost, url, nil)
 			req.Header.Set("X-Relay-Key", rcfg.Key)

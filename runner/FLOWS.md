@@ -453,6 +453,10 @@ isn't waited for) → `npm install` adapter@latest →
   runner on its next pass.
 - runner outdated → download + verify → stop runner → `relay-runner` → `.old`, new one in →
   start → must answer `/v1/health` and stay up 10s within 60s, else **rollback** to `.old`.
+- Windows locked `.old` (a process still running it can be renamed, not deleted): `clearOld`
+  renames it to `.old-<unix>` and deletes such asides once unlocked. The input watcher polls
+  `keeperd.exe`'s mtime/size and restarts itself from the new binary (`RelaunchWatcher`), so it
+  never pins an old one. Before this fix, every update failed with "Access is denied" (2026-10-04).
 
 Release: push to main touching `runner/**` (not `*.md`) → `runner-release.yml` → `go test` →
 builds relay-runner/keeperd/wakerd for linux amd64/arm64/arm + windows amd64, tag

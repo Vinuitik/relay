@@ -22,6 +22,25 @@ func terminate(p *os.Process) { _ = p.Kill() }
 // and exits. Nothing restarts keeperd on Windows (the scheduled task only
 // fires at boot), so it must hand over to its successor itself.
 func RelaunchSelf(path string) error {
+	if err := startDetached(path); err != nil {
+		return err
+	}
+	os.Exit(0)
+	return nil
+}
+
+// RelaunchWatcher restarts `keeperd -watch-input` from path (the freshly
+// installed keeperd) and exits, so the old watcher stops holding the
+// previous binary open - see clearOld.
+func RelaunchWatcher(path string) error {
+	if err := startDetached(path, "-watch-input"); err != nil {
+		return err
+	}
+	os.Exit(0)
+	return nil
+}
+
+func startDetached(path string, args ...string) error {
 	const detachedProcess = 0x00000008
 	const createNoWindow = 0x08000000
 	// Task Scheduler runs its task inside a job object; breaking away keeps
@@ -31,18 +50,14 @@ func RelaunchSelf(path string) error {
 	base := uint32(detachedProcess | createNoWindow | syscall.CREATE_NEW_PROCESS_GROUP)
 	var err error
 	for _, flags := range []uint32{base | breakawayFromJob, base} {
-		cmd := exec.Command(path)
+		cmd := exec.Command(path, args...)
 		cmd.Env = os.Environ()
 		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags}
 		if err = cmd.Start(); err == nil {
 			break
 		}
 	}
-	if err != nil {
-		return err
-	}
-	os.Exit(0)
-	return nil
+	return err
 }
 
 // hideWindow keeps the runner child from opening a console window.

@@ -20,6 +20,9 @@ func RelaunchSelf(path string) error {
 	return nil
 }
 
+// RelaunchWatcher is a no-op: the input watcher is Windows-only.
+func RelaunchWatcher(path string) error { return nil }
+
 func hideWindow(*exec.Cmd) {}
 
 // bindToKeeper is a no-op: systemd stops the whole cgroup (keeperd, runner,

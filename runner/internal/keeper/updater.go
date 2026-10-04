@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -239,7 +240,7 @@ func (u *Updater) replaceRunner(r *Release) error {
 	}
 	log.Printf("keeper: updating runner to %s", r.Tag)
 	u.Supervisor.Stop()
-	_ = os.Remove(oldPath)
+	clearOld(oldPath)
 	if err := os.Rename(path, oldPath); err != nil && !os.IsNotExist(err) {
 		u.Supervisor.Start()
 		return fmt.Errorf("move old runner aside: %w", err)
@@ -302,6 +303,26 @@ func (u *Updater) replaceKeeper(r *Release) error {
 	}
 	u.Supervisor.Stop()
 	return u.Relaunch(path)
+}
+
+// clearOld removes the previous update's leftover binary. On Windows a
+// running executable can be renamed but not deleted - e.g. the logon-time
+// input watcher still running last release's keeperd (now named .old) - so
+// a locked one is renamed aside instead; otherwise renaming the current
+// binary onto it fails with "Access is denied" and every update is stuck.
+// Asides from earlier updates are deleted here once they're unlocked.
+func clearOld(oldPath string) {
+	asides, _ := filepath.Glob(oldPath + "-*")
+	for _, p := range asides {
+		_ = os.Remove(p)
+	}
+	if err := os.Remove(oldPath); err == nil || os.IsNotExist(err) {
+		return
+	}
+	aside := fmt.Sprintf("%s-%d", oldPath, time.Now().Unix())
+	if err := os.Rename(oldPath, aside); err != nil {
+		log.Printf("keeper: move locked %s aside: %v", oldPath, err)
+	}
 }
 
 // updateAdapter installs/updates the ACP adapter into Cfg.AdapterDir via
