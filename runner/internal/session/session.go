@@ -234,7 +234,7 @@ func defaultProviders() map[string]ProviderCommand {
 // replacement, see runner/FLOWS.md.
 var autoDetectProviders = map[string]ProviderCommand{
 	"claude": {Name: "claude-agent-acp", ACP: true},
-	"codex": {Name: "codex"},
+	"codex":  {Name: "codex"},
 }
 
 // resolveProvider maps a provider name to a command, in order: (1)

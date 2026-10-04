@@ -47,7 +47,7 @@ type Session struct {
 // run again until the user happens to open the app.
 type Registry struct {
 	mu      sync.Mutex
-	file    string // path to the devices.json file; empty = no persistence
+	file    string             // path to the devices.json file; empty = no persistence
 	devices map[string]*Device // keyed by fcmToken
 	nextID  uint64
 }

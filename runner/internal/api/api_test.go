@@ -302,4 +302,3 @@ func TestUnknownProviderIs400(t *testing.T) {
 		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
 	}
 }
-

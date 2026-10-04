@@ -43,12 +43,12 @@ func TestBuildMagicPacket_CaseInsensitive(t *testing.T) {
 func TestBuildMagicPacket_Malformed(t *testing.T) {
 	cases := []string{
 		"",
-		"AA:BB:CC:DD:EE",          // too few groups
-		"AA:BB:CC:DD:EE:FF:00",    // too many groups
-		"AA:BB:CC:DD:EE:GG",       // invalid hex
-		"AABBCCDDEEFF",            // no separators
-		"AA:BB:CC:DD:EE:F",        // short group
-		"AA:BB:CC:DD:EE:FFF",      // long group
+		"AA:BB:CC:DD:EE",       // too few groups
+		"AA:BB:CC:DD:EE:FF:00", // too many groups
+		"AA:BB:CC:DD:EE:GG",    // invalid hex
+		"AABBCCDDEEFF",         // no separators
+		"AA:BB:CC:DD:EE:F",     // short group
+		"AA:BB:CC:DD:EE:FFF",   // long group
 	}
 	for _, mac := range cases {
 		if _, err := BuildMagicPacket(mac); err == nil {

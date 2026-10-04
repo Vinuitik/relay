@@ -18,7 +18,7 @@ import (
 // wrapper for.
 var (
 	user32               = windows.NewLazySystemDLL("user32.dll")
-	kernel32              = windows.NewLazySystemDLL("kernel32.dll")
+	kernel32             = windows.NewLazySystemDLL("kernel32.dll")
 	procGetLastInputInfo = user32.NewProc("GetLastInputInfo")
 	procGetTickCount     = kernel32.NewProc("GetTickCount")
 )
