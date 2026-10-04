@@ -2,7 +2,7 @@
 
 Files: MainActivity.kt, RelayNavHost.kt, HomeScreen.kt, HomeViewModel.kt, ProjectScreen.kt,
 ProjectViewModel.kt, RunnerListScreen.kt, QrScanScreen.kt, ChatScreen.kt, ChatViewModel.kt, MarkdownText.kt, Theme.kt,
-ClaudeSignInSheet.kt (ClaudeSignInViewModel),
+ClaudeSignInSheet.kt (ClaudeSignInViewModel), UsageScreen.kt (UsageViewModel.kt),
 FileBrowserScreen.kt (FileBrowserViewModel + FileBrowserContent), ContainersScreen.kt
 (ContainersViewModel + ContainersContent), FolderPickerScreen.kt, ScreenStates.kt,
 KnownRunnersRepository.kt, AppPrefsRepository.kt, RelayApiClient.kt, RelayApiService.kt,
@@ -50,7 +50,7 @@ MainActivity → RelayNavHost → waits for first DataStore read (runners, lastR
   Empty → inline composer: first message = `createSession` + `sendMessage` → Chat.
   Files tab = `FileBrowserContent`, Containers tab = `ContainersContent` (no own top bar).
   To change: ProjectScreen.kt (`ChatsContent`, `NewChatFab`, `FirstMessageComposer`).
-- Manage runners: tap row → becomes current runner → Home. Row ⋮ = Rename / Sleep / Remove
+- Manage runners: tap row → becomes current runner → Home. Row ⋮ = Rename / Usage / Sleep / Remove
   (Sleep + Remove confirmed). ExtendedFAB "Pair runner" → QR (Crossfade 200ms, same screen).
   No runners → `EmptyState` line + "Pair runner" button.
 - Leaving a runner-scoped route for an unknown host → "Unknown runner" placeholder.
@@ -259,6 +259,31 @@ To change: `ui/screens/RunnerListScreen.kt` (`suspendRunner`).
 local-only, the runner itself is untouched; re-adding is just a rescan since the runner's key
 never changes.
 
+## Usage (would a wake device pay for itself?)
+
+Files: UsageScreen.kt, UsageViewModel.kt (`savings()`), AppPrefsRepository.kt (`UsageCosts`),
+MainActivity.kt (`pingActivityWhileForeground`), RelayApiService.kt (`usage()`, `activity()`)
+
+```
+RunnerListScreen row ⋮ → Usage → Routes.USAGE "r/{host}/usage"
+  → UsageViewModel.refresh() → GET /v1/usage?days=N  (7/14/30/90 chips, default 14)
+  → UsageScreen: Measured · If it slept when idle (per limit) · When you use it (heatmap) ·
+                 Agent turns · Assumptions
+Assumptions field edit → AppPrefsRepository.setUsageCosts(host, …) → flow → £ recomputed locally
+```
+
+- £/yr per limit = `(1 − awake%) × 8760 h × (idle W − asleep W) × £/kWh` (`savings()`).
+  Verdict (15-min row) also subtracts the wake device's own 24/7 draw → payback months.
+- Remote wake-ups = wake-ups with no keyboard/mouse that minute — the only ones a device is for.
+- The simulation itself runs on the runner: runner/internal/usage/FLOWS.md.
+
+Foreground ping: `MainActivity.pingActivityWhileForeground` → `repeatOnLifecycle(STARTED)` →
+every 30 s `POST /v1/activity` to **every** known runner, failures ignored. Stops on background.
+Feeds idle-suspend and the recorder's `app` signal.
+
+To change defaults (5 W idle, 0.5 W asleep, £0.25/kWh, £35.60 device, 1 W device):
+`AppPrefsRepository.UsageCosts`. To change ping rate: `MainActivity.ACTIVITY_PING_MS`.
+
 ## New project: scaffold vs. register existing folder
 
 Files: HomeScreen.kt, FolderPickerScreen.kt
@@ -395,6 +420,11 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
 
 ## Technology notes
 
+- **Usage costs** live in DataStore (`app_prefs`): idle watts per runner hostname (`usage_idle_w_<host>`),
+  the rest global. Renaming a runner keeps them; re-pairing under a new hostname starts at defaults.
+- **Activity ping** goes to every known runner, not just the one on screen - "app open" means
+  "the user is around", which is what idle-suspend needs. A runner the phone can't reach just
+  misses pings; nothing retries.
 - **Claude sign-in sheet ViewModel** is keyed by a `remember`ed random id, so each opening gets a
   fresh one - but it lives in the host screen's ViewModelStore until that back-stack entry pops
   (a few tiny leftovers per screen, harmless). Rotation/process death drops the id → the sheet
@@ -495,6 +525,10 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Routes / deep link pattern / transitions | `ui/navigation/RelayNavHost.kt` (`Routes`, `forwardEnter`…`backExit`) |
 | Last-route restore | `ui/navigation/RelayNavHost.kt` (`RESTORE_PATTERN`, restore `LaunchedEffect`), `MainActivity.kt` (`restoreLastRoute`) |
 | Current runner / last route / last provider prefs | `data/AppPrefsRepository.kt` |
+| Usage screen layout / heatmap | `ui/screens/UsageScreen.kt` |
+| £/yr + payback math | `ui/screens/UsageViewModel.kt` (`savings()`) |
+| Usage cost defaults / storage | `data/AppPrefsRepository.kt` (`UsageCosts`, `usageCosts()`) |
+| Foreground activity ping | `MainActivity.kt` (`pingActivityWhileForeground`, `ACTIVITY_PING_MS`) |
 | Provider list on New chat long-press | `data/AppPrefsRepository.kt` (`KNOWN_PROVIDERS`, `DEFAULT_PROVIDER`) |
 | Home layout (Needs you, project rows, row ⋮, add sheet, switcher) | `ui/screens/HomeScreen.kt` |
 | Home data loading / container lamps / up-down from row | `ui/screens/HomeViewModel.kt` |

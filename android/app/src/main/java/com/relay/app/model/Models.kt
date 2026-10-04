@@ -159,3 +159,37 @@ data class ClaudeAuthStatus(
     val loggedIn: Boolean = false,
     val email: String? = null,
 )
+
+/** Mirrors shared/API.md `UsageReport` - `GET /v1/usage`: recorded activity + idle-suspend simulation. */
+data class UsageReport(
+    val from: String,
+    val to: String,
+    val spanMinutes: Int,
+    val observedMinutes: Int,
+    val uptimePct: Double,
+    val activeMinutes: Int,
+    val bySource: Map<String, Int> = emptyMap(),
+    val limits: List<UsageLimit> = emptyList(),
+    /** [weekday 0=Monday][hour 0-23], runner's local zone. */
+    val heatmapActive: List<List<Int>> = emptyList(),
+    val heatmapObserved: List<List<Int>> = emptyList(),
+    val turns: UsageStats = UsageStats(),
+    val replyLatency: UsageStats = UsageStats(),
+)
+
+data class UsageLimit(
+    val idleMinutes: Int,
+    val awakePct: Double,
+    val wakeups: Int,
+    val remoteWakeups: Int,
+    val wakeupsPerDay: Double,
+    val remoteWakeupsPerDay: Double,
+)
+
+data class UsageStats(
+    val count: Int = 0,
+    val medianSec: Double = 0.0,
+    val p90Sec: Double = 0.0,
+    val meanSec: Double = 0.0,
+    val totalSec: Double = 0.0,
+)

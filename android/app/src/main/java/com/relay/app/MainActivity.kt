@@ -13,6 +13,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -20,8 +23,12 @@ import com.google.firebase.messaging.FirebaseMessaging
 import com.relay.app.data.AppPrefsRepository
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.fcm.RegisterDeviceWorker
+import com.relay.app.network.RelayApiClient
 import com.relay.app.ui.navigation.RelayNavHost
 import com.relay.app.ui.theme.RelayTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -41,6 +48,7 @@ class MainActivity : ComponentActivity() {
         val restoreLastRoute = savedInstanceState == null && intent?.data == null
 
         registerCurrentFcmTokenWithAllRunners()
+        pingActivityWhileForeground(runnersRepository)
         requestNotificationPermissionIfNeeded()
 
         setContent {
@@ -87,6 +95,24 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * `POST /v1/activity` to every known runner every 30s while the app is visible (STARTED), and
+     * never in the background - repeatOnLifecycle cancels the loop on stop. Feeds the runner's
+     * idle-suspend and usage recorder ("app" signal). Failures (runner asleep/offline) are ignored.
+     */
+    private fun pingActivityWhileForeground(runnersRepository: KnownRunnersRepository) {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    for (runner in runnersRepository.runners.first()) {
+                        launch { runCatching { RelayApiClient.forRunner(runner).activity().body()?.close() } }
+                    }
+                    delay(ACTIVITY_PING_MS)
+                }
+            }
+        }
+    }
+
+    /**
      * Android 13+ (API 33) requires explicit runtime consent to show any notification,
      * including the job-done push in [com.relay.app.fcm.RelayFirebaseMessagingService]. Below
      * API 33 this permission doesn't exist and notifications just work.
@@ -104,5 +130,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val ACTIVITY_PING_MS = 30_000L
     }
 }

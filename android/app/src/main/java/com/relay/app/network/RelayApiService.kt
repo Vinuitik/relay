@@ -9,6 +9,7 @@ import com.relay.app.model.FileEntry
 import com.relay.app.model.Project
 import com.relay.app.model.RunnerInfo
 import com.relay.app.model.Session
+import com.relay.app.model.UsageReport
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
@@ -124,6 +125,16 @@ interface RelayApiService {
      * [com.relay.app.ui.screens.RunnerListScreen]'s "Sleep" button. */
     @POST("v1/suspend")
     suspend fun suspend(): Response<ResponseBody>
+
+    /** "The app is in the foreground" - sent every 30s while it is (MainActivity), never in the
+     * background. Feeds idle-suspend and the usage recorder's `app` signal. */
+    @POST("v1/activity")
+    suspend fun activity(): Response<ResponseBody>
+
+    /** Recorded usage over the last [days] + idle-suspend simulation - see
+     * [com.relay.app.ui.screens.UsageScreen]. */
+    @GET("v1/usage")
+    suspend fun usage(@Query("days") days: Int): UsageReport
 
     /** Lists a directory within a project — `path` omitted/blank means the project root. See
      * shared/API.md and [com.relay.app.ui.screens.FileBrowserContent]. Read-only. */

@@ -50,6 +50,8 @@ import com.relay.app.ui.screens.HomeViewModel
 import com.relay.app.ui.screens.ProjectScreen
 import com.relay.app.ui.screens.ProjectTab
 import com.relay.app.ui.screens.ProjectViewModel
+import com.relay.app.ui.screens.UsageScreen
+import com.relay.app.ui.screens.UsageViewModel
 import com.relay.app.ui.screens.RunnerListScreen
 import com.relay.app.ui.theme.RelayMotion
 import kotlinx.coroutines.flow.first
@@ -65,11 +67,13 @@ object Routes {
     const val FOLDER_PICKER = "r/{host}/pick-folder"
     const val PROJECT = "r/{host}/p/{projectId}?tab={tab}"
     const val CHAT = "r/{host}/p/{projectId}/s/{sessionId}"
+    const val USAGE = "r/{host}/usage"
 
     /** Push notifications open this (RelayFirebaseMessagingService builds it). */
     const val CHAT_DEEP_LINK = "relay://r/{host}/p/{projectId}/s/{sessionId}"
 
     fun folderPicker(host: String) = "r/${enc(host)}/pick-folder"
+    fun usage(host: String) = "r/${enc(host)}/usage"
     fun project(host: String, projectId: String, tab: String = ProjectTab.CHATS) =
         "r/${enc(host)}/p/${enc(projectId)}?tab=${enc(tab)}"
     fun chat(host: String, projectId: String, sessionId: String) =
@@ -209,7 +213,25 @@ fun RelayNavHost(
                     scope.launch { prefs.setCurrentRunner(runner.hostname) }
                     goHome(navController)
                 },
+                onUsage = { runner -> navController.navigate(Routes.usage(runner.hostname)) },
                 onBack = if (canGoBack) ({ navController.popBackStack() }) else null,
+            )
+        }
+
+        composable(
+            route = Routes.USAGE,
+            arguments = listOf(navArgument("host") { type = NavType.StringType }),
+        ) { entry ->
+            val runner = runnerFor(entry) ?: return@composable UnknownRunnerPlaceholder()
+            val vm: UsageViewModel = viewModel(factory = viewModelFactory { initializer { UsageViewModel(runner) } })
+            val costs by remember(runner.hostname) { prefs.usageCosts(runner.hostname) }
+                .collectAsState(initial = AppPrefsRepository.UsageCosts())
+            UsageScreen(
+                vm = vm,
+                title = runner.label,
+                costs = costs,
+                onCostsChange = { c -> scope.launch { prefs.setUsageCosts(runner.hostname, c) } },
+                onBack = { navController.popBackStack() },
             )
         }
 
