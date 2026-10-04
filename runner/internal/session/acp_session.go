@@ -20,6 +20,7 @@ import (
 //	            prompt returns (end_turn/cancelled/...) → idle + OnFinished
 //	Cancel:     session/cancel → prompt returns "cancelled"
 //	agent dies: awaitACPExit → dormant (idle, no process); next message resumes
+//	re-login:   RestartIdleAgents → detach (dormant) + kill idle agents, no note
 //
 // The agent process can come and go during one session's life (restored
 // from disk, crashed, resumed), so rec.acp/rec.cmd are only read and
@@ -491,6 +492,43 @@ func (m *Manager) Shutdown() {
 			_ = cmd.Process.Kill()
 		}
 	}
+}
+
+// RestartIdleAgents kills the agent process of every live ACP session of
+// provider ("" = any) that is NOT mid-turn, so the next message respawns it
+// via ensureAgent → session/resume - used after a Claude re-login (see
+// internal/auth) so agents pick up the new credentials. The record is
+// detached (dormant) under the lock before the kill, so awaitACPExit sees
+// rec.acp != client and adds no "(agent process exited …)" note, and a
+// message arriving meanwhile resumes on a fresh process instead of the dying
+// one. Sessions mid-turn (busy or waiting on permission) are never touched.
+// Returns how many agents were restarted.
+func (m *Manager) RestartIdleAgents(provider string) int {
+	m.mu.Lock()
+	recs := make([]*record, 0, len(m.sessions))
+	for _, rec := range m.sessions {
+		recs = append(recs, rec)
+	}
+	m.mu.Unlock()
+	n := 0
+	for _, rec := range recs {
+		rec.mu.Lock()
+		client := rec.acp
+		if client == nil || rec.turnActive || rec.stopped || isTerminal(rec.data.State) ||
+			(provider != "" && rec.data.Provider != provider) {
+			rec.mu.Unlock()
+			continue
+		}
+		rec.acp = nil
+		rec.cmd = nil
+		rec.dormant = true
+		rec.mu.Unlock()
+		if p := client.Cmd().Process; p != nil {
+			_ = p.Kill()
+		}
+		n++
+	}
+	return n
 }
 
 func hasMode(modes []acp.Mode, id string) bool {

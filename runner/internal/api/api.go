@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"relay/runner/internal/activity"
+	"relay/runner/internal/auth"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
@@ -50,6 +51,9 @@ type Server struct {
 	// accepts pings); it's only ever consulted when idle-suspend itself is
 	// enabled, since that's the only thing that reads it.
 	Activity *activity.Tracker
+	// ClaudeAuth drives the phone-initiated Claude Code re-login
+	// (/v1/auth/claude*, see auth.go). nil → those endpoints return 503.
+	ClaudeAuth *auth.Manager
 
 	// opsMu guards containerOps: per-project background compose
 	// operations (see containers.go). runSync makes them run inline, for
@@ -91,6 +95,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/suspend", s.auth(s.handleSuspend))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files", s.auth(s.handleListFiles))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files/content", s.auth(s.handleFileContent))
+	mux.HandleFunc("GET /v1/auth/claude", s.auth(s.handleClaudeAuthStatus))
+	mux.HandleFunc("POST /v1/auth/claude/start", s.auth(s.handleClaudeAuthStart))
+	mux.HandleFunc("POST /v1/auth/claude/finish", s.auth(s.handleClaudeAuthFinish))
 
 	return mux
 }

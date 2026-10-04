@@ -100,7 +100,7 @@ turn → `markProblemReply` checks this turn's last agent reply (≤300 chars on
 -32000, or text like "OAuth token has expired" / "Please run /login"). `Session.LastProblem()` →
 FCM `session_finished` `problem` field → "Claude quota exhausted" / "Claude login expired" push.
 To change the wording matched: `session/problem.go` (`quotaMarkers`, `authMarkers`).
-Re-login from the phone: [NOT IMPLEMENTED] - next step, see "Provider login".
+Re-login from the phone: see "Claude re-login (from the phone)" below.
 
 Permission: agent sends `session/request_permission` → `onRequest`: state `waiting`,
 `Session.pendingPermission {title, toolKind, options}`, `OnNeedsInput` → FCM
@@ -382,13 +382,47 @@ still needs a human to open a URL in a browser somewhere - no amount of
 sudo can click a login link. install.sh gets you as close as possible: it
 runs the command and surfaces the URL inline rather than making you run a
 separate step. `claude auth login` / `codex login` are NOT run by
-install.sh at all yet. `[NOT IMPLEMENTED]`: relaying that login URL to the
-phone app so auth can be completed without physical/SSH access to the
-server. Design depends on what `claude auth login` actually prints/does
-when run headless (no local browser) - untested as of 2026-09-14, verify on
-the real server before building the relay.
+install.sh. Claude's login (first or expired) is done from the phone instead -
+see "Claude re-login" below. Codex login from the phone: `[NOT IMPLEMENTED]`.
 
 To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
+
+## Claude re-login (from the phone)
+
+Files: internal/auth/auth.go, internal/api/auth.go, internal/session/acp_session.go (`RestartIdleAgents`), cmd/runnerd/main.go
+
+For when Claude Code's login expires and nobody is at the PC (the "Claude login expired" push).
+
+Start: POST /v1/auth/claude/start → `api.handleClaudeAuthStart` → `auth.Manager.Start` → already
+`awaiting_code` and < 10 min old? return the same URL → else `FindCLI` (env `RELAY_CLAUDE_CLI`, else
+PATH `claude` / `claude.cmd` / `claude.exe`) → `Runner.Start("claude auth login")` (stdin = pipe, no
+TTY) → `login.watch` streams stdout+stderr, `ParseLoginURL` = first `https://…oauth/authorize…`
+(ANSI stripped) → `{state:"awaiting_code", url}`. No URL within 20s → kill → `failed`.
+To change timeouts: `Manager.URLTimeout` / `CodeTimeout` / `FinishTimeout` in `auth.NewManager`.
+
+Phone opens the URL → signs in on claude.com → the platform.claude.com callback page shows a code
+→ user pastes it in the app.
+
+Finish: POST /v1/auth/claude/finish `{code}` → `Manager.Finish` → trim → write `code+"\n"` to the
+CLI's stdin → wait ≤ 60s for exit → exit 0 or output contains "Login successful" → `signed_in` →
+`OnSignedIn` → `session.Manager.RestartIdleAgents("claude")`; else `failed`, message = last 5
+output lines (full output in the runner log). The process is always reaped (`login.done`).
+Nobody finishes within 10 min → `Manager.expire` kills it → `failed` ("login timed out").
+
+Restart agents: `RestartIdleAgents` → for each live ACP `claude` session NOT mid-turn (busy or
+waiting on permission are skipped) → detach under `rec.mu` (`acp=nil`, `dormant=true`) → kill the
+agent → `awaitACPExit` sees `rec.acp != client` → no "(agent process exited …)" note → next
+message → `ensureAgent` respawns + `session/resume` with the new credentials. Busy sessions keep
+their old agent (which may still fail on the expired token; the user retries after the turn).
+
+Status: GET /v1/auth/claude → `Manager.Status` → `{state, url (only while awaiting_code),
+message, loggedIn, email}`; loggedIn/email from `claude auth status --json` (10s timeout,
+`ParseAuthStatus`: `loggedIn` must be literally `true`, first `email` found anywhere).
+Errors: 400 empty code, 409 finish with no login in progress, 503 claude CLI not found.
+
+Verified 2026-10 on Windows (Claude Code 2.1.226): piped stdin prints the URL + "Paste code here
+if prompted >" and "Login successful." on success. The paste-from-another-device step itself is
+not yet verified end-to-end - hence the CLI's last lines in every failure message.
 
 ## keeperd - keeps the runner running and up to date
 
@@ -504,6 +538,24 @@ literal junk directory with that exact garbled name behind on disk (found and de
 now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code path).
 
 ## Technology notes
+
+- **Claude re-login depends on the Claude CLI's output wording**: the URL is found by matching
+  `https://…oauth/authorize…`, success by exit 0 or "Login successful". A CLI that changes the
+  URL path, stops printing it without a TTY, or reads the code differently breaks Start/Finish -
+  the failure message carries the CLI's last 5 lines (full output in the runner log).
+- **The new credentials are written by the CLI itself** to the runner user's home
+  (`~/.claude/.credentials.json`; on macOS the keychain). A runner running as a different user
+  than the one whose Claude login the agents use would log the wrong account in. Agents only
+  read credentials at start, hence `RestartIdleAgents`; a session busy at login time keeps the
+  stale token until its agent is restarted.
+- **One login at a time, in memory**: `auth.Manager` holds a single `claude auth login`
+  process; a second Start returns the same URL. A runner restart kills the pending login (the
+  phone must Start again). The process is killed after 10 min without a code.
+- **The login code travels over plain HTTP** inside the Tailscale tunnel (WireGuard-encrypted),
+  gated by the runner key like every other endpoint. Anyone holding the runner key could also
+  start a login and attach their own Claude account to this runner.
+- **`RELAY_CLAUDE_CLI`** overrides the binary path; a Task Scheduler/systemd runner may not have
+  npm's/the installer's bin dir on PATH (503 "claude CLI not found" otherwise).
 
 - **Quota/auth detection is substring matching on the provider's wording** (`session/problem.go`).
   If Claude Code rewords its limit/expiry message, the card silently degrades to a plain
@@ -735,4 +787,11 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Unscoped directory browse (project picking) | `internal/project/project.go` (`BrowseDir`), `internal/api/api.go` (`handleBrowse`) |
 | Filesystem roots listing | `internal/project/roots_unix.go`, `roots_windows.go` (`listRoots`) |
 | Folder picker start folder (Documents) | `internal/project/project.go` (`documentsDir`, `StartPath`), `roots_*.go` (`knownDocumentsDir`) |
+| Claude re-login endpoints / HTTP status mapping | `internal/api/auth.go` (`handleClaudeAuth*`, `writeAuthError`) |
+| Claude login process, state machine, timeouts | `internal/auth/auth.go` (`Manager.Start`/`Finish`/`expire`, `NewManager`) |
+| Login URL detection | `internal/auth/auth.go` (`ParseLoginURL`, `loginRe`, `ansiRe`) |
+| `claude auth status --json` parsing | `internal/auth/auth.go` (`ParseAuthStatus`) |
+| claude binary location | env `RELAY_CLAUDE_CLI` → `internal/auth/auth.go` (`FindCLI`) |
+| Restart idle agents after login | `internal/session/acp_session.go` (`RestartIdleAgents`), wired in `cmd/runnerd/main.go` (`claudeAuth.OnSignedIn`) |
+| Fake CLI in tests | `auth.Runner` / `auth.Proc` interfaces (`internal/auth/auth_test.go`) |
 | Laptop auto-start at boot | `install/install-keeperd.ps1` ("Relay keeper" task, see "keeperd"); `start-relay-runner.ps1` is legacy |

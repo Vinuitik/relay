@@ -18,6 +18,7 @@ import (
 
 	"relay/runner/internal/activity"
 	"relay/runner/internal/api"
+	"relay/runner/internal/auth"
 	"relay/runner/internal/compose"
 	"relay/runner/internal/config"
 	"relay/runner/internal/idle"
@@ -139,6 +140,16 @@ func main() {
 	// and only when idle-suspend is enabled below). See internal/activity.
 	tracker := activity.NewTracker()
 	srv.Activity = tracker
+
+	// Claude re-login from the phone (/v1/auth/claude*). After a successful
+	// login, idle claude agents are restarted so they read the new
+	// credentials; busy ones are left alone. See internal/auth.
+	claudeAuth := auth.NewManager()
+	claudeAuth.OnSignedIn = func() {
+		n := sessions.RestartIdleAgents("claude")
+		log.Printf("auth: claude login refreshed; restarted %d idle agent(s)", n)
+	}
+	srv.ClaudeAuth = claudeAuth
 
 	if idleCfg.Enabled {
 		log.Printf("idle: suspend-to-sleep enabled (timeout=%s, check interval=%s)", idleCfg.Timeout, idleCfg.CheckInterval)

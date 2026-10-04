@@ -96,6 +96,23 @@ BrowseResult {
 
 `Project` also gains `activeComposeFile?: string`.
 
+### ClaudeAuthStatus / ClaudeAuthResult
+
+```
+ClaudeAuthStatus {
+  state: "idle" | "awaiting_code" | "signed_in" | "failed",  // last re-login attempt since runner start
+  url?: string,       // only while awaiting_code - open it on the phone to sign in
+  message?: string,   // failed: why, incl. the CLI's last output lines; signed_in: "Login successful."
+  loggedIn: boolean,  // from `claude auth status --json`, false if unknown
+  email?: string      // the logged-in account, if known
+}
+ClaudeAuthResult {
+  state: "awaiting_code" | "signed_in" | "failed",
+  url?: string,       // start only
+  message?: string
+}
+```
+
 ## Endpoints
 
 | Method | Path | Body | Response | Notes |
@@ -122,6 +139,9 @@ BrowseResult {
 | POST | `/v1/activity` | - | `202 {}` | tells the runner "the phone app is in the foreground right now" — one of the signals idle-suspend uses to decide whether to suspend the machine, alongside session busy/idle state and local keyboard/mouse input. Call every 30s while, and only while, the app is in the foreground; stop calling when it's backgrounded or closed. Always accepted, even if idle-suspend is disabled on this runner — see runner/FLOWS.md "Idle-suspend". |
 | GET | `/v1/projects/{projectId}/files?path=<relative>` | - | `200 FileEntry[]` | lists a directory within the project. `path` omitted/empty = project root. `400` if `path` escapes the project directory (`../`) or isn't a directory. Read-only — see ARCHITECTURE.md "Runner responsibilities". |
 | GET | `/v1/projects/{projectId}/files/content?path=<relative>` | - | `200 FileContent` | returns one file's text content. `400` if `path` is missing/escapes the project dir/is a directory, `404` if it doesn't exist, `413` if over 1MiB, `415` if it looks binary (a null byte in the first 512 bytes). |
+| GET | `/v1/auth/claude` | - | `200 ClaudeAuthStatus` | Claude Code login state on this runner. `503` if the `claude` CLI isn't found (`RELAY_CLAUDE_CLI` / PATH). |
+| POST | `/v1/auth/claude/start` | - | `200 ClaudeAuthResult` | starts `claude auth login` and returns `{state:"awaiting_code", url}` (can take up to ~20s). A login already awaiting a code (< 10 min old) is reused - same `url`. If the CLI never prints a URL: `200 {state:"failed", message}`. The pending login is killed after 10 min without a code. `503` if the CLI isn't found. |
+| POST | `/v1/auth/claude/finish` | `{code: string}` | `200 ClaudeAuthResult` | sends the code shown on the platform.claude.com callback page to the waiting login (can take up to ~60s): `{state:"signed_in", message}` or `{state:"failed", message}`. On success, idle Claude sessions restart their agent silently and resume on the next message (busy ones are left alone). `400` empty code, `409` no login in progress, `503` CLI not found. |
 
 Errors: `4xx/5xx` bodies are `{"error": string}`.
 
