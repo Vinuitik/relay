@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -86,6 +87,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/browse", s.auth(s.handleBrowse))
 	mux.HandleFunc("GET /v1/projects/{projectId}/sessions", s.auth(s.handleListSessions))
 	mux.HandleFunc("POST /v1/projects/{projectId}/sessions", s.auth(s.handleStartSession))
+	mux.HandleFunc("GET /v1/projects/{projectId}/agent-chats", s.auth(s.handleListAgentChats))
 	mux.HandleFunc("GET /v1/sessions", s.auth(s.handleListAllSessions))
 	mux.HandleFunc("GET /v1/sessions/{sessionId}", s.auth(s.handleGetSession))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/message", s.auth(s.handleSendMessage))
@@ -317,6 +319,9 @@ func (s *Server) handleListAllSessions(w http.ResponseWriter, r *http.Request) {
 
 type startSessionRequest struct {
 	Provider string `json:"provider"`
+	// AgentSessionID, if set, opens one of the agent's saved conversations
+	// (e.g. started in VS Code) instead of a new one - see session.Adopt.
+	AgentSessionID string `json:"agentSessionId,omitempty"`
 }
 
 func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
@@ -327,23 +332,62 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.Sessions.Start(projectID, req.Provider)
+	var sess session.Session
+	var err error
+	existing := false
+	if req.AgentSessionID != "" {
+		sess, existing, err = s.Sessions.Adopt(projectID, req.Provider, req.AgentSessionID)
+	} else {
+		sess, err = s.Sessions.Start(projectID, req.Provider)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, session.ErrProjectNotFound):
 			writeError(w, http.StatusNotFound, "project not found")
-		case errors.Is(err, session.ErrUnknownProvider):
+		case errors.Is(err, session.ErrUnknownProvider), errors.Is(err, session.ErrNotSupported):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			writeError(w, http.StatusInternalServerError, err.Error())
 		}
 		return
 	}
-	writeJSON(w, http.StatusCreated, sess)
+	status := http.StatusCreated
+	if existing {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, sess)
+}
+
+// handleListAgentChats lists the agent's own saved conversations for the
+// project folder (VS Code's included), so the phone can continue one.
+func (s *Server) handleListAgentChats(w http.ResponseWriter, r *http.Request) {
+	provider := r.URL.Query().Get("provider")
+	if provider == "" {
+		provider = "claude"
+	}
+	chats, err := s.Sessions.ListAgentChats(r.PathValue("projectId"), provider)
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrProjectNotFound):
+			writeError(w, http.StatusNotFound, "project not found")
+		case errors.Is(err, session.ErrUnknownProvider), errors.Is(err, session.ErrNotSupported):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chats": chats})
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.Sessions.Get(r.PathValue("sessionId"))
+	id := r.PathValue("sessionId")
+	// Pick up turns written from VS Code since (no-op unless the chat's
+	// transcript grew; reloading takes a few seconds when it did).
+	if err := s.Sessions.Sync(id); err != nil && !errors.Is(err, session.ErrSessionNotFound) {
+		log.Printf("api: sync session %s: %v", id, err)
+	}
+	sess, err := s.Sessions.Get(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return

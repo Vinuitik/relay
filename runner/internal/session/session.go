@@ -145,6 +145,22 @@ type record struct {
 	// died) with no process; the next message resumes it - see ensureAgent.
 	dormant bool
 
+	// Shared chats (shared.go). replaying: session/load is replaying the
+	// conversation into data.Messages. transcriptSize/transcriptKnown: size
+	// of the agent's own transcript file when the runner last caught up with
+	// it; growth beyond it means someone else (VS Code) wrote to the chat.
+	// transcriptPath caches where that file is. syncing guards Sync.
+	// agentMu serializes ensureAgent (a turn and a Sync may both want to
+	// spawn/reload the agent). Lock order: agentMu before mu, never the
+	// other way round.
+	agentMu         sync.Mutex
+	replaying       bool
+	replayMsgs      []Message
+	transcriptSize  int64
+	transcriptKnown bool
+	transcriptPath  string
+	syncing         bool
+
 	// Persistence bookkeeping (store.go).
 	saved        []byte    // last bytes written to disk
 	savedContent []byte    // content() at that save, for change detection

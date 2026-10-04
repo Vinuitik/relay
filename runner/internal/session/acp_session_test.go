@@ -76,6 +76,22 @@ func runFakeAgent() {
 					{"id": "default", "name": "Manual"}, {"id": "bypassPermissions", "name": "Bypass permissions"},
 				}},
 			}})
+		case "session/load":
+			// Replays a short history: one question, one answer, one tool call.
+			update(map[string]any{"sessionUpdate": "user_message_chunk", "messageId": "u0", "content": map[string]string{"type": "text", "text": "earlier question"}})
+			update(map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "a0", "content": map[string]string{"type": "text", "text": "earlier "}})
+			update(map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "a0", "content": map[string]string{"type": "text", "text": "answer"}})
+			update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t0", "title": "Read b.go", "kind": "read", "status": "completed"})
+			send(map[string]any{"id": m.ID, "result": map[string]any{
+				"modes": map[string]any{"currentModeId": "default", "availableModes": []map[string]string{
+					{"id": "default", "name": "Manual"}, {"id": "bypassPermissions", "name": "Bypass permissions"},
+				}},
+			}})
+		case "session/list":
+			send(map[string]any{"id": m.ID, "result": map[string]any{"sessions": []map[string]string{
+				{"sessionId": "vs1", "cwd": "/p", "title": "From VS Code", "updatedAt": "2026-10-04T10:00:00Z"},
+				{"sessionId": "fs1", "cwd": "/p", "title": "From Relay", "updatedAt": "2026-10-04T09:00:00Z"},
+			}}})
 		case "session/set_mode":
 			send(map[string]any{"id": m.ID, "result": map[string]any{}})
 		case "session/cancel":

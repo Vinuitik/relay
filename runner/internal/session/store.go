@@ -37,6 +37,9 @@ type persisted struct {
 	ACPSessionID string `json:"acpSessionId,omitempty"`
 	// ACP marks a session that ran over ACP and can be resumed.
 	ACP bool `json:"acp,omitempty"`
+	// TranscriptSize: see record.transcriptSize (shared.go). Pointer so an
+	// older file without it reads as "unknown", not "empty transcript".
+	TranscriptSize *int64 `json:"transcriptSize,omitempty"`
 }
 
 // SetStoreDir enables persistence into dir (created if missing). Without
@@ -117,6 +120,9 @@ func restoreRecord(p persisted) *record {
 	case p.ACP && p.ACPSessionID != "":
 		rec.dormant = true
 		rec.acpSession = p.ACPSessionID
+		if p.TranscriptSize != nil {
+			rec.transcriptSize, rec.transcriptKnown = *p.TranscriptSize, true
+		}
 		if s.State != StateIdle {
 			s.Messages = append(s.Messages, Message{Role: "agent", Text: "(interrupted - the runner restarted)", At: now()})
 		}
@@ -169,6 +175,10 @@ func (m *Manager) SaveAll() {
 // itself count as a change. Caller holds rec.mu (or owns rec exclusively).
 func (rec *record) content() ([]byte, persisted) {
 	p := persisted{Session: cloneSession(rec.data), ACPSessionID: rec.acpSession, ACP: rec.acpSession != ""}
+	if rec.transcriptKnown {
+		size := rec.transcriptSize
+		p.TranscriptSize = &size
+	}
 	p.LastActiveAt = ""
 	b, err := json.Marshal(p)
 	if err != nil {

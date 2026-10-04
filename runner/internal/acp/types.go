@@ -116,6 +116,47 @@ func (c *Client) ResumeSession(sessionID, cwd string) (SessionSetup, error) {
 	return res, nil
 }
 
+// LoadSession reopens an existing conversation and replays its whole history
+// as session/update notifications (user_message_chunk, agent_message_chunk,
+// tool_call...). The read loop delivers notifications in order, so every
+// replayed update has been handled before this returns. Checked against
+// claude-agent-acp 0.85.1 (loadSession capability): params as session/resume,
+// result carries modes/config options like session/new.
+func (c *Client) LoadSession(sessionID, cwd string) (SessionSetup, error) {
+	var res SessionSetup
+	params := map[string]any{"sessionId": sessionID, "cwd": cwd, "mcpServers": []any{}}
+	if err := c.Call("session/load", params, &res); err != nil {
+		return SessionSetup{}, err
+	}
+	return res, nil
+}
+
+// SessionInfo is one conversation the agent has saved, from session/list.
+type SessionInfo struct {
+	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd"`
+	Title     string `json:"title"`
+	UpdatedAt string `json:"updatedAt"` // RFC3339
+}
+
+// ListSessions returns one page of the agent's saved conversations rooted at
+// cwd, newest first, and the cursor of the next page ("" if none). Checked
+// against claude-agent-acp 0.85.1: pages of 1000, so one call is enough.
+func (c *Client) ListSessions(cwd, cursor string) ([]SessionInfo, string, error) {
+	var res struct {
+		Sessions   []SessionInfo `json:"sessions"`
+		NextCursor string        `json:"nextCursor"`
+	}
+	params := map[string]any{"cwd": cwd}
+	if cursor != "" {
+		params["cursor"] = cursor
+	}
+	if err := c.Call("session/list", params, &res); err != nil {
+		return nil, "", err
+	}
+	return res.Sessions, res.NextCursor, nil
+}
+
 // SetConfigOption sets one config option (session/set_config_option) and
 // returns the full, updated option list - changing the model can change
 // which effort levels exist.

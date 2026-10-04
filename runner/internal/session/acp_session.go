@@ -59,7 +59,7 @@ func (m *Manager) startACP(id, projectID, provider, dir string, pc ProviderComma
 		},
 		idleSince: startTime,
 	}
-	client, sid, setup, err := m.spawnAgent(rec, pc, dir, "")
+	client, sid, setup, err := m.spawnAgent(rec, pc, dir, "", false)
 	if err != nil {
 		return Session{}, fmt.Errorf("start provider %q: %w", provider, err)
 	}
@@ -72,8 +72,10 @@ func (m *Manager) startACP(id, projectID, provider, dir string, pc ProviderComma
 }
 
 // spawnAgent starts the agent process and opens the conversation: a new one
-// (resumeID == "") or an existing one via session/resume.
-func (m *Manager) spawnAgent(rec *record, pc ProviderCommand, dir, resumeID string) (*acp.Client, string, acp.SessionSetup, error) {
+// (resumeID == ""), an existing one via session/resume, or - load - an
+// existing one via session/load, whose replayed history replaces
+// rec.data.Messages (see shared.go).
+func (m *Manager) spawnAgent(rec *record, pc ProviderCommand, dir, resumeID string, load bool) (*acp.Client, string, acp.SessionSetup, error) {
 	client, err := acp.Start(pc.Name, pc.Args, dir, acp.Handlers{
 		OnNotification: func(method string, params json.RawMessage) { m.onUpdate(rec, method, params) },
 		OnRequest: func(c *acp.Client, reqID json.RawMessage, method string, params json.RawMessage) {
@@ -102,6 +104,13 @@ func (m *Manager) spawnAgent(rec *record, pc ProviderCommand, dir, resumeID stri
 			return fail("session/new", err)
 		}
 		return client, sid, setup, nil
+	}
+	if load {
+		setup, err := m.replay(rec, client, resumeID, dir)
+		if err != nil {
+			return fail("session/load", err)
+		}
+		return client, resumeID, setup, nil
 	}
 	setup, err := client.ResumeSession(resumeID, dir)
 	if err != nil {
@@ -151,11 +160,30 @@ func (m *Manager) attach(rec *record, client *acp.Client, sid string, setup acp.
 }
 
 // ensureAgent returns rec's live agent, resuming a dormant session first.
+// If someone else (VS Code) wrote to the conversation since the runner last
+// caught up, the agent's in-memory copy is behind: it is dropped and the
+// conversation reloaded from disk with session/load (see shared.go).
 func (m *Manager) ensureAgent(rec *record) (*acp.Client, error) {
+	rec.agentMu.Lock()
+	defer rec.agentMu.Unlock()
+	stale := m.transcriptStale(rec)
 	rec.mu.Lock()
 	client, sid, provider, projectID, mode := rec.acp, rec.acpSession, rec.data.Provider, rec.data.ProjectID, rec.data.Mode
 	want := chosenConfig(rec.data.ConfigOptions)
+	var outdated *acp.Client
+	if client != nil && stale {
+		// Detach first so awaitACPExit adds no "(agent process exited)" note.
+		outdated, client = client, nil
+		rec.acp = nil
+		rec.cmd = nil
+		rec.dormant = true
+	}
 	rec.mu.Unlock()
+	if outdated != nil {
+		if p := outdated.Cmd().Process; p != nil {
+			_ = p.Kill()
+		}
+	}
 	if client != nil {
 		return client, nil
 	}
@@ -169,11 +197,14 @@ func (m *Manager) ensureAgent(rec *record) (*acp.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, sid, setup, err := m.spawnAgent(rec, pc, dir, sid)
+	client, sid, setup, err := m.spawnAgent(rec, pc, dir, sid, stale)
 	if err != nil {
 		return nil, fmt.Errorf("resume session: %w", err)
 	}
 	m.attach(rec, client, sid, setup, mode, want)
+	if stale {
+		m.markTranscript(rec)
+	}
 	return client, nil
 }
 
@@ -236,6 +267,8 @@ func (m *Manager) runTurn(rec *record, text string) {
 		rec.mu.Unlock()
 		stopReason, err = client.Prompt(sid, text)
 	}
+	// This turn's own writes to the transcript aren't "someone else's".
+	m.markTranscript(rec)
 
 	rec.mu.Lock()
 	rec.turnActive = false
@@ -303,17 +336,32 @@ func (m *Manager) onUpdate(rec *record, method string, params json.RawMessage) {
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	msgs := rec.data.Messages
+	// A session/load replay builds the transcript aside (replayMsgs) and
+	// swaps it in when done, so the phone never sees it half-rebuilt.
+	target := &rec.data.Messages
+	if rec.replaying {
+		target = &rec.replayMsgs
+	}
+	msgs := *target
 	switch u.Kind {
-	case "agent_message_chunk":
+	case "agent_message_chunk", "user_message_chunk":
+		role := "agent"
+		if u.Kind == "user_message_chunk" {
+			// Only replays carry the user's own words; a live turn's user
+			// message is already in the transcript (sendACP).
+			if !rec.replaying {
+				return
+			}
+			role = "user"
+		}
 		if u.Content == nil || u.Content.Text == "" {
 			return
 		}
-		if n := len(msgs); n > 0 && msgs[n-1].Role == "agent" && msgs[n-1].ref == u.MessageID {
+		if n := len(msgs); n > 0 && msgs[n-1].Role == role && msgs[n-1].ref == u.MessageID {
 			msgs[n-1].Text += u.Content.Text
 			return
 		}
-		rec.data.Messages = append(msgs, Message{Role: "agent", Text: u.Content.Text, At: now(), ref: u.MessageID})
+		*target = append(msgs, Message{Role: role, Text: u.Content.Text, At: now(), ref: u.MessageID})
 	case "tool_call", "tool_call_update":
 		if u.ToolCallID == "" {
 			return
@@ -336,7 +384,7 @@ func (m *Manager) onUpdate(rec *record, method string, params json.RawMessage) {
 		if status == "" {
 			status = "pending"
 		}
-		rec.data.Messages = append(msgs, Message{
+		*target = append(msgs, Message{
 			Role: "tool", Text: u.Title, ToolKind: u.ToolKind, Status: status, At: now(), ref: u.ToolCallID,
 		})
 	case "current_mode_update":
