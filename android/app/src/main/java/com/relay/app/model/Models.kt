@@ -25,6 +25,8 @@ data class Session(
     val mode: String? = null,
     val modes: List<AgentMode>? = null,
     val pendingPermission: PendingPermission? = null,
+    // ACP config options: model / effort / fast (and mode, which [modes] already covers).
+    val configOptions: List<ConfigOption>? = null,
     // First user message / last agent line, one line each; "" (or absent on old runners) if none.
     val title: String? = null,
     val preview: String? = null,
@@ -193,3 +195,20 @@ data class UsageStats(
     val meanSec: Double = 0.0,
     val totalSec: Double = 0.0,
 )
+
+/** One ACP session config option (model, effort, fast...) - see shared/API.md `configOptions`. */
+data class ConfigOption(
+    val id: String,
+    val name: String,
+    val description: String? = null,
+    val category: String? = null,
+    val type: String = "select",
+    val currentValue: Any? = null,
+    val options: List<ConfigChoice> = emptyList(),
+) {
+    val current: String get() = currentValue?.toString().orEmpty()
+    val currentName: String get() = options.find { it.value == current }?.name ?: current
+    val isMode: Boolean get() = category == "mode" || id == "mode"
+}
+
+data class ConfigChoice(val value: String? = null, val name: String, val description: String? = null)

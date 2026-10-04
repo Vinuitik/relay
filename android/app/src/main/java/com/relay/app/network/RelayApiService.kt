@@ -27,6 +27,7 @@ data class MessageRequest(val text: String)
 data class DeviceRegistrationRequest(val fcmToken: String, val runnerRef: String? = null)
 data class StartContainersRequest(val file: String)
 data class SetModeRequest(val modeId: String)
+data class SetConfigRequest(val configId: String, val value: String)
 data class PermissionRequest(val optionId: String)
 /** The code the Claude sign-in page shows after login, pasted on the phone. */
 data class ClaudeAuthFinishRequest(val code: String)
@@ -91,6 +92,11 @@ interface RelayApiService {
     /** Switches permission mode, one of [Session.modes]. */
     @POST("v1/sessions/{sessionId}/mode")
     suspend fun setMode(@Path("sessionId") sessionId: String, @Body request: SetModeRequest): Session
+
+    /** Sets one of [Session.configOptions] (model, effort, fast). Also becomes the runner's default
+     * for new sessions. */
+    @POST("v1/sessions/{sessionId}/config")
+    suspend fun setConfig(@Path("sessionId") sessionId: String, @Body request: SetConfigRequest): Session
 
     /** Answers [Session.pendingPermission] with one of its options. */
     @POST("v1/sessions/{sessionId}/permission")

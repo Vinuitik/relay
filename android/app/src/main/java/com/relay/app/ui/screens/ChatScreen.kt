@@ -43,6 +43,13 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import com.relay.app.model.ConfigOption
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -167,6 +174,10 @@ fun ChatScreen(
                     vm.answerPermission(optionId)
                 },
             )
+
+            session?.configOptions?.filterNot { it.isMode }?.takeIf { it.isNotEmpty() }?.let { opts ->
+                AgentConfigChip(opts, enabled = !working, onSelect = vm::setConfig)
+            }
 
             Composer(
                 vm = vm,
@@ -608,6 +619,72 @@ private fun Composer(vm: ChatViewModel, working: Boolean, onSend: () -> Unit, on
                 IconButton(enabled = vm.input.isNotBlank() && !vm.sending, onClick = onSend) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                 }
+            }
+        }
+    }
+}
+
+/**
+ * "Sonnet · High" above the composer -> bottom sheet with every config option (model, effort,
+ * fast) as a list of choices. Disabled while a turn runs - changing model mid-turn is confusing.
+ */
+@Composable
+private fun AgentConfigChip(options: List<ConfigOption>, enabled: Boolean, onSelect: (String, String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val label = options.filter { it.category == "model" || it.category == "thought_level" }
+        .joinToString(" · ") { it.currentName }
+        .ifEmpty { options.first().currentName }
+    TextButton(
+        onClick = { open = true },
+        enabled = enabled,
+        modifier = Modifier.padding(start = 8.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.labelLarge)
+        Icon(Icons.Default.ArrowDropDown, contentDescription = "Model and effort")
+    }
+    if (open) {
+        ModalBottomSheet(onDismissRequest = { open = false }) {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 32.dp),
+            ) {
+                options.forEach { opt ->
+                    Text(
+                        opt.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+                    )
+                    opt.options.forEach { choice ->
+                        val value = choice.value ?: return@forEach
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .clickable {
+                                    if (value != opt.current) onSelect(opt.id, value)
+                                    open = false
+                                },
+                        ) {
+                            RadioButton(selected = value == opt.current, onClick = null)
+                            Column(Modifier.padding(start = 12.dp)) {
+                                Text(choice.name)
+                                choice.description?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Text(
+                    "Your choice also becomes this runner's default for new chats.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
             }
         }
     }

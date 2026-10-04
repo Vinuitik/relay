@@ -10,6 +10,7 @@ import com.relay.app.model.Session
 import com.relay.app.network.MessageRequest
 import com.relay.app.network.PermissionRequest
 import com.relay.app.network.RelayApiClient
+import com.relay.app.network.SetConfigRequest
 import com.relay.app.network.SetModeRequest
 import com.relay.app.network.friendlyErrorMessage
 import kotlinx.coroutines.CancellationException
@@ -125,6 +126,7 @@ class ChatViewModel(
     }
 
     fun setMode(modeId: String) = act { api.setMode(sessionId, SetModeRequest(modeId)) }
+    fun setConfig(configId: String, value: String) = act { api.setConfig(sessionId, SetConfigRequest(configId, value)) }
     fun answerPermission(optionId: String) = act { api.answerPermission(sessionId, PermissionRequest(optionId)) }
     fun cancelTurn() = act { api.cancelTurn(sessionId) }
 

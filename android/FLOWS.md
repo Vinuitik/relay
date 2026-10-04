@@ -528,6 +528,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Current runner / last route / last provider prefs | `data/AppPrefsRepository.kt` |
 | Usage screen layout / heatmap | `ui/screens/UsageScreen.kt` |
 | Chat long-press: Copy / Edit & resend | `ui/screens/ChatScreen.kt` (`MessageActions`) |
+| Model / effort / fast picker (chip above composer) | `ui/screens/ChatScreen.kt` (`AgentConfigChip`), `ChatViewModel.setConfig`, runner `session/config.go` |
 | £/yr + payback math | `ui/screens/UsageViewModel.kt` (`savings()`) |
 | Usage cost defaults / storage | `data/AppPrefsRepository.kt` (`UsageCosts`, `usageCosts()`) |
 | Foreground activity ping | `MainActivity.kt` (`pingActivityWhileForeground`, `ACTIVITY_PING_MS`) |
