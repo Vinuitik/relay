@@ -40,6 +40,17 @@ data class Session(
     val activityAt: String get() = lastActiveAt?.takeIf { it.isNotBlank() } ?: createdAt
 }
 
+/** One of the agent's own saved conversations for a project folder (VS Code's included) -
+ * GET /v1/projects/{id}/agent-chats. [sessionId] = the Relay session already showing it. */
+data class AgentChat(
+    val agentSessionId: String,
+    val title: String,
+    val updatedAt: String,
+    val sessionId: String? = null,
+)
+
+data class AgentChatsResponse(val chats: List<AgentChat>)
+
 data class Message(
     val role: String, // "user" | "agent" | "tool"
     val text: String, // for "tool": a one-line title like "Write hello.txt"

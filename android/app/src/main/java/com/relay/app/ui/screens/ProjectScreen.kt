@@ -15,8 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -50,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.relay.app.data.AppPrefsRepository
+import com.relay.app.model.AgentChat
 import com.relay.app.model.Session
 import com.relay.app.ui.components.FullScreenError
 import com.relay.app.ui.components.RefreshableBox
@@ -134,6 +133,9 @@ fun ProjectScreen(
                 else -> ChatsContent(
                     vm = vm,
                     onOpenChat = onOpenChat,
+                    onContinue = { chat ->
+                        vm.continueLaptopChat(chat, onCreated = { onOpenChat(it.id) }, onError = ::showError)
+                    },
                     onStart = { text ->
                         onProviderUsed(lastProvider)
                         vm.startWithMessage(lastProvider, text, onCreated = { onOpenChat(it.id) }, onError = ::showError)
@@ -145,20 +147,51 @@ fun ProjectScreen(
 }
 
 @Composable
-private fun ChatsContent(vm: ProjectViewModel, onOpenChat: (String) -> Unit, onStart: (String) -> Unit) {
+private fun ChatsContent(
+    vm: ProjectViewModel,
+    onOpenChat: (String) -> Unit,
+    onContinue: (AgentChat) -> Unit,
+    onStart: (String) -> Unit,
+) {
     RefreshableBox(refreshing = vm.refreshing, onRefresh = { vm.refresh() }) {
         val sessions = vm.sessions
         val error = vm.error
         when {
             sessions == null && error != null -> FullScreenError(error, onRetry = { vm.refresh() })
             sessions == null -> SkeletonRows()
-            sessions.isEmpty() -> FirstMessageComposer(enabled = !vm.creating, onSend = onStart)
-            else -> LazyColumn(Modifier.fillMaxWidth()) {
-                items(sessions, key = { it.id }) { s -> SessionRow(s) { onOpenChat(s.id) } }
+            else -> LazyColumn(Modifier.fillMaxSize()) {
+                if (sessions.isEmpty()) {
+                    item(key = "composer") { FirstMessageComposer(enabled = !vm.creating, onSend = onStart) }
+                } else {
+                    items(sessions, key = { it.id }) { s -> SessionRow(s) { onOpenChat(s.id) } }
+                }
+                if (vm.laptopChats.isNotEmpty()) {
+                    item(key = "laptop-header") {
+                        Text(
+                            "On this computer",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 4.dp),
+                        )
+                    }
+                    items(vm.laptopChats, key = { "agent:" + it.agentSessionId }) { c ->
+                        LaptopChatRow(c, enabled = !vm.creating) { onContinue(c) }
+                    }
+                }
                 item(key = "fab-space") { Box(Modifier.padding(bottom = 88.dp)) }
             }
         }
     }
+}
+
+/** A Claude chat started outside Relay (VS Code, CLI) - tap to continue it here. */
+@Composable
+private fun LaptopChatRow(c: AgentChat, enabled: Boolean, onClick: () -> Unit) {
+    ListItem(
+        headlineContent = { Text(c.title.ifBlank { "Untitled chat" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        supportingContent = relativeTime(c.updatedAt).ifEmpty { null }?.let { t -> { Text(t, maxLines = 1) } },
+        modifier = Modifier.clickable(enabled = enabled, onClick = onClick),
+    )
 }
 
 @Composable
@@ -177,12 +210,13 @@ private fun SessionRow(s: Session, onClick: () -> Unit) {
     )
 }
 
-/** Empty Chats: the first message creates the session (DESIGN.md "Project › Chats"). */
+/** Empty Chats: the first message creates the session (DESIGN.md "Project › Chats"). Lives in the
+ * Chats LazyColumn (laptop chats may follow it), so it doesn't scroll on its own. */
 @Composable
 private fun FirstMessageComposer(enabled: Boolean, onSend: (String) -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        Modifier.fillMaxWidth().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(

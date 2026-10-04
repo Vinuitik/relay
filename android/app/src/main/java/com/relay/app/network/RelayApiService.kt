@@ -1,5 +1,6 @@
 package com.relay.app.network
 
+import com.relay.app.model.AgentChatsResponse
 import com.relay.app.model.BrowseResult
 import com.relay.app.model.AuthStatus
 import com.relay.app.model.GitBranch
@@ -24,7 +25,8 @@ import retrofit2.http.Query
 
 data class HealthResponse(val ok: Boolean)
 data class NewProjectRequest(val name: String, val path: String? = null)
-data class NewSessionRequest(val provider: String)
+/** [agentSessionId] set = continue that saved agent conversation (e.g. from VS Code). */
+data class NewSessionRequest(val provider: String, val agentSessionId: String? = null)
 data class MessageRequest(val text: String)
 /** [runnerRef] = the address this phone uses for the runner (its `hostname`); echoed back in every
  * push so a notification can deep-link to the right runner. */
@@ -74,6 +76,14 @@ interface RelayApiService {
         @Path("projectId") projectId: String,
         @Body request: NewSessionRequest,
     ): Session
+
+    /** The agent's own saved chats for the project folder - VS Code's included. Slow-ish (~1-2s):
+     * the runner spawns the agent to list them. */
+    @GET("v1/projects/{projectId}/agent-chats")
+    suspend fun listAgentChats(
+        @Path("projectId") projectId: String,
+        @Query("provider") provider: String = "claude",
+    ): AgentChatsResponse
 
     /** Sessions across every project (Home's "Needs you"). [state] = comma list, e.g.
      * `"waiting,busy"`; null = every state. Runner sorts waiting first, then busy, newest first. */

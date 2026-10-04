@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.relay.app.model.AgentChat
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
 import com.relay.app.model.Session
@@ -38,6 +39,10 @@ class ProjectViewModel(private val runner: KnownRunner, private val projectId: S
         private set
     var error by mutableStateOf<String?>(null)
         private set
+    /** Claude's own chats for this folder not yet open in Relay (VS Code's, CLI's) - "On this
+     * computer". Empty until loaded or if the runner can't list them (older runner, no claude). */
+    var laptopChats by mutableStateOf<List<AgentChat>>(emptyList())
+        private set
     /** A New chat / first message is in flight - disables the FAB and composer. */
     var creating by mutableStateOf(false)
         private set
@@ -54,6 +59,11 @@ class ProjectViewModel(private val runner: KnownRunner, private val projectId: S
             refreshing = true
             try {
                 val projectsAsync = async { runCatching { api.listProjects() }.getOrNull() }
+                // Slower (the runner spawns the agent to list), so it never holds up the list.
+                launch {
+                    runCatching { api.listAgentChats(projectId).chats }
+                        .onSuccess { all -> laptopChats = all.filter { it.sessionId.isNullOrEmpty() } }
+                }
                 val list = api.listSessions(projectId)
                 sessions = list.sortedWith(
                     compareByDescending<Session> { it.state == "waiting" }.thenByDescending { epochOf(it.activityAt) },
@@ -83,6 +93,23 @@ class ProjectViewModel(private val runner: KnownRunner, private val projectId: S
             creating = true
             try {
                 onCreated(api.createSession(projectId, NewSessionRequest(provider)))
+            } catch (e: Exception) {
+                onError(friendlyErrorMessage(e, runner))
+            } finally {
+                creating = false
+            }
+        }
+    }
+
+    /** Continue one of Claude's own chats (e.g. from VS Code): the runner replays its history into a
+     * Relay session (a few seconds), or returns the session already showing it. */
+    fun continueLaptopChat(chat: AgentChat, onCreated: (Session) -> Unit, onError: (String) -> Unit) {
+        if (creating) return
+        viewModelScope.launch {
+            creating = true
+            try {
+                onCreated(api.createSession(projectId, NewSessionRequest("claude", agentSessionId = chat.agentSessionId)))
+                laptopChats = laptopChats.filter { it.agentSessionId != chat.agentSessionId }
             } catch (e: Exception) {
                 onError(friendlyErrorMessage(e, runner))
             } finally {
