@@ -61,6 +61,13 @@ RunnerInfo {
   hostname: string     // tailnet hostname
   busy: boolean         // true if any session across any project is busy
   version: string
+  update?: {            // keeperd's last self-update check; absent if not managed by keeperd
+    keeperVersion: string
+    lastCheckAt: string    // RFC3339
+    lastError?: string     // absent if the last check worked
+    failingSince?: string  // RFC3339, start of the current run of failures
+    failures?: number      // consecutive failed checks (one every ~10 min)
+  }
 }
 
 Device {

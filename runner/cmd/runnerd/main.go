@@ -25,6 +25,7 @@ import (
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
+	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/usage"
 )
 
@@ -141,6 +142,7 @@ func main() {
 	// and only when idle-suspend is enabled below). See internal/activity.
 	tracker := activity.NewTracker()
 	srv.Activity = tracker
+	srv.UpdateStatusPath = os.Getenv(updatestatus.EnvVar)
 
 	// Usage recorder: always on (independent of idle-suspend) - logs which
 	// activity sources were live each minute plus every agent turn, so

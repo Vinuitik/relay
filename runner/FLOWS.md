@@ -562,6 +562,14 @@ isn't waited for) → `npm install` adapter@latest →
   renames it to `.old-<unix>` and deletes such asides once unlocked. The input watcher polls
   `keeperd.exe`'s mtime/size and restarts itself from the new binary (`RelaunchWatcher`), so it
   never pins an old one. Before this fix, every update failed with "Access is denied" (2026-10-04).
+  A keeperd older than the fix can't install it: it stayed stuck ~6h until the locked `.old` was
+  deleted by hand (2026-10-05) - which is why update failures are now reported (below).
+
+Update status (so a stuck updater isn't silent): after each check (not the "wait for idle" ones)
+→ `updatestatus.Record(<dir>/update-status.json)` (last error, `failingSince`, consecutive
+`failures`; reset on success) → keeperd passes the path to the runner as `RELAY_UPDATE_STATUS` →
+`GET /v1/runner/info` `update` (`updatestatus.Read`) → phone Home banner once `failures >= 3`.
+To change the threshold: `UpdateStatus.stuck` (android `model/Models.kt`).
 
 Release: push to main touching `runner/**` (not `*.md`) → `runner-release.yml` → `go test` →
 builds relay-runner/keeperd/wakerd for linux amd64/arm64/arm + windows amd64, tag
@@ -899,6 +907,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Update check, idle gate, swap + rollback, adapter npm install | `internal/keeper/updater.go` (`Check`, `replaceRunner`, `replaceKeeper`) |
 | keeperd settings (dir, repo, token, intervals) | `internal/keeper/config.go`, env `RELAY_KEEPER_DIR` / `RELAY_UPDATE_*` / `RELAY_GITHUB_TOKEN`, file `<dir>/relay.env` |
 | Release build targets / version stamping | `.github/workflows/runner-release.yml` |
+| Update-status file (keeperd → runner → phone) | `internal/updatestatus` (`Record`, `Read`), `cmd/keeperd/main.go` (update loop), env `RELAY_UPDATE_STATUS` |
 | Windows boot task + input watcher | `install/install-keeperd.ps1`, `keeperd -watch-input` (`cmd/keeperd/main.go`) |
 | Linux unit | `install/relay-runner.service`, `install/install-keeperd.sh` |
 | Needs-input push | `cmd/runnerd/main.go` (`sessions.OnNeedsInput`), `notify.NotifySessionNeedsInput` |

@@ -19,6 +19,7 @@ import (
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/session"
+	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/usage"
 )
 
@@ -60,6 +61,10 @@ type Server struct {
 	// Usage serves GET /v1/usage (recorded activity + sleep simulation,
 	// see internal/usage). nil → 503.
 	Usage *usage.Recorder
+	// UpdateStatusPath is keeperd's update-status file (env
+	// RELAY_UPDATE_STATUS, set by keeperd), surfaced as runnerInfo.Update.
+	// "" (runner not started by keeperd) → no update field.
+	UpdateStatusPath string
 
 	// opsMu guards containerOps and gitOps: per-project background compose
 	// operations (see containers.go). runSync makes them run inline, for
@@ -149,6 +154,9 @@ type runnerInfo struct {
 	// empty while busy - keeperd only restarts for an update after a
 	// quiet period.
 	IdleSince string `json:"idleSince,omitempty"`
+	// Update is keeperd's last update check, absent when the runner isn't
+	// managed by keeperd (or keeperd is too old to report it).
+	Update *updatestatus.Status `json:"update,omitempty"`
 }
 
 // anyBusy reports whether any session across any project is currently
@@ -177,6 +185,9 @@ func (s *Server) handleRunnerInfo(w http.ResponseWriter, r *http.Request) {
 	info := runnerInfo{Hostname: hostname, Busy: busy, Version: Version, Build: Build}
 	if !busy {
 		info.IdleSince = idleSince.UTC().Format(time.RFC3339)
+	}
+	if st, ok := updatestatus.Read(s.UpdateStatusPath); ok {
+		info.Update = &st
 	}
 	writeJSON(w, http.StatusOK, info)
 }

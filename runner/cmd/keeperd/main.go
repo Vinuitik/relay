@@ -21,6 +21,7 @@ import (
 	"relay/runner/internal/activity"
 	"relay/runner/internal/config"
 	"relay/runner/internal/keeper"
+	"relay/runner/internal/updatestatus"
 )
 
 // version is this binary's release tag, stamped by the release workflow
@@ -67,6 +68,10 @@ func main() {
 		// The adapter keeperd manages, unless one was configured explicitly.
 		env = append(env, "RELAY_ACP_CLAUDE="+cfg.AdapterBin())
 	}
+	// Where keeperd records its update checks; the runner reports it in
+	// /v1/runner/info so a stuck updater shows on the phone.
+	statusPath := updatestatus.Path(cfg.Dir)
+	env = append(env, updatestatus.EnvVar+"="+statusPath)
 	sup := &keeper.Supervisor{Path: cfg.RunnerPath(), Env: env}
 
 	client := &http.Client{Timeout: 60 * time.Second}
@@ -127,13 +132,18 @@ func main() {
 			continue
 		}
 		next = cfg.CheckEvery
-		if err := upd.Check(); err != nil {
-			if errors.Is(err, keeper.ErrNotIdle) {
-				next = 3 * time.Minute // retry soon once work is done; each Check calls the GitHub API (60/h unauthenticated, shared per public IP)
-			} else {
-				log.Printf("keeper: update check: %v", err)
-			}
+		err := upd.Check()
+		switch {
+		case errors.Is(err, keeper.ErrNotIdle):
+			// Retry soon once work is done; each Check calls the GitHub API (60/h
+			// unauthenticated, shared per public IP). Waiting for the runner to go
+			// quiet isn't a failure, so nothing is recorded.
+			next = 3 * time.Minute
+			continue
+		case err != nil:
+			log.Printf("keeper: update check: %v", err)
 		}
+		updatestatus.Record(statusPath, version, err, time.Now())
 	}
 }
 
