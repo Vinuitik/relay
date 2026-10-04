@@ -18,13 +18,35 @@ android {
         applicationId = "com.relay.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI passes its run number so every build installs as an update over the last one.
+        // Local builds stay at 1.
+        val buildNumber = (System.getenv("RELAY_BUILD_NUMBER") ?: "1").toInt()
+        versionCode = buildNumber
+        versionName = "0.1.$buildNumber"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // One permanent key for every CI build (GitHub secrets RELAY_KEYSTORE_B64 / RELAY_KEYSTORE_PASSWORD,
+    // decoded to RELAY_KEYSTORE_FILE by the workflow). Android only installs an update over an
+    // existing app when the signature matches - CI's auto-generated debug key changed every run,
+    // which forced an uninstall (and wiped the paired runners) on every update.
+    val relayKeystore = System.getenv("RELAY_KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.exists() }
+    signingConfigs {
+        if (relayKeystore != null) {
+            create("relay") {
+                storeFile = relayKeystore
+                storePassword = System.getenv("RELAY_KEYSTORE_PASSWORD")
+                keyAlias = "relay"
+                keyPassword = System.getenv("RELAY_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            if (relayKeystore != null) signingConfig = signingConfigs.getByName("relay")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

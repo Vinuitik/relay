@@ -322,6 +322,17 @@ docker run --rm -v "$PWD:/project" -v relay-gradle-cache:/root/.gradle \
 
 ## Distribution (Firebase App Distribution)
 
+**Signing + versioning (2026-10-04).** CI restores one permanent key (secrets `RELAY_KEYSTORE_B64`,
+`RELAY_KEYSTORE_PASSWORD`) → `RELAY_KEYSTORE_FILE` → `app/build.gradle.kts` `signingConfigs.relay` signs
+the debug APK. `versionCode` = `RELAY_BUILD_NUMBER` = `github.run_number`, `versionName` = `0.1.<run>`.
+Before this, CI signed with a fresh random debug key per run → Android refused the update → forced
+uninstall → paired runners (DataStore) wiped. Same key + rising versionCode = installs as an update,
+data kept. The key's only copies: `~/.relay-signing/relay-app.jks` + `signing.txt` on the dev PC and the
+GitHub secret. **Lose both and the next build forces one uninstall again.** Missing secrets → the
+build fails (empty keystore) instead of silently shipping a throwaway-key APK.
+To change: `app/build.gradle.kts` (`signingConfigs`, `versionCode`), `.github/workflows/android-deploy.yml`.
+
+
 Files: .firebaserc, .github/workflows/android-deploy.yml
 
 Not on the Play Store by design (see ARCHITECTURE.md), so updates ship via Firebase App
@@ -450,6 +461,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 
 | Thing | Where |
 |---|---|
+| APK signing key / version number | `app/build.gradle.kts` (`signingConfigs`, `RELAY_BUILD_NUMBER`), `.github/workflows/android-deploy.yml`, secrets `RELAY_KEYSTORE_B64`/`RELAY_KEYSTORE_PASSWORD` |
 | Routes / deep link pattern / transitions | `ui/navigation/RelayNavHost.kt` (`Routes`, `forwardEnter`…`backExit`) |
 | Last-route restore | `ui/navigation/RelayNavHost.kt` (`RESTORE_PATTERN`, restore `LaunchedEffect`), `MainActivity.kt` (`restoreLastRoute`) |
 | Current runner / last route / last provider prefs | `data/AppPrefsRepository.kt` |

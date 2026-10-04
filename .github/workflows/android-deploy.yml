@@ -33,10 +33,22 @@ jobs:
       - name: Restore google-services.json
         run: echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
 
+      # Permanent signing key (see app/build.gradle.kts signingConfigs) - same key every run, so
+      # the phone installs each build as an update and keeps its data.
+      - name: Restore signing key
+        run: echo '${{ secrets.RELAY_KEYSTORE_B64 }}' | base64 -d > "$RUNNER_TEMP/relay-app.jks"
+
       - name: Build debug APK
+        env:
+          RELAY_KEYSTORE_FILE: ${{ runner.temp }}/relay-app.jks
+          RELAY_KEYSTORE_PASSWORD: ${{ secrets.RELAY_KEYSTORE_PASSWORD }}
+          # versionCode/versionName patch = this workflow's run number: rises on every build.
+          RELAY_BUILD_NUMBER: ${{ github.run_number }}
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --console=plain
+          # Fail loudly rather than ship an APK signed with a throwaway key.
+          test -s "$RUNNER_TEMP/relay-app.jks"
 
       - name: Distribute to Firebase App Distribution
         env:
