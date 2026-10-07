@@ -1,0 +1,13 @@
+[Unit]
+Description=Relay: wake server from suspend after commute-day work gaps
+
+[Timer]
+OnCalendar=Tue,Thu,Fri *-*-* 12:00:00
+OnCalendar=Tue,Thu,Fri *-*-* 17:00:00
+AccuracySec=1s
+Persistent=false
+# Programs the RTC alarm before each suspend so the machine comes back on its own
+WakeSystem=true
+
+[Install]
+WantedBy=timers.target

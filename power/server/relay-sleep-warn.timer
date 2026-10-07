@@ -1,0 +1,11 @@
+[Unit]
+Description=Relay: warn 5 min before scheduled suspend
+
+[Timer]
+OnCalendar=Tue,Thu,Fri *-*-* 08:55:00
+OnCalendar=Tue,Thu,Fri *-*-* 12:55:00
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

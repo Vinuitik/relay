@@ -1,0 +1,6 @@
+[Unit]
+Description=Relay: broadcast suspend warning
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/wall "Server suspends in 5 minutes (Relay schedule). Save your work."

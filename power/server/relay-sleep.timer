@@ -1,0 +1,11 @@
+[Unit]
+Description=Relay: suspend server during commute-day work gaps
+
+[Timer]
+OnCalendar=Tue,Thu,Fri *-*-* 09:00:00
+OnCalendar=Tue,Thu,Fri *-*-* 13:00:00
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

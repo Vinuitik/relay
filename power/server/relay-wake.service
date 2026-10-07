@@ -1,0 +1,6 @@
+[Unit]
+Description=Relay: no-op; the timer's WakeSystem does the waking
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true

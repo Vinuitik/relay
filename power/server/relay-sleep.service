@@ -1,0 +1,6 @@
+[Unit]
+Description=Relay: suspend server (retries while inhibited)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/relay-sleep.sh

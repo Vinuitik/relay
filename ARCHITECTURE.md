@@ -148,6 +148,26 @@ project exists to avoid.
   magic-packet wake is enabled).
 - **Fast Startup (Windows)** changes what a "shutdown" leaves behind and can break wake
   assumptions; disable it on any machine being used as a wake target.
+- **Linux + NVIDIA: suspend only via `systemctl suspend`.** `rtcwake -m mem` writes to
+  `/sys/power/state` directly, skipping the `nvidia-suspend.service` hook; the driver then
+  fails (`nv_pmops_suspend returns -5`) and the kernel aborts the suspend within a second.
+- **Modern Standby can't take a timed wake without an ACPI000E (Time & Alarm) device.**
+  Verified on the Latitude 5400: Windows registers the wake timer (`powercfg /waketimers`
+  lists it), but the machine never wakes. Only `PNP0B00` (plain RTC) is present.
+
+## Scheduled wake (current approach, 2026-10-07)
+
+Supersedes the waker for now: instead of waking on demand, the server wakes **on a fixed
+schedule** via its own RTC alarm. No second device, no WoL. `wakerd` is built but not deployed.
+
+- Only on commute days (Tue/Thu/Fri): suspend 09:00 → wake 12:00, suspend 13:00 → wake 17:00.
+  Morning power-on and night shutdown stay manual.
+- Implemented as systemd timers on the server, not in `runnerd` — see `power/server/FLOWS.md`.
+- Runner idle-suspend (`RELAY_IDLE_SUSPEND_ENABLED`) must stay **off** on the server: with no
+  waker, an idle-suspend mid-window would leave it asleep until the next scheduled wake.
+- Only the Linux server can do this. This Windows laptop (Modern Standby, no ACPI000E) can't
+  self-wake, so the plan is to centralise all projects on the server
+  [NOT IMPLEMENTED: migration pending].
 
 ## Data model
 
