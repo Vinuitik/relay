@@ -186,6 +186,49 @@ UsageReport {
 Stats { count, medianSec, p90Sec, meanSec, totalSec }
 ```
 
+### Schedule (bookings for the server's sleep/wake)
+
+All dates `"YYYY-MM-DD"`, times `"HH:MM"` 24h, wall-clock in the runner's zone (`timezone`).
+
+```
+Booking {
+  id: string, title: string,          // title may be ""
+  date: string,                       // the only day (one-off) or first day (series)
+  start: string, end: string,         // awake block, start < end, same day
+  sleeps: Gap[],                      // sorted, inside [start, end], each >= 10 min, no overlap
+  repeat: Repeat?,                    // null = one-off
+  exceptions: Exception[],
+  createdAt: string, updatedAt: string
+}
+Gap { from: string, to: string }      // suspend at from, wake at to
+Repeat {
+  freq: "daily" | "weekly" | "monthly" | "yearly",
+  interval: number,                   // every N, >= 1
+  weekdays?: number[],                // weekly only, 1=Mon..7=Sun; omitted = date's weekday
+  until?: string,                     // last possible date, inclusive  } at most one
+  count?: number                      // total occurrences              } of these two
+}                                     // monthly: date's day-of-month, short month → last day
+                                      // yearly: date's month/day, Feb 29 → Feb 28
+Exception { date: string, cancelled: bool, override?: Day }   // date = the occurrence's original date
+Day { start, end, sleeps }
+BookingInput = Booking minus id/exceptions/createdAt/updatedAt
+
+Occurrence {
+  bookingId, title, date, start, end, sleeps,
+  recurring: bool,                    // from a series
+  edited: bool                        // this day has an override
+}
+Schedule {
+  timezone: string,                   // e.g. "Europe/London"
+  bookings: Booking[],
+  plan: Event[],                      // what the runner wants applied, next 14 days
+  planWrittenAt: string?,             // RFC3339, null if no plan file (non-Linux, not installed)
+  appliedAt: string?,                 // when the root applier last applied it
+  applied: bool                       // applier's copy matches the current plan
+}
+Event { kind: "warn" | "sleep" | "wake", date: string, at: string }
+```
+
 ## Endpoints
 
 | Method | Path | Body | Response | Notes |
@@ -213,6 +256,13 @@ Stats { count, medianSec, p90Sec, meanSec, totalSec }
 | POST | `/v1/suspend` | - | `202 {}` | manually suspends this machine to sleep (S3 on Linux, Modern Standby on Windows) right now, instead of waiting for the idle timeout. `409` if any session is currently busy (never kills active work); `503` if the runner wasn't started with `RELAY_IDLE_SUSPEND_ENABLED=true` — this endpoint deliberately reuses that same opt-in gate, see runner/FLOWS.md "Idle-suspend". |
 | POST | `/v1/activity` | - | `202 {}` | tells the runner "the phone app is in the foreground right now" — one of the signals idle-suspend uses to decide whether to suspend the machine, alongside session busy/idle state and local keyboard/mouse input. Call every 30s while, and only while, the app is in the foreground; stop calling when it's backgrounded or closed. Always accepted, even if idle-suspend is disabled on this runner — see runner/FLOWS.md "Idle-suspend". |
 | GET | `/v1/usage?days=<1-90>&limits=<m1,m2,...>` | - | `200 UsageReport` | recorded activity + idle-suspend simulation (nothing is ever suspended). `days` default 14, `limits` default `5,15,30,60` (minutes, 1-1440). Recording is always on, independent of `RELAY_IDLE_SUSPEND_ENABLED`; data is kept 90 days. `400` bad params, `503` recorder failed to start. See runner/internal/usage/FLOWS.md. |
+| GET | `/v1/schedule` | - | `200 Schedule` | bookings, the current plan and whether the server has applied it. |
+| GET | `/v1/schedule/occurrences?from=&to=` | - | `200 Occurrence[]` | expanded days in `[from, to]` inclusive, sorted. `400` bad dates or span > 62 days. |
+| POST | `/v1/schedule/bookings` | `BookingInput` | `201 Booking` | `400 {error}` invalid (message says which field); `409 {error}` overlaps another booking's day within 366 days. Plan is rewritten. |
+| PUT | `/v1/schedule/bookings/{id}` | `BookingInput` | `200 Booking` | edits the **whole series**. Exceptions are kept, except those whose date is no longer an occurrence. `404` / `400` / `409` as above. |
+| DELETE | `/v1/schedule/bookings/{id}` | - | `204` | deletes the whole series. `404` unknown. |
+| PUT | `/v1/schedule/bookings/{id}/occurrences/{date}` | `Day` | `200 Booking` | **this day only**: sets an override. `404` unknown booking or `date` isn't an occurrence; `400` / `409` as above. |
+| DELETE | `/v1/schedule/bookings/{id}/occurrences/{date}` | - | `200 Booking` | **this day only**: cancels it (for a one-off, same as deleting the booking → `204`). `404` as above. |
 | GET | `/v1/projects/{projectId}/files?path=<relative>` | - | `200 FileEntry[]` | lists a directory within the project. `path` omitted/empty = project root. `400` if `path` escapes the project directory (`../`) or isn't a directory. Read-only — see ARCHITECTURE.md "Runner responsibilities". |
 | GET | `/v1/projects/{projectId}/git` | - | `200 GitStatus` | working tree + last network op. Not a repo → `200 {isRepo:false}`. `503` git not installed. |
 | GET | `/v1/projects/{projectId}/git/diff?path=&staged=` | - | `200 GitDiff` | `staged=true`: index vs HEAD; else worktree vs index (whole file for an untracked one). `400` absolute/escaping path. |
@@ -252,6 +302,22 @@ so the app knows which runner sent the push. `data.type` is:
 
 An older app build (or a message missing `type` entirely) falls back to the `session_finished`
 text, so this list can grow without breaking already-installed clients.
+
+## Schedule plan file (runner → root applier)
+
+Not HTTP: the runner writes, a root-owned systemd path unit applies (power/server/FLOWS.md).
+
+- Path: `/var/lib/relay/schedule-plan` (env `RELAY_SCHEDULE_PLAN`). Runner skips writing if the
+  directory doesn't exist (Windows, applier not installed).
+- Written atomically (temp file + rename) on every booking change, at startup, and daily at 00:05.
+- Format: UTF-8, `\n` lines, sorted by time. `#` lines are comments. Every other line is exactly
+  `^(warn|sleep|wake) [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$`. Only future events,
+  next 14 days. The applier rejects the **whole file** if any line fails the pattern.
+- Per sleep gap: `warn` (from − 5 min), `sleep` (from), `wake` (to). A warn already in the past
+  is dropped; its sleep is kept.
+- Empty plan = no sleeps = the server stays awake. That is the fail-safe direction.
+- Applier status: `/var/lib/relay/schedule-applied`, written by root: line 1 = sha256 of the
+  applied plan, line 2 = RFC3339 time. `applied` in `GET /v1/schedule` = hash matches.
 
 ## Not covered by this contract (see ARCHITECTURE.md)
 
