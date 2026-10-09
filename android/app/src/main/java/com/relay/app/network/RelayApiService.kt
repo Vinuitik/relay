@@ -15,11 +15,18 @@ import com.relay.app.model.Project
 import com.relay.app.model.RunnerInfo
 import com.relay.app.model.Session
 import com.relay.app.model.UsageReport
+import com.relay.app.model.Booking
+import com.relay.app.model.BookingInput
+import com.relay.app.model.Day
+import com.relay.app.model.Occurrence
+import com.relay.app.model.Schedule
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -234,4 +241,34 @@ interface RelayApiService {
      * `signed_in` or `failed` + message. */
     @POST("v1/auth/{provider}/finish")
     suspend fun authFinish(@Path("provider") provider: String, @Body request: AuthFinishRequest): AuthStatus
+
+    /** Schedule (shared/API.md "Schedule") - prefer [com.relay.app.data.ScheduleRepository],
+     * which caches occurrences offline and refreshes after every mutation. */
+    @GET("v1/schedule")
+    suspend fun getSchedule(): Schedule
+
+    /** Expanded days in [from, to] inclusive ("YYYY-MM-DD"), sorted. `400` span > 62 days. */
+    @GET("v1/schedule/occurrences")
+    suspend fun getOccurrences(@Query("from") from: String, @Query("to") to: String): List<Occurrence>
+
+    /** `409 {error}` = overlaps another booking's day within 366 days. */
+    @POST("v1/schedule/bookings")
+    suspend fun createBooking(@Body input: BookingInput): Booking
+
+    /** Edits the whole series. */
+    @PUT("v1/schedule/bookings/{id}")
+    suspend fun updateSeries(@Path("id") id: String, @Body input: BookingInput): Booking
+
+    /** Deletes the whole series. `204`; check `isSuccessful`. */
+    @DELETE("v1/schedule/bookings/{id}")
+    suspend fun deleteSeries(@Path("id") id: String): Response<ResponseBody>
+
+    /** This day only: sets an override for the occurrence originally on [date]. */
+    @PUT("v1/schedule/bookings/{id}/occurrences/{date}")
+    suspend fun updateOccurrence(@Path("id") id: String, @Path("date") date: String, @Body day: Day): Booking
+
+    /** This day only: cancels it. `200 Booking` for a series; `204` (null body) when a one-off
+     * was deleted instead. Check `isSuccessful` - see [com.relay.app.model.CancelOccurrenceResult]. */
+    @DELETE("v1/schedule/bookings/{id}/occurrences/{date}")
+    suspend fun cancelOccurrence(@Path("id") id: String, @Path("date") date: String): Response<Booking>
 }
