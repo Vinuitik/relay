@@ -56,6 +56,7 @@ fun RunnerListScreen(
     repository: KnownRunnersRepository,
     onRunnerSelected: (KnownRunner) -> Unit,
     onUsage: (KnownRunner) -> Unit,
+    onSchedule: (KnownRunner) -> Unit,
     /** Null when this is the root screen (no runners yet) - no back arrow then. */
     onBack: (() -> Unit)?,
 ) {
@@ -129,6 +130,7 @@ fun RunnerListScreen(
             onRunnerSelected = onRunnerSelected,
             onRename = { renamingRunner = it },
             onUsage = onUsage,
+            onSchedule = onSchedule,
             onSleep = { confirmSuspendRunner = it },
             onSignIn = { signingInRunner = it },
             onRemove = { confirmRemoveRunner = it },
@@ -233,7 +235,7 @@ fun RunnerListScreen(
 }
 
 /**
- * Manage runners body. Row tap = make it the current runner (Home). Rename / Usage / Sleep / Sign
+ * Manage runners body. Row tap = make it the current runner (Home). Rename / Usage / Schedule / Sleep / Sign
  * in to Claude / Remove live in the row ⋮; Sleep and Remove are confirmed by the caller's dialogs.
  */
 @Composable
@@ -244,6 +246,7 @@ private fun RunnerList(
     onRunnerSelected: (KnownRunner) -> Unit,
     onRename: (KnownRunner) -> Unit,
     onUsage: (KnownRunner) -> Unit,
+    onSchedule: (KnownRunner) -> Unit,
     onSleep: (KnownRunner) -> Unit,
     onSignIn: (KnownRunner) -> Unit,
     onRemove: (KnownRunner) -> Unit,
@@ -298,6 +301,10 @@ private fun RunnerList(
                                         DropdownMenuItem(
                                             text = { Text("Usage") },
                                             onClick = { showMenu = false; onUsage(runner) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Schedule") },
+                                            onClick = { showMenu = false; onSchedule(runner) },
                                         )
                                         DropdownMenuItem(
                                             text = { Text("Sleep") },

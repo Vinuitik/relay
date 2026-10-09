@@ -26,6 +26,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -39,6 +40,7 @@ import androidx.navigation.navArgument
 import androidx.navigation.navDeepLink
 import com.relay.app.data.AppPrefsRepository
 import com.relay.app.data.KnownRunnersRepository
+import com.relay.app.data.ScheduleRepository
 import com.relay.app.model.KnownRunner
 import com.relay.app.ui.screens.ChatScreen
 import com.relay.app.ui.screens.ChatViewModel
@@ -51,6 +53,9 @@ import com.relay.app.ui.screens.HomeViewModel
 import com.relay.app.ui.screens.ProjectScreen
 import com.relay.app.ui.screens.ProjectTab
 import com.relay.app.ui.screens.ProjectViewModel
+import com.relay.app.ui.screens.BookingEditorScreen
+import com.relay.app.ui.screens.ScheduleScreen
+import com.relay.app.ui.screens.ScheduleViewModel
 import com.relay.app.ui.screens.UsageScreen
 import com.relay.app.ui.screens.UsageViewModel
 import com.relay.app.ui.screens.RunnerListScreen
@@ -69,12 +74,20 @@ object Routes {
     const val PROJECT = "r/{host}/p/{projectId}?tab={tab}"
     const val CHAT = "r/{host}/p/{projectId}/s/{sessionId}"
     const val USAGE = "r/{host}/usage"
+    const val SCHEDULE = "r/{host}/schedule"
+    const val SCHEDULE_EDIT = "r/{host}/schedule/edit?bookingId={bookingId}&date={date}"
 
     /** Push notifications open this (RelayFirebaseMessagingService builds it). */
     const val CHAT_DEEP_LINK = "relay://r/{host}/p/{projectId}/s/{sessionId}"
 
     fun folderPicker(host: String) = "r/${enc(host)}/pick-folder"
     fun usage(host: String) = "r/${enc(host)}/usage"
+    fun schedule(host: String) = "r/${enc(host)}/schedule"
+    /** Booking editor: an occurrence (bookingId + date), a new booking on [date], or both null. */
+    fun scheduleEdit(host: String, bookingId: String? = null, date: String? = null): String {
+        val q = listOfNotNull(bookingId?.let { "bookingId=${enc(it)}" }, date?.let { "date=${enc(it)}" })
+        return "r/${enc(host)}/schedule/edit" + if (q.isEmpty()) "" else q.joinToString("&", prefix = "?")
+    }
     fun project(host: String, projectId: String, tab: String = ProjectTab.CHATS) =
         "r/${enc(host)}/p/${enc(projectId)}?tab=${enc(tab)}"
     fun chat(host: String, projectId: String, sessionId: String) =
@@ -201,6 +214,7 @@ fun RelayNavHost(
                 onSwitchRunner = { r -> scope.launch { prefs.setCurrentRunner(r.hostname) } },
                 onManageRunners = { goRunners(navController) },
                 onUsage = { navController.navigate(Routes.usage(runner.hostname)) },
+                onSchedule = { navController.navigate(Routes.schedule(runner.hostname)) },
                 onOpenProject = { pid, tab -> navController.navigate(Routes.project(runner.hostname, pid, tab)) },
                 onOpenChat = { pid, sid -> navController.navigate(Routes.chat(runner.hostname, pid, sid)) },
                 onPickFolder = { navController.navigate(Routes.folderPicker(runner.hostname)) },
@@ -216,6 +230,7 @@ fun RelayNavHost(
                     goHome(navController)
                 },
                 onUsage = { runner -> navController.navigate(Routes.usage(runner.hostname)) },
+                onSchedule = { runner -> navController.navigate(Routes.schedule(runner.hostname)) },
                 onBack = if (canGoBack) ({ navController.popBackStack() }) else null,
             )
         }
@@ -233,6 +248,41 @@ fun RelayNavHost(
                 title = runner.label,
                 costs = costs,
                 onCostsChange = { c -> scope.launch { prefs.setUsageCosts(runner.hostname, c) } },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(
+            route = Routes.SCHEDULE,
+            arguments = listOf(navArgument("host") { type = NavType.StringType }),
+        ) { entry ->
+            val runner = runnerFor(entry) ?: return@composable UnknownRunnerPlaceholder()
+            val context = LocalContext.current
+            val vm: ScheduleViewModel = viewModel(
+                factory = viewModelFactory { initializer { ScheduleViewModel(runner, ScheduleRepository(context)) } },
+            )
+            ScheduleScreen(
+                vm = vm,
+                title = runner.label,
+                onBack = { navController.popBackStack() },
+                onOpenEditor = { bookingId, date ->
+                    navController.navigate(Routes.scheduleEdit(runner.hostname, bookingId, date))
+                },
+            )
+        }
+
+        composable(
+            route = Routes.SCHEDULE_EDIT,
+            arguments = listOf(
+                navArgument("host") { type = NavType.StringType },
+                navArgument("bookingId") { type = NavType.StringType; nullable = true; defaultValue = null },
+                navArgument("date") { type = NavType.StringType; nullable = true; defaultValue = null },
+            ),
+        ) { entry ->
+            runnerFor(entry) ?: return@composable UnknownRunnerPlaceholder()
+            BookingEditorScreen(
+                bookingId = entry.arguments?.getString("bookingId"),
+                date = entry.arguments?.getString("date"),
                 onBack = { navController.popBackStack() },
             )
         }

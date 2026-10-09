@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
@@ -98,6 +99,7 @@ fun HomeScreen(
     onSwitchRunner: (KnownRunner) -> Unit,
     onManageRunners: () -> Unit,
     onUsage: () -> Unit,
+    onSchedule: () -> Unit,
     onOpenProject: (projectId: String, tab: String) -> Unit,
     onOpenChat: (projectId: String, sessionId: String) -> Unit,
     onPickFolder: () -> Unit,
@@ -125,6 +127,7 @@ fun HomeScreen(
                             onSwitch = onSwitchRunner,
                             onManageRunners = onManageRunners,
                             onUsage = onUsage,
+                            onSchedule = onSchedule,
                         )
                     }
                 },
@@ -145,6 +148,11 @@ fun HomeScreen(
                                     text = { Text("Usage") },
                                     leadingIcon = { Icon(Icons.Outlined.Insights, contentDescription = null) },
                                     onClick = { menu = false; onUsage() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Schedule") },
+                                    leadingIcon = { Icon(Icons.Outlined.CalendarMonth, contentDescription = null) },
+                                    onClick = { menu = false; onSchedule() },
                                 )
                             }
                         }
@@ -265,6 +273,7 @@ private fun RunnerSwitcher(
     onSwitch: (KnownRunner) -> Unit,
     onManageRunners: () -> Unit,
     onUsage: () -> Unit,
+    onSchedule: () -> Unit,
 ) {
     val single = runners.size <= 1
     var expanded by remember { mutableStateOf(false) }
@@ -316,6 +325,11 @@ private fun RunnerSwitcher(
                 text = { Text("Usage · ${current.label}") },
                 leadingIcon = { Icon(Icons.Outlined.Insights, contentDescription = null) },
                 onClick = { expanded = false; onUsage() },
+            )
+            DropdownMenuItem(
+                text = { Text("Schedule · ${current.label}") },
+                leadingIcon = { Icon(Icons.Outlined.CalendarMonth, contentDescription = null) },
+                onClick = { expanded = false; onSchedule() },
             )
         }
     }
