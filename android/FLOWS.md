@@ -6,7 +6,10 @@ SignInSheet.kt (SignInViewModel, SignInsSheet), UsageScreen.kt (UsageViewModel.k
 FileBrowserScreen.kt (FileBrowserViewModel + FileBrowserContent), ContainersScreen.kt
 (ContainersViewModel + ContainersContent), FolderPickerScreen.kt, ScreenStates.kt,
 KnownRunnersRepository.kt, AppPrefsRepository.kt, RelayApiClient.kt, RelayApiService.kt,
-RelayFirebaseMessagingService.kt, RegisterDeviceWorker.kt
+RelayFirebaseMessagingService.kt, RegisterDeviceWorker.kt, ScheduleRepository.kt, ScheduleModels.kt,
+ScheduleScreen.kt, ScheduleViewModel.kt, ScheduleLayout.kt, BookingEditorScreen.kt,
+BookingEditorViewModel.kt, BookingEditorLogic.kt, TodaySchedule.kt, ReminderSettingsDialog.kt,
+ReminderLogic.kt, ReminderPrefs.kt, ReminderReceiver.kt (+ ReminderRescheduleReceiver), ReminderScheduler.kt
 
 ## Scope
 
@@ -28,6 +31,9 @@ Design source: DESIGN.md "Navigation & flow". Routes in `RelayNavHost.Routes`:
 | `r/{host}/p/{projectId}?tab={chats\|files\|git\|containers}` | ProjectScreen | tab arg = initial tab |
 | `r/{host}/p/{projectId}/s/{sessionId}` | ChatScreen | deep link `relay://r/{host}/p/{projectId}/s/{sessionId}` |
 | `r/{host}/pick-folder` | FolderPickerScreen | |
+| `r/{host}/usage` | UsageScreen | |
+| `r/{host}/schedule` | ScheduleScreen | week grid; re-fetches when the editor sets `SCHEDULE_CHANGED` on its savedStateHandle |
+| `r/{host}/schedule/edit?bookingId={id}&date={date}` | BookingEditorScreen | `date` only = new, both = one occurrence, `bookingId` only = whole booking (`Routes.scheduleEdit`) |
 
 MainActivity → RelayNavHost → waits for first DataStore read (runners, lastRoute, currentRunner)
 → start = `home` (or `runners` if none) → cold launch w/o deep link: restore last route
@@ -312,6 +318,116 @@ Feeds idle-suspend and the recorder's `app` signal.
 To change defaults (5 W idle, 0.5 W asleep, £0.25/kWh, £35.60 device, 1 W device):
 `AppPrefsRepository.UsageCosts`. To change ping rate: `MainActivity.ACTIVITY_PING_MS`.
 
+## Schedule (server sleep/wake bookings)
+
+Server side: runner/internal/schedule/FLOWS.md (rules, plan file) → power/server/FLOWS.md (timers).
+All dates/times are the **runner's** zone (`Schedule.timezone`, fallback phone zone: `zoneOf()`),
+except reminders (phone-local).
+
+### Schedule screen (week grid)
+
+Files: ScheduleScreen.kt, ScheduleViewModel.kt, ScheduleLayout.kt
+
+Entry: Home ⋮ "Schedule" (one runner) / switcher ▾ "Schedule · <runner>" / Today card tap /
+Manage runners row ⋮ "Schedule" → `Routes.schedule(host)` = `r/{host}/schedule`.
+
+```
+ScheduleViewModel.init → repo.cached(runner).collect → cache → ensureWeek()
+                       → refresh() → ScheduleRepository.refresh() → schedule (live) | refreshError
+shown week = currentMonday(zone) + weekOffset   (‹ › Today)
+  week fully inside cache window? → draw from cache (weekCovered)
+  else → live GET /v1/schedule/occurrences Mon..Sun (LiveWeek); cached days show meanwhile
+```
+- Grid: 7 day columns × 24h, hour height = max(viewport/18, 28dp), opens scrolled to 06:00
+  (`VISIBLE_HOURS`, `FIRST_VISIBLE_HOUR`). Block = awake with sleep bands (`blockSegments`);
+  now line on today, updated each minute.
+- Tap a block → editor for that occurrence; tap empty slot / day header → new booking that day;
+  FAB "Book" → new booking today.
+- Status line (bottom bar, `scheduleStatusLine`): refresh failed → "Offline · showing saved copy
+  from N ago"; else "Applied on server ✓ HH:MM" / "Not applied yet" (only if the runner has a
+  plan file) · "next: sleep Tue 09:00" (first `sleep` in `plan`).
+- Nothing cached + refresh failed → `FullScreenError`. Week fetch failed → inline "Couldn't load
+  this week". Empty week → "No bookings this week · tap a day to book".
+- ⋮ "Reminders" → `ReminderSettingsDialog`.
+To change grid sizing: `ScheduleScreen.kt` consts. Status text: `ScheduleLayout.scheduleStatusLine()`.
+
+### Booking editor
+
+Files: BookingEditorScreen.kt, BookingEditorViewModel.kt, BookingEditorLogic.kt
+
+Mode (`EditorMode`, from the route): `NEW` (date only) / `OCCURRENCE` (bookingId + date) /
+`SERIES` (bookingId only - nothing navigates there yet). An existing booking is loaded via
+`repo.refresh(runner).bookings` (no GET-by-id endpoint); occurrence mode prefills from that day's
+override if any (`formFromBooking`).
+Form: Title · Date (read-only in occurrence mode) · Awake from/until · Sleeps (+ Add sleep =
+`proposeSleep`: half the largest free stretch, 10 min..3 h, 5-min aligned) · day preview bar ·
+Repeat (Never/Daily/Weekly/Monthly/Yearly, every N, weekday chips, ends never/on date/after N) · Delete.
+
+Save / Delete (`asksScope` = occurrence mode on a series → "This day only" / "The whole series" dialog):
+
+| Situation | Save | Delete |
+|---|---|---|
+| New | `POST bookings` | - |
+| One-off (any mode) | `PUT bookings/{id}` | confirm → `DELETE bookings/{id}` |
+| Series day → "This day only" | `PUT …/occurrences/{date}` (Day only) | `DELETE …/occurrences/{date}` (cancel) |
+| Series day → "The whole series" | `PUT bookings/{id}` (day's times become the series') | `DELETE bookings/{id}` |
+| Series day, title/repeat touched | "This day only" disabled (`seriesOnlyChanges`) | - |
+
+Client validation (`validateForm`) mirrors server `ValidateDay`/`Validate`: end > start; each sleep
+inside the block, ≥ 10 min, no overlap, ≥ 10 awake min after the previous; repeat: interval ≥ 1,
+weekly needs a weekday, until ≥ date, count ≥ 1 (repeat skipped for "this day only"). Save is
+disabled while invalid. Overlaps are server-only: 400/409 → runner's `error` inline above the
+form (`serverError`); anything else → Snackbar. Success → `done` → sets `SCHEDULE_CHANGED` → pop.
+To change rules: `BookingEditorLogic.validateForm()` and runner `ValidateDay()` together.
+
+### Home "Today" card
+
+Files: HomeScreen.kt (`TodayCard`), HomeViewModel.kt (`scheduleCache`, `refreshSchedule`), TodaySchedule.kt
+
+`HomeViewModel.selectRunner` → `refreshSchedule(r)` (background, failures ignored) →
+HomeScreen collects `vm.scheduleCache(runner)` → each minute `todaySummary(cache, now in runner zone)`
+→ null (no occurrence today) = no card; else "Today · 08:00–22:00", 24h bar (awake / sleep bands /
+now tick) and `nextTransition` ("Sleeps at 09:00 → wakes 12:00", "Awake until …", "Asleep
+until …", "Asleep since …"). Tap → Schedule.
+Reads the **cache**, so it shows offline / while the server sleeps.
+
+### Reminders
+
+Files: ReminderPrefs.kt, ReminderScheduler.kt, ReminderReceiver.kt, ReminderLogic.kt, ReminderSettingsDialog.kt
+
+```
+ReminderScheduler.reschedule() → per kind (MORNING, EVENING): cancel → set alarm at next
+  phone-local HH:MM (ReminderLogic.nextTriggerMillis)
+→ ReminderReceiver (ACTION_FIRE) → goAsync → reschedule() (arms tomorrow) → enabled?
+→ EVENING only: refresh every runner's cache (parallel, 6 s cap)
+→ per known runner with a cached occurrence dated today (phone-local date) → notify:
+     MORNING "Server booked today" / "Booked today 08:00–22:00 · turn on <label>"
+     EVENING "Booking over" / "<label>: done for today, power it down"
+```
+- Settings (`ReminderPrefs`, DataStore `reminder_prefs`, global, not per runner): enabled
+  (default on), morning 06:30, evening 22:00. Every setter calls `reschedule()`. UI: Schedule ⋮ "Reminders".
+- Reschedule triggers: app start (`MainActivity` → `rescheduleAsync`), each setter, each fire,
+  `ReminderRescheduleReceiver` on BOOT_COMPLETED / TIME_SET / TIMEZONE_CHANGED /
+  MY_PACKAGE_REPLACED / exact-alarm permission change.
+- Exact vs inexact: `setExactAndAllowWhileIdle` below API 31 or when `canScheduleExactAlarms()`
+  ("Alarms & reminders", off by default on 33+); otherwise `setAndAllowWhileIdle` (Doze may delay).
+- Notification id = hash(kind + hostname) (re-fire replaces), channel `schedule_reminders`; no
+  POST_NOTIFICATIONS → silently skipped.
+To change defaults: `ReminderSettings`. Texts: `ReminderLogic.text()`. Refresh cap: `REFRESH_TIMEOUT_MS`.
+
+### ScheduleRepository (cache)
+
+Files: ScheduleRepository.kt, ScheduleModels.kt, RelayApiService.kt (schedule calls)
+
+`refresh(runner)` → `GET /v1/schedule` → window = `cacheWindow(today in runner zone)` = this
+week's Monday .. today+13 (14..20 days) → `GET /v1/schedule/occurrences` → write `ScheduleCache`
+(timezone, fetchedAt, from, to, occurrences) as one Moshi JSON blob in DataStore `schedule_cache`,
+key `schedule_<hostname>` → return the live `Schedule` (bookings/plan/applied are **not** cached).
+Mutations (`createBooking`, `updateSeries`, `deleteSeries`, `updateOccurrence`,
+`cancelOccurrence`) → API → `refreshQuietly` (a failed re-fetch leaves the cache stale, no error).
+A failed `refresh` leaves the cache untouched; an unreadable blob = no cache.
+To change the window: `ScheduleRepository.DAYS` / `cacheWindow()`.
+
 ## New project: scaffold vs. register existing folder
 
 Files: HomeScreen.kt, FolderPickerScreen.kt
@@ -524,9 +640,9 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
   Only ever hit by manual entry / a QR code with no explicit port, which is why it survived this
   long. If the runner's default ever changes, this constant must change with it — nothing
   enforces the pairing.
-- **No offline cache at all anymore.** Sessions, messages and project lists are fetched live on
+- **No offline cache for sessions, messages or projects.** They are fetched live on
   every screen entry; an asleep or unreachable runner shows `friendlyErrorMessage`, not a stale
-  transcript. The Room cache that used to back this was deleted 2026-09-20 (it was a
+  transcript. The **only** offline cache is the schedule window (`ScheduleRepository`, below). The Room cache that used to back this was deleted 2026-09-20 (it was a
   write-through mirror, so nothing unrecoverable was stored in it). If offline reading is wanted
   back, it's a fresh decision, not a revert.
 - **Home fans out one `GET …/containers` per project** (each runs `docker ps` on the
@@ -546,6 +662,19 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
   registration) and has no dedup/backoff tuning — `OneTimeWorkRequestBuilder` defaults. Its loop
   over runners is sequential, so a slow/unreachable runner delays (but does not block, thanks to
   the try/catch) the rest.
+- **Schedule cache** (DataStore `schedule_cache`): per runner hostname, one JSON blob, last
+  successful fetch only. Survives app restarts; re-pairing under a new hostname starts empty.
+  `ScheduleRepository.clear()` exists but nothing calls it - removing a runner leaves its blob.
+- **Reminders are phone-local, the cache is runner-local.** A reminder's "today" is the phone's
+  `LocalDate.now()` matched against runner-zone date strings; if the zones differ it can pick the
+  wrong day near midnight.
+- **Reminders depend on AlarmManager surviving.** Force-stop and OEM battery killers
+  (Xiaomi/Huawei/Samsung…) drop the alarms until the app is next opened; reboot is covered by
+  BOOT_COMPLETED. Inexact alarms can be minutes late in Doze. The morning reminder reads only the
+  cache (the server is usually off), so a booking made elsewhere since the last evening refresh is missed.
+- **Booking times are formatted client-side** with `String.format` in the default locale
+  (`BookingEditorLogic.formatMinutes`) - a locale with non-ASCII digits would send times the runner
+  rejects (400).
 - **FCM is live end-to-end in code**, gated only on the runner side having
   `RELAY_FCM_CREDENTIALS` pointed at a real service-account key (see runner/FLOWS.md) — without
   that the runner still registers devices but silently skips sending.
@@ -628,6 +757,22 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | HTTP client / auth header | `network/RelayApiClient.kt`, `network/RelayApiService.kt` |
 | Connection error wording | `network/RelayApiClient.kt` (`friendlyErrorMessage`) |
 | Navigation graph / routes | `ui/navigation/RelayNavHost.kt` (`Routes`) |
+| Schedule routes / grid refresh after edit | `ui/navigation/RelayNavHost.kt` (`Routes.SCHEDULE`, `SCHEDULE_EDIT`, `scheduleEdit()`, `SCHEDULE_CHANGED`) |
+| Schedule entry points | `ui/screens/HomeScreen.kt` (⋮ / switcher "Schedule", `TodayCard`), `ui/screens/RunnerListScreen.kt` (row ⋮ "Schedule") |
+| Week grid layout / sizing / taps | `ui/screens/ScheduleScreen.kt` (`WeekGrid`, `DayColumn`, `OccurrenceBlock`, `VISIBLE_HOURS`, `FIRST_VISIBLE_HOUR`) |
+| Cache vs live week fetch | `ui/screens/ScheduleViewModel.kt` (`ensureWeek`, `weekOccurrences`), `ScheduleLayout.kt` (`weekCovered`) |
+| Schedule status line | `ui/screens/ScheduleLayout.kt` (`scheduleStatusLine`, `nextSleep`) |
+| Booking editor form / modes / scope dialog | `ui/screens/BookingEditorScreen.kt` (`EditorForm`, `ScopeDialog`), `BookingEditorViewModel.kt` (`mode`, `asksScope`, `seriesOnlyChanges`, `save`, `delete`) |
+| Booking client validation / Add-sleep proposal | `ui/screens/BookingEditorLogic.kt` (`validateForm`, `proposeSleep`, `MIN_GAP_MINUTES`) |
+| Home Today card | `ui/screens/TodaySchedule.kt` (`todaySummary`, `nextTransition`), `HomeScreen.kt` (`TodayCard`), `HomeViewModel.refreshSchedule` |
+| Schedule cache window / storage | `data/ScheduleRepository.kt` (`DAYS`, `cacheWindow`, `ScheduleCacheCodec`) |
+| Schedule API calls / types | `network/RelayApiService.kt`, `model/ScheduleModels.kt` |
+| Reminder defaults / storage | `reminders/ReminderPrefs.kt` (`ReminderSettings`) |
+| Reminder alarms (exact vs inexact) | `reminders/ReminderScheduler.kt` (`reschedule`, `set`) |
+| Reminder text / which day / next trigger | `reminders/ReminderLogic.kt` (`text`, `todays`, `nextTriggerMillis`) |
+| Reminder firing / evening refresh / notification | `reminders/ReminderReceiver.kt` (`fire`, `refreshAll`, `REFRESH_TIMEOUT_MS`, `CHANNEL_ID`) |
+| Reminder reschedule broadcasts / permissions | `app/src/main/AndroidManifest.xml` (`ReminderRescheduleReceiver`, `SCHEDULE_EXACT_ALARM`, `RECEIVE_BOOT_COMPLETED`) |
+| Reminder settings dialog | `ui/screens/ReminderSettingsDialog.kt` |
 | Chat poll intervals | `ui/screens/ChatViewModel.kt` (`POLL_BUSY_MS`, `POLL_WAITING_MS`, `ECHO_WAIT_TICKS`) |
 | Sleep (row ⋮) + its 409/503/error Toasts | `ui/screens/RunnerListScreen.kt` (`suspendRunner`) |
 | Rename runner | `ui/screens/RunnerListScreen.kt` (`renamingRunner`, `NameRunnerDialog`) |

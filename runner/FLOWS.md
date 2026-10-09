@@ -315,6 +315,17 @@ To change how local input is read (Windows): `internal/activity/local_windows.go
 Always-on per-minute activity log + turn spans → `GET /v1/usage` sleep simulation. Full flow:
 `internal/usage/FLOWS.md`.
 
+## Schedule (server sleep/wake bookings)
+
+Bookings → SQLite → plan file → root applier timers. Full flow: `internal/schedule/FLOWS.md`;
+applier side: `power/server/FLOWS.md`.
+- Wiring: `cmd/runnerd/main.go` → `schedule.Open($RELAY_HOME/relay.db)` → `NewService` →
+  `Start(context.Background())` → `srv.Schedule`. Open fails → logged, feature 503s, runner runs.
+- Routes (`internal/api/api.go` `Routes()`, handlers in `internal/api/schedule.go`, all behind
+  `auth` + `scheduleOn`): `GET /v1/schedule`, `GET /v1/schedule/occurrences`,
+  `POST /v1/schedule/bookings`, `PUT|DELETE /v1/schedule/bookings/{id}`,
+  `PUT|DELETE /v1/schedule/bookings/{id}/occurrences/{date}`.
+
 ## Register an existing project folder + unscoped browse
 
 Files: internal/project/project.go (`RegisterExisting`, `BrowseDir`), internal/project/roots_unix.go,
@@ -887,6 +898,9 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Key generation / storage | `internal/config/config.go` |
 | Projects root / registry file location | `internal/config/config.go` (env `RELAY_HOME`) |
 | Listen address | `internal/config/config.go` (env `RELAY_LISTEN_ADDR`) |
+| Schedule bookings / plan file (everything else: `internal/schedule/FLOWS.md`) | `internal/schedule/`, env `RELAY_SCHEDULE_PLAN` |
+| Schedule routes / error → HTTP status / 503 gate | `internal/api/api.go` `Routes()`, `internal/api/schedule.go` (`writeScheduleError`, `scheduleOn`) |
+| Schedule wiring (DB path `$RELAY_HOME/relay.db`) | `cmd/runnerd/main.go` |
 | Quota/auth problem detection (`Message.kind`, push `problem`) | `internal/session/problem.go` (`problemKind`, `markProblemReply`, `LastProblem`) |
 | Provider → command mapping | `internal/session/session.go` (`resolveProvider`, `autoDetectProviders`, env `RELAY_PROVIDER_<NAME>` override) |
 | ACP wire client (JSON-RPC over stdio) | `internal/acp/acp.go` (`Client.Call`, `readLoop`) |
