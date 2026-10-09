@@ -2,8 +2,9 @@
 Description=Relay: warn 5 min before scheduled suspend
 
 [Timer]
-OnCalendar=Tue,Thu,Fri *-*-* 08:55:00
-OnCalendar=Tue,Thu,Fri *-*-* 12:55:00
+# Placeholder (past date, never fires). Real times come from the drop-in
+# relay-sleep-warn.timer.d/plan.conf written by relay-schedule-apply.sh.
+OnCalendar=2000-01-01 00:00:00
 AccuracySec=1s
 Persistent=false
 

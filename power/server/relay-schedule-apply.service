@@ -1,0 +1,10 @@
+[Unit]
+Description=Relay: apply schedule plan to the sleep/wake timers
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/relay-schedule-apply.sh
+
+[Install]
+# Also apply once at boot, in case the plan changed while the path unit wasn't watching
+WantedBy=multi-user.target

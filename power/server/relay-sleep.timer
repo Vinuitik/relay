@@ -2,8 +2,9 @@
 Description=Relay: suspend server during commute-day work gaps
 
 [Timer]
-OnCalendar=Tue,Thu,Fri *-*-* 09:00:00
-OnCalendar=Tue,Thu,Fri *-*-* 13:00:00
+# Placeholder (past date, never fires). Real times come from the drop-in
+# relay-sleep.timer.d/plan.conf written by relay-schedule-apply.sh.
+OnCalendar=2000-01-01 00:00:00
 AccuracySec=1s
 Persistent=false
 

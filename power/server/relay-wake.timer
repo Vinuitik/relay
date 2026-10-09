@@ -2,8 +2,9 @@
 Description=Relay: wake server from suspend after commute-day work gaps
 
 [Timer]
-OnCalendar=Tue,Thu,Fri *-*-* 12:00:00
-OnCalendar=Tue,Thu,Fri *-*-* 17:00:00
+# Placeholder (past date, never fires). Real times come from the drop-in
+# relay-wake.timer.d/plan.conf written by relay-schedule-apply.sh.
+OnCalendar=2000-01-01 00:00:00
 AccuracySec=1s
 Persistent=false
 # Programs the RTC alarm before each suspend so the machine comes back on its own

@@ -1,0 +1,9 @@
+[Unit]
+Description=Relay: re-apply sleep/wake timers when the schedule plan changes
+
+[Path]
+PathChanged=/var/lib/relay/schedule-plan
+Unit=relay-schedule-apply.service
+
+[Install]
+WantedBy=paths.target

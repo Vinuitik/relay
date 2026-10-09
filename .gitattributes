@@ -3,3 +3,4 @@ gradlew text eol=lf
 *.bat text eol=crlf
 *.service text eol=lf
 *.timer text eol=lf
+*.path text eol=lf
