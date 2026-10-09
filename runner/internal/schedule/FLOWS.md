@@ -32,7 +32,7 @@ To change rules: `ValidateDay()` / `Validate()`; keep `BookingEditorLogic.valida
 
 ## Expansion (expand.go)
 
-`Expand(bookings, from, to)` → per booking: `Validate` (any bad booking fails the whole call) →
+`Expand(bookings, from, to)` → per booking: `Validate` (a bad booking is logged and skipped) →
 `seriesDates()` yields original dates → drop `< from` → apply exception (cancelled = skip,
 override = swap `Day`, `Edited=true`) → sort by date, start.
 - Date arithmetic = day numbers in UTC (`parseDate`, `dayTime`), so DST never shifts a date.

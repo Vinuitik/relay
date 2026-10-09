@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -252,7 +253,10 @@ func Expand(bs []Booking, from, to Date) ([]Occurrence, error) {
 	var out []Occurrence
 	for _, b := range bs {
 		if err := Validate(b); err != nil {
-			return nil, fmt.Errorf("booking %s: %v", b.ID, err)
+			// Writes are validated, so this only happens after a rule change. Skipping keeps
+			// one stale booking from blanking the whole schedule and plan.
+			log.Printf("schedule: skipping invalid booking %s: %v", b.ID, err)
+			continue
 		}
 		exc := map[Date]Exception{}
 		for _, ex := range b.Exceptions {
