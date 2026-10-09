@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
         registerCurrentFcmTokenWithAllRunners()
         pingActivityWhileForeground(runnersRepository)
         requestNotificationPermissionIfNeeded()
+        com.relay.app.reminders.ReminderScheduler.rescheduleAsync(applicationContext)
 
         setContent {
             RelayTheme {
