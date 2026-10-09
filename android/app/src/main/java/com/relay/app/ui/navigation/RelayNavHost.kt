@@ -54,6 +54,7 @@ import com.relay.app.ui.screens.ProjectScreen
 import com.relay.app.ui.screens.ProjectTab
 import com.relay.app.ui.screens.ProjectViewModel
 import com.relay.app.ui.screens.BookingEditorScreen
+import com.relay.app.ui.screens.BookingEditorViewModel
 import com.relay.app.ui.screens.ScheduleScreen
 import com.relay.app.ui.screens.ScheduleViewModel
 import com.relay.app.ui.screens.UsageScreen
@@ -264,6 +265,13 @@ fun RelayNavHost(
             val vm: ScheduleViewModel = viewModel(
                 factory = viewModelFactory { initializer { ScheduleViewModel(runner, ScheduleRepository(context)) } },
             )
+            val changed by entry.savedStateHandle.getStateFlow(SCHEDULE_CHANGED, false).collectAsState()
+            LaunchedEffect(changed) {
+                if (changed) {
+                    entry.savedStateHandle[SCHEDULE_CHANGED] = false
+                    vm.refresh()
+                }
+            }
             ScheduleScreen(
                 vm = vm,
                 title = runner.label,
@@ -282,11 +290,23 @@ fun RelayNavHost(
                 navArgument("date") { type = NavType.StringType; nullable = true; defaultValue = null },
             ),
         ) { entry ->
-            runnerFor(entry) ?: return@composable UnknownRunnerPlaceholder()
+            val runner = runnerFor(entry) ?: return@composable UnknownRunnerPlaceholder()
+            val context = LocalContext.current
+            val bookingId = entry.arguments?.getString("bookingId")
+            val date = entry.arguments?.getString("date")
+            val vm: BookingEditorViewModel = viewModel(
+                factory = viewModelFactory {
+                    initializer { BookingEditorViewModel(runner, ScheduleRepository(context), bookingId, date) }
+                },
+            )
             BookingEditorScreen(
-                bookingId = entry.arguments?.getString("bookingId"),
-                date = entry.arguments?.getString("date"),
+                vm = vm,
                 onBack = { navController.popBackStack() },
+                onDone = {
+                    // Tell the grid to re-fetch (status line + weeks outside the cache).
+                    navController.previousBackStackEntry?.savedStateHandle?.set(SCHEDULE_CHANGED, true)
+                    navController.popBackStack()
+                },
             )
         }
 
@@ -388,3 +408,6 @@ private fun UnknownRunnerPlaceholder() {
         Text("Unknown runner (it may have been removed).")
     }
 }
+
+/** savedStateHandle key: the booking editor saved/deleted something, the grid should refresh. */
+private const val SCHEDULE_CHANGED = "schedule_changed"

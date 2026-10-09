@@ -24,8 +24,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -38,6 +41,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,6 +95,9 @@ fun ScheduleScreen(
     val zone = vm.zone
     val today = LocalDate.now(zone)
     val status = scheduleStatusLine(vm.schedule, vm.cache, offline = vm.refreshError != null, zone = zone)
+    var menuOpen by remember { mutableStateOf(false) }
+    var remindersOpen by remember { mutableStateOf(false) }
+    if (remindersOpen) ReminderSettingsDialog(onDismiss = { remindersOpen = false })
     Scaffold(
         topBar = {
             TopAppBar(
@@ -101,6 +110,17 @@ fun ScheduleScreen(
                 actions = {
                     IconButton(onClick = { vm.refresh() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Reminders") },
+                                onClick = { menuOpen = false; remindersOpen = true },
+                            )
+                        }
                     }
                 },
             )
@@ -428,32 +448,4 @@ private fun InlineMessage(text: String, modifier: Modifier) {
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     )
-}
-
-/** Stub for `r/{host}/schedule/edit` until the booking editor exists. */
-@Composable
-fun BookingEditorScreen(bookingId: String?, date: String?, onBack: () -> Unit) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Booking") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-            )
-        },
-    ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("Editor coming soon", style = MaterialTheme.typography.bodyLarge)
-                val ctx = listOfNotNull(bookingId?.let { "booking $it" }, date).joinToString(" · ")
-                if (ctx.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(ctx, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-    }
 }
