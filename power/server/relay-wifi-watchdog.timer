@@ -1,0 +1,12 @@
+[Unit]
+Description=Relay: Wi-Fi watchdog every 2 min
+
+[Timer]
+OnBootSec=3min
+# Monotonic: the countdown pauses while suspended, so the first check after a wake
+# comes within 2 min of it
+OnUnitActiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

@@ -1,8 +1,8 @@
-# Server sleep/wake schedule
+# Server sleep/wake schedule + Wi-Fi watchdog
 
-Files: install.sh, uninstall.sh, relay-sleep.sh, relay-sleep.timer, relay-sleep.service, relay-sleep-warn.timer, relay-sleep-warn.service, relay-wake.timer, relay-wake.service
+Files: install.sh, uninstall.sh, relay-sleep.sh, relay-sleep.timer, relay-sleep.service, relay-sleep-warn.timer, relay-sleep-warn.service, relay-wake.timer, relay-wake.service, relay-wifi-fix.sh, relay-wifi-watchdog.timer, relay-wifi-watchdog.service
 
-Commute days only (Tue/Thu/Fri). Gaps 09:00–12:00 and 13:00–17:00 the server sleeps; everything
+Sleep schedule runs on commute days only (Tue/Thu/Fri). Gaps 09:00–12:00 and 13:00–17:00 the server sleeps; everything
 else (morning power-on, evening shutdown) is manual.
 
 ## Flows
@@ -21,11 +21,35 @@ programs the RTC alarm for the next elapse → firmware powers back to S0 → `r
 runs `/bin/true` (the wake itself is the point).
 To change times/days: `OnCalendar=` lines in the `.timer` files, then `sudo sh install.sh` again.
 
+**Wi-Fi watchdog:** `relay-wifi-watchdog.timer` (3 min after boot, then every 2 min) →
+`relay-wifi-watchdog.service` → `/usr/local/bin/relay-wifi-fix.sh`:
+healthy? (`wlp0s20f3` `connected` in `nmcli` AND default gateway answers 1 of 3 pings; re-checked
+for 30s before acting) → yes: clear counter, exit
+→ flight mode on (`rfkill` soft block / `nmcli radio wifi` disabled)? → `rfkill unblock wifi`, exit
+→ tries < 5? → PCI remove `0000:00:14.3` → 3s → PCI rescan → wait up to 60s for healthy → log
+→ tries = 5 → log "gave up" once, then silent until reboot (counter in `/run/relay-wifi-tries`).
+To change interval: `relay-wifi-watchdog.timer` `OnUnitActiveSec=`. Tries: `MAX_TRIES` in the script.
+
 **Install:** copy `power/server/` to the server (`scp`) → `sudo sh install.sh` → units into
 `/etc/systemd/system/`, script into `/usr/local/bin/`, `enable --now` the three timers.
 Check: `systemctl list-timers 'relay-*'`. Remove: `sudo sh uninstall.sh`.
 
 ## Technology Notes
+
+- **Why the watchdog exists (seen 2026-10-08 and 2026-10-09):** the Intel AX201 firmware
+  (`QuZ-a0-hr-b0-77`) crashes (`Microcode SW error`, `NMI_INTERRUPT_WDG`) and the driver's own
+  restart then fails forever (`Failed to start RT ucode: -110`). Suspend/wake ran on time on the
+  8th; the card was dead the whole day. Reloading the module does not fix it; PCI remove/rescan does.
+- **Hardcoded `wlp0s20f3` / `0000:00:14.3`** in `relay-wifi-fix.sh`: a different Wi-Fi card or
+  slot breaks the watchdog silently (it would never see "connected" and reset a non-existent path).
+- **PCI reset can fail too** (the 2026-10-09 17:41 boot never got the card up). Only a full
+  power-off (hold power 10s, unplug charger) clears that. Watchdog logs "gave up" in that case.
+- **Wi-Fi power saving is left on** on purpose (user decision). It's the usual suspect for this
+  firmware crash; turning it off (`iwlmvm power_scheme=1`) is the untried lever.
+- **Monotonic timer:** the 2-min countdown pauses during suspend, so the first check after a wake
+  lands within 2 min of it.
+- **Flight mode is force-cleared.** The F2 key soft-blocks Wi-Fi and systemd-rfkill restores
+  that across reboots; the watchdog undoes it within 2 min.
 
 - **Times are server-local** (`Europe/London`). BST/GMT switches are handled by systemd; a
   timezone change on the server shifts the whole schedule.
@@ -62,4 +86,7 @@ Check: `systemctl list-timers 'relay-*'`. Remove: `sudo sh uninstall.sh`.
 | Timer precision | `AccuracySec=` in each `.timer` |
 | Apply changes | `scp` to server, `sudo sh install.sh` |
 | Remove everything | `sudo sh uninstall.sh` |
-| Logs | `journalctl -u relay-sleep -u relay-wake`; kernel: `journalctl -k \| grep 'PM: suspend'` |
+| Wi-Fi check interval | `relay-wifi-watchdog.timer` `OnUnitActiveSec=` |
+| Wi-Fi reset attempts | `MAX_TRIES` in `relay-wifi-fix.sh` |
+| Wi-Fi card name / PCI slot | `IFACE` / `PCI` in `relay-wifi-fix.sh` |
+| Logs | `journalctl -u relay-sleep -u relay-wake -u relay-wifi-watchdog`; Wi-Fi driver: `journalctl -k \| grep iwlwifi`; kernel: `journalctl -k \| grep 'PM: suspend'` |

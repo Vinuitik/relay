@@ -1,0 +1,6 @@
+[Unit]
+Description=Relay: check Wi-Fi, reset the card if the firmware is stuck
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/relay-wifi-fix.sh
