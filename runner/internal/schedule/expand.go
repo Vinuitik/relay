@@ -294,7 +294,10 @@ func Expand(bs []Booking, from, to Date) ([]Occurrence, error) {
 }
 
 func copyDay(d Day) Day {
-	d.Sleeps = append([]Gap(nil), d.Sleeps...)
+	// Never nil: JSON clients expect "sleeps": [] (shared/API.md).
+	sleeps := make([]Gap, len(d.Sleeps))
+	copy(sleeps, d.Sleeps)
+	d.Sleeps = sleeps
 	return d
 }
 

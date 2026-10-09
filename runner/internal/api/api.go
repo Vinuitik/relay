@@ -18,6 +18,7 @@ import (
 	"relay/runner/internal/auth"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
+	"relay/runner/internal/schedule"
 	"relay/runner/internal/session"
 	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/usage"
@@ -61,6 +62,9 @@ type Server struct {
 	// Usage serves GET /v1/usage (recorded activity + sleep simulation,
 	// see internal/usage). nil → 503.
 	Usage *usage.Recorder
+	// Schedule serves /v1/schedule* (sleep/wake bookings + the plan file,
+	// see internal/schedule). nil (store failed to open) → 503.
+	Schedule *schedule.Service
 	// UpdateStatusPath is keeperd's update-status file (env
 	// RELAY_UPDATE_STATUS, set by keeperd), surfaced as runnerInfo.Update.
 	// "" (runner not started by keeperd) → no update field.
@@ -108,6 +112,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/activity", s.auth(s.handleActivity))
 	mux.HandleFunc("POST /v1/suspend", s.auth(s.handleSuspend))
 	mux.HandleFunc("GET /v1/usage", s.auth(s.handleUsage))
+	mux.HandleFunc("GET /v1/schedule", s.auth(s.scheduleOn(s.handleGetSchedule)))
+	mux.HandleFunc("GET /v1/schedule/occurrences", s.auth(s.scheduleOn(s.handleScheduleOccurrences)))
+	mux.HandleFunc("POST /v1/schedule/bookings", s.auth(s.scheduleOn(s.handleCreateBooking)))
+	mux.HandleFunc("PUT /v1/schedule/bookings/{id}", s.auth(s.scheduleOn(s.handleUpdateBooking)))
+	mux.HandleFunc("DELETE /v1/schedule/bookings/{id}", s.auth(s.scheduleOn(s.handleDeleteBooking)))
+	mux.HandleFunc("PUT /v1/schedule/bookings/{id}/occurrences/{date}", s.auth(s.scheduleOn(s.handleUpdateOccurrence)))
+	mux.HandleFunc("DELETE /v1/schedule/bookings/{id}/occurrences/{date}", s.auth(s.scheduleOn(s.handleCancelOccurrence)))
 	mux.HandleFunc("GET /v1/projects/{projectId}/git", s.auth(s.handleGitStatus))
 	mux.HandleFunc("GET /v1/projects/{projectId}/git/diff", s.auth(s.handleGitDiff))
 	mux.HandleFunc("GET /v1/projects/{projectId}/git/log", s.auth(s.handleGitLog))

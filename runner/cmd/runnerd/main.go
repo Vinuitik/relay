@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"relay/runner/internal/idle"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
+	"relay/runner/internal/schedule"
 	"relay/runner/internal/session"
 	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/usage"
@@ -157,6 +159,19 @@ func main() {
 		sessions.OnTurn = rec.RecordTurn
 		srv.Usage = rec
 		go rec.Run(make(chan struct{}))
+	}
+
+	// Sleep/wake bookings (/v1/schedule*): stored in $RELAY_HOME/relay.db,
+	// expanded into the plan file a root applier turns into systemd timers
+	// (RELAY_SCHEDULE_PLAN, default /var/lib/relay/schedule-plan; skipped if
+	// its directory is missing). A store failure only disables the feature
+	// (503), never the runner. See internal/schedule.
+	if st, err := schedule.Open(filepath.Join(cfg.RelayHome, "relay.db")); err != nil {
+		log.Printf("schedule disabled: %v", err)
+	} else {
+		svc := schedule.NewService(st)
+		svc.Start(context.Background())
+		srv.Schedule = svc
 	}
 
 	// Sign-in relay (/v1/auth*): one manager per CLI recipe. After a
