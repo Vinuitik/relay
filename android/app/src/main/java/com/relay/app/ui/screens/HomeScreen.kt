@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -200,10 +201,17 @@ fun HomeScreen(
         ) {
             val projects = vm.projects
             val error = vm.error
-            when {
-                projects == null && error != null -> FullScreenError(error, onRetry = { vm.refresh() })
-                projects == null -> SkeletonRows()
-                else -> HomeList(
+            if (projects == null) {
+                // No project list yet (loading, or runner unreachable): the Today card comes from the
+                // phone's cache, so it still shows above the error/skeleton - e.g. mornings, server off.
+                Column(Modifier.fillMaxSize()) {
+                    if (today != null) TodayCard(today, onSchedule)
+                    Box(Modifier.weight(1f)) {
+                        if (error != null) FullScreenError(error, onRetry = { vm.refresh() }) else SkeletonRows()
+                    }
+                }
+            } else {
+                HomeList(
                     projects = projects,
                     needsYou = vm.needsYou,
                     containers = vm.containers,

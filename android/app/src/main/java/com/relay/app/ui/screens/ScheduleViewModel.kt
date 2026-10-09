@@ -20,9 +20,10 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 /**
- * Schedule week grid state. Weeks fully inside the repository's cached 14 days are read from
- * [ScheduleRepository.cached]; any other week (incl. the current one, whose past days aren't
- * cached) is fetched live with `GET /v1/schedule/occurrences` - the cached part shows meanwhile.
+ * Schedule week grid state. The repository's cache runs from this week's Monday
+ * ([ScheduleRepository.cacheWindow]), so the current week (and any other week fully inside it) is
+ * read from [ScheduleRepository.cached]; weeks outside it are fetched live with
+ * `GET /v1/schedule/occurrences` - the cached part shows meanwhile.
  * [refresh] = `ScheduleRepository.refresh` (schedule + plan/applied state, rewrites the cache).
  */
 class ScheduleViewModel(private val runner: KnownRunner, private val repo: ScheduleRepository) : ViewModel() {
