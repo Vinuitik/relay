@@ -189,6 +189,7 @@ Stats { count, medianSec, p90Sec, meanSec, totalSec }
 ### Schedule (bookings for the server's sleep/wake)
 
 All dates `"YYYY-MM-DD"`, times `"HH:MM"` 24h, wall-clock in the runner's zone (`timezone`).
+Lists (`sleeps`, `exceptions`, `bookings`, `plan`, occurrence arrays) are always `[]`, never `null`.
 
 ```
 Booking {
