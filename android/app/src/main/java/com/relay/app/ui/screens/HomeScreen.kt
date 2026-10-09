@@ -76,6 +76,17 @@ import com.relay.app.ui.theme.RelayMotion
 import com.relay.app.ui.theme.RelayStatus
 import com.relay.app.ui.theme.codeSmall
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.Card
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import kotlinx.coroutines.delay
+import java.time.Instant
 
 /** Project tabs, also the `tab` arg of the Project route. */
 object ProjectTab {
@@ -105,6 +116,19 @@ fun HomeScreen(
     onPickFolder: () -> Unit,
 ) {
     LaunchedEffect(runner) { vm.selectRunner(runner) }
+
+    // "Today" card: the current runner's cached schedule, re-evaluated every minute (now marker).
+    val scheduleCache by remember(runner.hostname) { vm.scheduleCache(runner) }.collectAsState(initial = null)
+    var now by remember { mutableStateOf(Instant.now()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000L - Instant.now().toEpochMilli() % 60_000L)
+            now = Instant.now()
+        }
+    }
+    val today = remember(scheduleCache, now) {
+        scheduleCache?.let { todaySummary(it, now.atZone(zoneOf(it.timezone))) }
+    }
 
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -185,6 +209,8 @@ fun HomeScreen(
                     containers = vm.containers,
                     offline = error != null,
                     updateStuck = vm.updateStuck,
+                    today = today,
+                    onSchedule = onSchedule,
                     onRetry = { vm.refresh() },
                     onAddProject = { showAddSheet = true },
                     onOpenProject = onOpenProject,
@@ -380,6 +406,8 @@ private fun HomeList(
     containers: Map<String, ContainersStatus>,
     offline: Boolean,
     updateStuck: UpdateStatus?,
+    today: TodaySummary?,
+    onSchedule: () -> Unit,
     onRetry: () -> Unit,
     onAddProject: () -> Unit,
     onOpenProject: (String, String) -> Unit,
@@ -409,6 +437,9 @@ private fun HomeList(
         }
         if (updateStuck != null) {
             item(key = "update-stuck") { UpdateStuckBanner(updateStuck) }
+        }
+        if (today != null) {
+            item(key = "today") { TodayCard(today, onSchedule) }
         }
         if (needsYou.isNotEmpty()) {
             item(key = "needs-header") { SectionLabel("Needs you") }
@@ -459,6 +490,64 @@ private fun HomeList(
         item(key = "fab-space") { Box(Modifier.padding(bottom = 88.dp)) }
     }
 }
+
+/**
+ * Today's bookings on the current runner (from the schedule cache): span, a 24h day bar (awake =
+ * primary, sleeps = dim primary band, now = tertiary tick) and the next sleep/wake change.
+ */
+@Composable
+private fun TodayCard(today: TodaySummary, onOpen: () -> Unit) {
+    val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    val awake = MaterialTheme.colorScheme.primary
+    val asleep = awake.copy(alpha = 0.22f)
+    val marker = MaterialTheme.colorScheme.tertiary
+    val describe = "Today " + today.segments.joinToString(", ") { seg ->
+        (if (seg.sleep) "asleep " else "awake ") + formatMinutes(seg.from) + " to " + formatMinutes(seg.to)
+    }
+    Card(
+        onClick = onOpen,
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(today.title, style = MaterialTheme.typography.titleMedium)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(12.dp)
+                    .semantics { contentDescription = describe }
+                    .drawWithContent {
+                        drawContent()
+                        val x = size.width * today.nowMinute / DAY_MINUTES
+                        val w = 2.dp.toPx()
+                        drawRect(marker, Offset(x - w / 2, 0f), Size(w, size.height))
+                    },
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .align(Alignment.Center)
+                        .clip(MaterialTheme.shapes.extraSmall)
+                        .background(track)
+                        .drawBehind {
+                            today.segments.forEach { seg ->
+                                val x0 = size.width * seg.from / DAY_MINUTES
+                                val x1 = size.width * seg.to / DAY_MINUTES
+                                drawRect(if (seg.sleep) asleep else awake, Offset(x0, 0f), Size(x1 - x0, size.height))
+                            }
+                        },
+                )
+            }
+            Text(
+                today.transition,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private const val DAY_MINUTES = 1440f
 
 @Composable
 private fun SectionLabel(text: String) {

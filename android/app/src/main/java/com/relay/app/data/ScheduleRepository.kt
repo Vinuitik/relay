@@ -19,9 +19,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import retrofit2.HttpException
+import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.temporal.TemporalAdjusters
 
 private val Context.scheduleCacheDataStore by preferencesDataStore(name = "schedule_cache")
 
@@ -39,8 +41,8 @@ data class ScheduleCache(
 )
 
 /**
- * The runner's sleep/wake bookings (shared/API.md "Schedule"), with the next [DAYS] days of
- * occurrences cached per runner hostname in DataStore (`schedule_cache`, key `schedule_<hostname>`,
+ * The runner's sleep/wake bookings (shared/API.md "Schedule"), with this week's Monday through
+ * today+[DAYS]-1 of occurrences cached per runner hostname in DataStore (`schedule_cache`, key `schedule_<hostname>`,
  * one Moshi JSON blob - same pattern as [KnownRunnersRepository]).
  *
  * Errors are thrown as-is (HttpException / IOException), like direct [RelayApiService] calls -
@@ -60,15 +62,14 @@ class ScheduleRepository(
     suspend fun cachedOccurrences(runner: KnownRunner): ScheduleCache? = cached(runner).first()
 
     /**
-     * Fetches the schedule, then occurrences for today..today+13 in the runner's zone, and caches
-     * them. Returns the live [Schedule] (bookings, plan, applied) - not cached.
+     * Fetches the schedule, then occurrences for [cacheWindow] (this week's Monday..today+13 in the
+     * runner's zone), and caches them. Returns the live [Schedule] (bookings, plan, applied) - not cached.
      */
     suspend fun refresh(runner: KnownRunner): Schedule {
         val service = api(runner)
         val schedule = service.getSchedule()
         val zone = runCatching { ZoneId.of(schedule.timezone) }.getOrDefault(ZoneId.systemDefault())
-        val from = LocalDate.now(zone)
-        val to = from.plusDays(DAYS - 1L)
+        val (from, to) = cacheWindow(LocalDate.now(zone))
         val occurrences = service.getOccurrences(from.toString(), to.toString())
         val cache = ScheduleCache(
             timezone = schedule.timezone,
@@ -128,8 +129,13 @@ class ScheduleRepository(
     private fun key(runner: KnownRunner) = stringPreferencesKey("schedule_${runner.hostname}")
 
     companion object {
-        /** Days of occurrences cached: today..today+13. */
+        /** Days ahead cached, counting today: the window ends at today+13. */
         const val DAYS = 14
+
+        /** Cached dates (inclusive) for [today]: Monday of its week (so the current week draws fully
+         * from cache offline) .. today+[DAYS]-1. 14..20 days depending on the weekday. */
+        fun cacheWindow(today: LocalDate): Pair<LocalDate, LocalDate> =
+            today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)) to today.plusDays(DAYS - 1L)
     }
 }
 

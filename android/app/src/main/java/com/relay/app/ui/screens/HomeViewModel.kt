@@ -5,6 +5,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.relay.app.data.ScheduleCache
+import com.relay.app.data.ScheduleRepository
 import com.relay.app.model.ContainersStatus
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
@@ -15,11 +17,13 @@ import com.relay.app.network.NewSessionRequest
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.StartContainersRequest
 import com.relay.app.network.friendlyErrorMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -27,8 +31,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Home's state, scoped to the Home back-stack entry: survives navigating into a project and back
  * (no refetch spinner), dies when Home leaves the back stack. Holds data for ONE runner at a time
  * ([runner]); switching runners via [selectRunner] clears and reloads.
+ * [schedules] backs the "Today" card: read from its cache, quietly refreshed on each [selectRunner].
  */
-class HomeViewModel : ViewModel() {
+class HomeViewModel(private val schedules: ScheduleRepository) : ViewModel() {
 
     var runner by mutableStateOf<KnownRunner?>(null)
         private set
@@ -54,6 +59,7 @@ class HomeViewModel : ViewModel() {
         private set
 
     private var loadJob: Job? = null
+    private var scheduleJob: Job? = null
     private val containerJobs = mutableMapOf<String, Job>()
 
     /** Called each time Home (re)enters composition: same runner = background refresh, old list stays. */
@@ -68,6 +74,22 @@ class HomeViewModel : ViewModel() {
             error = null
         }
         refresh()
+        refreshSchedule(r)
+    }
+
+    /** [r]'s cached schedule window, for the "Today" card. */
+    fun scheduleCache(r: KnownRunner): Flow<ScheduleCache?> = schedules.cached(r)
+
+    /** Background re-fetch so the "Today" card is fresh; failures leave the cache as it was. */
+    private fun refreshSchedule(r: KnownRunner) {
+        scheduleJob?.cancel()
+        scheduleJob = viewModelScope.launch {
+            try {
+                schedules.refresh(r)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+            }
+        }
     }
 
     fun refresh(): Job {

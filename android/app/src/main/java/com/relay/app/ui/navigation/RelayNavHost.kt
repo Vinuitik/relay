@@ -205,7 +205,10 @@ fun RelayNavHost(
                 LaunchedEffect(Unit) { goRunners(navController) }
                 return@composable
             }
-            val vm: HomeViewModel = viewModel()
+            val context = LocalContext.current
+            val vm: HomeViewModel = viewModel(
+                factory = viewModelFactory { initializer { HomeViewModel(ScheduleRepository(context)) } },
+            )
             HomeScreen(
                 vm = vm,
                 runner = runner,
