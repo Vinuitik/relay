@@ -78,6 +78,9 @@ func ValidateDay(d Day) error {
 			return fmt.Errorf("sleeps[%d]: shorter than %d minutes", i, MinGapMinutes)
 		case from < prevTo:
 			return fmt.Errorf("sleeps[%d]: overlaps or comes before sleeps[%d]", i, i-1)
+		case prevTo >= 0 && from-prevTo < MinGapMinutes:
+			// Its warn would fire while still asleep from the previous gap.
+			return fmt.Errorf("sleeps[%d]: needs %d awake minutes after sleeps[%d]", i, MinGapMinutes, i-1)
 		}
 		prevTo = to
 	}

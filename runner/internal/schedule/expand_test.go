@@ -228,6 +228,9 @@ func TestValidate(t *testing.T) {
 		{"sleeps overlap", func(b *Booking) {
 			b.Sleeps = []Gap{{"09:00", "10:00"}, {"09:30", "11:00"}}
 		}, "sleeps[1]"},
+		{"sleeps too close", func(b *Booking) {
+			b.Sleeps = []Gap{{"09:00", "10:00"}, {"10:09", "11:00"}}
+		}, "sleeps[1]: needs 10 awake minutes"},
 		{"sleeps unsorted", func(b *Booking) {
 			b.Sleeps = []Gap{{"12:00", "13:00"}, {"09:00", "10:00"}}
 		}, "sleeps[1]"},
