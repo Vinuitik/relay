@@ -62,8 +62,6 @@ data class FormErrors(
     val isValid: Boolean get() = end == null && sleeps.isEmpty() && repeat == null
 }
 
-fun formatMinutes(m: Int): String = "%02d:%02d".format(m / 60, m % 60)
-
 /** Sleeps sorted the way the server requires (by start, then end). */
 fun sortSleeps(sleeps: List<SleepSlot>): List<SleepSlot> = sleeps.sortedWith(compareBy({ it.from }, { it.to }))
 

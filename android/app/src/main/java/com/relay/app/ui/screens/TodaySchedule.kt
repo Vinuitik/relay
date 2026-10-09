@@ -2,7 +2,6 @@ package com.relay.app.ui.screens
 
 import com.relay.app.data.ScheduleCache
 import java.time.ZonedDateTime
-import java.util.Locale
 
 /*
  * Pure logic behind Home's "Today" card (no Compose, JVM-testable). Minutes are since midnight in
@@ -79,6 +78,3 @@ internal fun nextTransition(awake: List<Span>, nowMinute: Int): String {
     if (next != null) return "Asleep until ${formatMinutes(next.from)}"
     return "Asleep since ${formatMinutes(awake.lastOrNull()?.to ?: 0)}"
 }
-
-/** Minutes since midnight → "HH:MM" (1440 → "24:00"). */
-fun formatMinutes(m: Int): String = String.format(Locale.ROOT, "%02d:%02d", m / 60, m % 60)

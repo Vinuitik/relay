@@ -146,3 +146,9 @@ fun scheduleStatusLine(
 }
 
 private val HHMM = DateTimeFormatter.ofPattern("HH:mm")
+
+/**
+ * Minutes since midnight → "HH:MM" (1440 → "24:00"). Shared by the Today card and the booking editor;
+ * [Locale.ROOT] keeps ASCII digits on every phone locale (the editor sends these strings to the runner).
+ */
+fun formatMinutes(m: Int): String = String.format(Locale.ROOT, "%02d:%02d", m / 60, m % 60)

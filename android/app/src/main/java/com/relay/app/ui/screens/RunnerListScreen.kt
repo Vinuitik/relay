@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.relay.app.data.KnownRunnersRepository
+import com.relay.app.data.ScheduleRepository
 import com.relay.app.model.KnownRunner
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.friendlyErrorMessage
@@ -197,7 +198,11 @@ fun RunnerListScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        scope.launch { repository.removeRunner(runner.hostname) }
+                        scope.launch {
+                            repository.removeRunner(runner.hostname)
+                            // Drop its cached schedule too, or reminders keep firing for it.
+                            ScheduleRepository(context).clear(runner)
+                        }
                         confirmRemoveRunner = null
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
