@@ -5,7 +5,11 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -23,14 +27,16 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.relay.app.ui.theme.codeMedium
 
 /**
  * Minimal markdown for agent replies: headings, bullet/numbered lists, quotes, rules,
- * fenced code blocks, and inline **bold** / *italic* / `code` / [links](url) / ~~strike~~.
- * Tables and nested lists render as plain text. Hand-rolled to avoid a markdown dependency.
+ * fenced code blocks, pipe tables, and inline **bold** / *italic* / `code` / [links](url) / ~~strike~~.
+ * Nested lists render flat. Hand-rolled to avoid a markdown dependency.
  */
 @Composable
 fun MarkdownText(text: String, color: Color, modifier: Modifier = Modifier) {
@@ -79,6 +85,7 @@ fun MarkdownText(text: String, color: Color, modifier: Modifier = Modifier) {
                     )
                 }
                 Block.Rule -> HorizontalDivider(color = color.copy(alpha = 0.3f))
+                is Block.Table -> MarkdownTable(block, color, codeBg)
             }
         }
     }
@@ -91,12 +98,64 @@ private sealed interface Block {
     data class Quote(val text: String) : Block
     data class Code(val text: String) : Block
     data object Rule : Block
+    data class Table(val header: List<String>, val rows: List<List<String>>) : Block
 }
+
+/**
+ * Row-major grid: column widths come from measuring each column's widest cell, capped so
+ * long prose wraps instead of producing one huge column. Scrolls sideways when wider than
+ * the screen. To change the cap: [maxCellWidth].
+ */
+@Composable
+private fun MarkdownTable(table: Block.Table, color: Color, codeBg: Color) {
+    val measurer = rememberTextMeasurer()
+    val style = MaterialTheme.typography.bodyMedium
+    val density = LocalDensity.current
+    val cellPad = 8.dp
+    val widths = remember(table, style) {
+        (table.header.indices).map { col ->
+            val widest = (listOf(table.header) + table.rows).maxOf { row ->
+                measurer.measure(inline(row[col], codeBg), style.copy(fontWeight = FontWeight.Bold)).size.width
+            }
+            with(density) { widest.toDp() }.coerceAtMost(maxCellWidth) + cellPad * 2
+        }
+    }
+    val lineColor = color.copy(alpha = 0.25f)
+    Column(
+        modifier = Modifier
+            .horizontalScroll(rememberScrollState())
+            .background(codeBg.copy(alpha = 0.5f), MaterialTheme.shapes.small),
+    ) {
+        (listOf(table.header) + table.rows).forEachIndexed { r, row ->
+            if (r > 0) HorizontalDivider(modifier = Modifier.width(widths.fold(0.dp) { a, b -> a + b }), color = lineColor)
+            Row(modifier = Modifier.height(IntrinsicSize.Min)) {
+                row.forEachIndexed { c, cell ->
+                    Text(
+                        text = inline(cell, codeBg),
+                        color = color,
+                        style = style,
+                        fontWeight = if (r == 0) FontWeight.Bold else null,
+                        modifier = Modifier.width(widths[c]).fillMaxHeight().padding(horizontal = cellPad, vertical = 6.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val maxCellWidth = 220.dp
 
 private val headingRe = Regex("^(#{1,6})\\s+(.*)$")
 private val bulletRe = Regex("^(\\s*)[-*+]\\s+(.*)$")
 private val numberedRe = Regex("^(\\s*)(\\d+[.)])\\s+(.*)$")
 private val ruleRe = Regex("^\\s*([-*_])(\\s*\\1){2,}\\s*$")
+private val tableSepRe = Regex("^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)*\\|?\\s*$")
+
+/** `| a | b |` → [a, b]. Outer pipes optional; `\|` stays a literal pipe. */
+private fun tableCells(line: String): List<String> {
+    val t = line.trim().removePrefix("|").let { if (it.endsWith("|") && !it.endsWith("\\|")) it.dropLast(1) else it }
+    return t.split(Regex("(?<!\\\\)\\|")).map { it.trim().replace("\\|", "|") }
+}
 
 private fun parseBlocks(text: String): List<Block> {
     val blocks = mutableListOf<Block>()
@@ -120,6 +179,20 @@ private fun parseBlocks(text: String): List<Block> {
                 blocks += Block.Code(code.joinToString("\n"))
             }
             line.isBlank() -> flush()
+            // Table: a pipe row followed by a `---|---` separator; body runs until a pipe-less line.
+            trimmed.contains('|') && i + 1 < lines.size && tableSepRe.matches(lines[i + 1]) &&
+                lines[i + 1].contains('|') -> {
+                flush()
+                val header = tableCells(line)
+                i += 2
+                val rows = mutableListOf<List<String>>()
+                while (i < lines.size && lines[i].isNotBlank() && lines[i].contains('|')) {
+                    val cells = tableCells(lines[i++])
+                    rows += List(header.size) { cells.getOrElse(it) { "" } }
+                }
+                i--
+                blocks += Block.Table(header, rows)
+            }
             ruleRe.matches(line) -> { flush(); blocks += Block.Rule }
             headingRe.matches(trimmed) -> {
                 flush()

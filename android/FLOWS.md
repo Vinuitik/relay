@@ -651,8 +651,10 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
 - **Always dark theme**: `RelayTheme(darkTheme = true)` ignores the phone's light/dark setting;
   dynamic (wallpaper) colors still apply on Android 12+.
 - **Markdown is hand-rolled** (`MarkdownText.kt`, no library): headings, lists, quotes, rules,
-  fenced code, inline bold/italic/code/links/strike. Tables and nested structures show as plain
-  text; links are underlined but not tappable; `_` is never emphasis (keeps snake_case intact).
+  fenced code, pipe tables, inline bold/italic/code/links/strike. Nested lists render flat.
+  Tables: column widths measured per render (`rememberTextMeasurer`), capped at `maxCellWidth`
+  (220dp) so long cells wrap; whole table scrolls sideways. Header detection needs a `---|---`
+  separator row — a pipe line without one stays a paragraph. Links are underlined but not tappable; `_` is never emphasis (keeps snake_case intact).
 - **DataStore Preferences has no encryption** — the runner key is stored in plaintext prefs.
   Acceptable for now (single-user, own devices) but worth revisiting before wider use.
 - **Chat polling is 1s while `busy`, 3s while `waiting`, off otherwise.** It stops on any exception
@@ -742,6 +744,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Re-login API calls / types | `network/RelayApiService.kt` (`claudeAuthStatus`/`claudeAuthStart`/`claudeAuthFinish`, `ClaudeAuthFinishRequest`), `model/Models.kt` (`ClaudeAuthStatus`) |
 | Quota / login-expired card + push text | `ui/screens/ChatScreen.kt` (`ProblemCard`), `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
 | Markdown in agent replies | `ui/screens/MarkdownText.kt` (`parseBlocks`, `inline`) |
+| Table look / max column width | `MarkdownText.kt` `MarkdownTable()`, `maxCellWidth` |
 | Dark/light theme | `ui/theme/Theme.kt` (`RelayTheme` `darkTheme` default) |
 | Notification text per push type | `fcm/RelayFirebaseMessagingService.kt` (`notificationContentFor`) |
 | Containers tab (per-file Up/Down/Switch cards, take-everything-down + confirm, polling) | `ui/screens/ContainersScreen.kt` (`ContainersContent`, `ContainersViewModel`) |
