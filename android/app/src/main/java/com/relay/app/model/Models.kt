@@ -306,3 +306,21 @@ data class HandoffResult(
 
 /** GET /v1/vscode-tracking: whether the runner's Claude Code hooks are installed and last fired. */
 data class VsCodeTracking(val installed: Boolean, val lastEventAt: String? = null)
+
+/** One background subagent of a chat (`GET /v1/sessions/{id}/agents`). status: running | done. */
+data class SubAgent(
+    val agentId: String,
+    val description: String = "",
+    val status: String = "running",
+    val startedAt: String? = null,
+    val lastActivityAt: String? = null,
+    val messageCount: Int = 0,
+)
+
+/** `GET /v1/sessions/{id}/agents/{agentId}/messages?after=n`; pass [next] back as `after`. */
+data class SubAgentMessages(
+    val status: String = "running",
+    val total: Int = 0,
+    val next: Int = 0,
+    val messages: List<Message> = emptyList(),
+)

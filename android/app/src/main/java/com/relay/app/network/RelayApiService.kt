@@ -16,6 +16,8 @@ import com.relay.app.model.Peer
 import com.relay.app.model.Project
 import com.relay.app.model.RunnerInfo
 import com.relay.app.model.Session
+import com.relay.app.model.SubAgent
+import com.relay.app.model.SubAgentMessages
 import com.relay.app.model.UsageReport
 import com.relay.app.model.Booking
 import com.relay.app.model.BookingInput
@@ -126,6 +128,17 @@ interface RelayApiService {
 
     @GET("v1/sessions/{sessionId}")
     suspend fun getSession(@Path("sessionId") sessionId: String): Session
+
+    /** 404 on older runners = no agents. */
+    @GET("v1/sessions/{sessionId}/agents")
+    suspend fun listAgents(@Path("sessionId") sessionId: String): List<SubAgent>
+
+    @GET("v1/sessions/{sessionId}/agents/{agentId}/messages")
+    suspend fun agentMessages(
+        @Path("sessionId") sessionId: String,
+        @Path("agentId") agentId: String,
+        @Query("after") after: Int = 0,
+    ): SubAgentMessages
 
     @POST("v1/sessions/{sessionId}/message")
     suspend fun sendMessage(

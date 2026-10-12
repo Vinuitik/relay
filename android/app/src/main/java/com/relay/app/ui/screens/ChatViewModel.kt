@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Session
+import com.relay.app.model.SubAgent
 import com.relay.app.network.MessageRequest
 import com.relay.app.network.PermissionRequest
 import com.relay.app.network.RelayApiClient
@@ -28,6 +29,7 @@ private const val POLL_WAITING_MS = 3000L
 // After a send, keep polling an idle session this many 1s ticks waiting for the runner to echo
 // the message (it may not have flipped to busy yet); then give up and drop the optimistic bubble.
 private const val ECHO_WAIT_TICKS = 10
+private const val AGENTS_POLL_MS = 5000L
 
 /** One Snackbar: plain cause, plus Retry when there's something to retry. */
 class ChatEvent(val message: String, val retry: (() -> Unit)?)
@@ -65,8 +67,15 @@ class ChatViewModel(
 
     private var pollJob: Job? = null
 
+    /** Background subagents of this chat; empty = hide the chips row. */
+    var agents by mutableStateOf<List<SubAgent>>(emptyList())
+        private set
+    private var agentsJob: Job? = null
+    private var visible = true
+
     init {
         startPolling()
+        refreshAgents()
         viewModelScope.launch {
             projectName = runCatching { api.listProjects() }.getOrNull()?.find { it.id == projectId }?.name
         }
@@ -106,7 +115,40 @@ class ChatViewModel(
         }
     }
 
+    /** Screen visibility: polling the agents list pauses while the chat isn't on screen. */
+    fun setVisible(v: Boolean) {
+        visible = v
+        if (v) refreshAgents() else agentsJob?.cancel()
+    }
+
+    /** Fetch the agents list now; keep re-fetching every 5s while any agent is running. */
+    fun refreshAgents() {
+        agentsJob?.cancel()
+        if (!visible) return
+        agentsJob = viewModelScope.launch {
+            while (true) {
+                // 404 (older runner) = no agents; any other failure leaves the list as is, silently.
+                val list = try {
+                    api.listAgents(sessionId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (e is retrofit2.HttpException && e.code() == 404) emptyList() else return@launch
+                }
+                agents = list
+                if (list.none { it.status == "running" }) return@launch
+                delay(AGENTS_POLL_MS)
+            }
+        }
+    }
+
+    /** Read-only agent transcript, for [AgentView]. */
+    suspend fun agentMessages(agentId: String, after: Int) = api.agentMessages(sessionId, agentId, after)
+
+    fun friendly(e: Exception) = friendlyErrorMessage(e, runner)
+
     private fun apply(s: Session) {
+        if (session?.state == "busy" && s.state != "busy") refreshAgents()
         session = s
         if (pendingText != null && s.messages.drop(pendingBase).any { it.role == "user" }) pendingText = null
     }

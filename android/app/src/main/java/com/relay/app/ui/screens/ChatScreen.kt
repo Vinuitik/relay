@@ -76,6 +76,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -123,6 +124,16 @@ fun ChatScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var signInOpen by remember { mutableStateOf(false) }
+    var openAgent by remember { mutableStateOf<String?>(null) }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, vm) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, ev ->
+            if (ev == androidx.lifecycle.Lifecycle.Event.ON_START) vm.setVisible(true)
+            if (ev == androidx.lifecycle.Lifecycle.Event.ON_STOP) vm.setVisible(false)
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
 
     LaunchedEffect(vm) {
         vm.events.collect { ev ->
@@ -152,6 +163,7 @@ fun ChatScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            AgentChips(vm.agents, onOpen = { openAgent = it })
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     session != null -> Transcript(vm, session, onSignIn = { signInOpen = true })
@@ -196,6 +208,10 @@ fun ChatScreen(
                 },
             )
         }
+    }
+
+    openAgent?.let { id ->
+        vm.agents.find { it.agentId == id }?.let { AgentView(vm, it, onBack = { openAgent = null }) }
     }
 
     // Login-expired card → phone-side sign-in. The card stays in history; on success the sheet
@@ -426,7 +442,7 @@ private fun MessageActions(text: String, onEdit: ((String) -> Unit)?, content: @
 }
 
 @Composable
-private fun UserBubble(text: String, optimistic: Boolean) {
+internal fun UserBubble(text: String, optimistic: Boolean) {
     val alpha by animateFloatAsState(
         targetValue = if (optimistic) 0.6f else 1f,
         animationSpec = tween(RelayMotion.DurationShort, easing = RelayMotion.EaseOut),
@@ -447,7 +463,7 @@ private fun UserBubble(text: String, optimistic: Boolean) {
 
 /** One compact line per agent step: icon (done / failed / running) + title. */
 @Composable
-private fun ToolRow(message: Message) {
+internal fun ToolRow(message: Message) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
