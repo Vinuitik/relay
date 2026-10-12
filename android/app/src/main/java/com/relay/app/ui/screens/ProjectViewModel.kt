@@ -18,7 +18,9 @@ import com.relay.app.network.friendlyErrorMessage
 import com.relay.app.network.peerName
 import com.relay.app.ui.components.epochOf
 import com.relay.app.ui.components.relativeTime
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -132,35 +134,59 @@ class ProjectViewModel(
     fun takeOver(rc: RemoteChat, onCreated: (Session) -> Unit, onError: (String) -> Unit) =
         handoff(rc, takeover = true, onCreated, onError)
 
+    /** Set while a pull is retrying because the owner runner is mid-turn ("busy"). */
+    var waitingFor by mutableStateOf<RemoteChat?>(null)
+        private set
+    private var handoffJob: Job? = null
+
+    fun cancelWaiting() { handoffJob?.cancel() }
+
     private fun handoff(rc: RemoteChat, takeover: Boolean, onCreated: (Session) -> Unit, onError: (String) -> Unit) {
         if (creating) return
-        viewModelScope.launch {
+        handoffJob = viewModelScope.launch {
             creating = true
             takeoverOffer = null
             try {
                 val req = HandoffRequest(peerName(rc.runner), rc.chat.agentSessionId, projectId)
-                try {
-                    if (takeover) {
-                        val r = api.handoffTakeover(req)
-                        // Snackbar notice (onError just shows a message): the copy may lag.
-                        r.copySavedAt?.let { onError("Opened from the copy saved ${relativeTime(it)} - newer messages may be missing") }
-                    } else {
-                        api.handoffPull(req)
-                    }
-                } catch (e: Exception) {
-                    // "exists" = already here: just open it.
-                    when (errorCode(e)) {
-                        "exists" -> Unit
-                        "busy" -> { onError("Still working on ${rc.runner.label} - try again when it finishes"); return@launch }
-                        "unreachable" -> { takeoverOffer = rc; return@launch }
-                        else -> throw e
+                val deadline = System.currentTimeMillis() + WAIT_LIMIT_MS
+                while (true) {
+                    try {
+                        if (takeover) {
+                            val r = api.handoffTakeover(req)
+                            // Snackbar notice (onError just shows a message): the copy may lag.
+                            r.copySavedAt?.let { onError("Opened from the copy saved ${relativeTime(it)} - newer messages may be missing") }
+                        } else {
+                            api.handoffPull(req)
+                        }
+                        break
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // "exists" = already here: just open it.
+                        when (errorCode(e)) {
+                            "exists" -> break
+                            "busy" -> {
+                                if (takeover || System.currentTimeMillis() >= deadline) {
+                                    onError("${rc.runner.label} is still busy - gave up waiting. Try again later")
+                                    return@launch
+                                }
+                                waitingFor = rc
+                                delay(WAIT_POLL_MS)
+                            }
+                            "unreachable" -> { takeoverOffer = rc; return@launch }
+                            else -> throw e
+                        }
                     }
                 }
+                waitingFor = null
                 onCreated(api.createSession(projectId, NewSessionRequest("claude", agentSessionId = rc.chat.agentSessionId)))
                 remoteChats = remoteChats.filter { it.chat.agentSessionId != rc.chat.agentSessionId }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 onError(friendlyErrorMessage(e, runner))
             } finally {
+                waitingFor = null
                 creating = false
             }
         }
@@ -222,3 +248,6 @@ class ProjectViewModel(
 
 /** A chat living on another (linked) runner. */
 data class RemoteChat(val runner: KnownRunner, val chat: AgentChat)
+
+private const val WAIT_POLL_MS = 5_000L
+private const val WAIT_LIMIT_MS = 10 * 60_000L

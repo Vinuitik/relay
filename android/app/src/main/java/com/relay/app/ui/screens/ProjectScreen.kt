@@ -93,6 +93,15 @@ fun ProjectScreen(
         vm.newChat(provider, onCreated = { onOpenChat(it.id) }, onError = ::showError)
     }
 
+    vm.waitingFor?.let { rc ->
+        AlertDialog(
+            onDismissRequest = vm::cancelWaiting,
+            title = { Text("Waiting for ${rc.runner.label}") },
+            text = { Text("Waiting for ${rc.runner.label} to finish its turn… This chat will open as soon as it does.") },
+            confirmButton = { TextButton(onClick = vm::cancelWaiting) { Text("Cancel") } },
+        )
+    }
+
     vm.takeoverOffer?.let { rc ->
         AlertDialog(
             onDismissRequest = vm::dismissTakeover,

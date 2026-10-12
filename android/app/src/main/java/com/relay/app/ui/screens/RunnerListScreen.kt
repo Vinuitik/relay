@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.dp
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.data.ScheduleRepository
 import com.relay.app.model.KnownRunner
+import com.relay.app.model.VsCodeTracking
+import com.relay.app.ui.components.relativeTime
 import com.relay.app.network.PeerRequest
 import com.relay.app.network.RelayApiClient
 import com.relay.app.network.peerName
@@ -87,6 +89,14 @@ fun RunnerListScreen(
         }
     }
     LaunchedEffect(runners) { loadPeers() }
+
+    // hostname -> VS Code tracking health; absent = unknown (older runner / unreachable).
+    var tracking by remember { mutableStateOf<Map<String, VsCodeTracking>>(emptyMap()) }
+    LaunchedEffect(runners) {
+        tracking = runners.mapNotNull { r ->
+            runCatching { RelayApiClient.forRunner(r).vscodeTracking() }.getOrNull()?.let { r.hostname to it }
+        }.toMap()
+    }
 
     /** Registers each runner as a peer of the other (the phone holds both keys). */
     fun link(a: KnownRunner, b: KnownRunner) {
@@ -158,6 +168,7 @@ fun RunnerListScreen(
         RunnerList(
             runners = runners,
             peers = peers,
+            tracking = tracking,
             onLink = ::link,
             onBack = onBack,
             onPair = { showQrScan = true },
@@ -280,6 +291,7 @@ fun RunnerListScreen(
 private fun RunnerList(
     runners: List<KnownRunner>,
     peers: Map<String, Set<String>>,
+    tracking: Map<String, VsCodeTracking>,
     onLink: (KnownRunner, KnownRunner) -> Unit,
     onBack: (() -> Unit)?,
     onPair: () -> Unit,
@@ -329,6 +341,18 @@ private fun RunnerList(
                                 val linkedTo = runners.filter { it.hostname != runner.hostname && peerName(it) in peers[runner.hostname].orEmpty() }
                                 Column {
                                     Text("${runner.hostname}:${runner.port}", style = MaterialTheme.typography.codeSmall)
+                                    tracking[runner.hostname]?.let { t ->
+                                        val ago = relativeTime(t.lastEventAt)
+                                        Text(
+                                            when {
+                                                !t.installed -> "VS Code tracking: missing"
+                                                ago.isEmpty() -> "VS Code tracking: on"
+                                                ago == "now" -> "VS Code tracking: on (last seen just now)"
+                                                else -> "VS Code tracking: on (last seen $ago ago)"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
                                     if (linkedTo.isNotEmpty()) {
                                         Text("Linked with ${linkedTo.joinToString { it.label }}", style = MaterialTheme.typography.bodySmall)
                                     }

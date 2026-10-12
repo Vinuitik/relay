@@ -303,3 +303,6 @@ data class HandoffResult(
     val copySavedAt: String? = null,
     val source: String? = null,
 )
+
+/** GET /v1/vscode-tracking: whether the runner's Claude Code hooks are installed and last fired. */
+data class VsCodeTracking(val installed: Boolean, val lastEventAt: String? = null)

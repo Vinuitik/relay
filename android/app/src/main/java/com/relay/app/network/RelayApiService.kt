@@ -22,6 +22,7 @@ import com.relay.app.model.BookingInput
 import com.relay.app.model.Day
 import com.relay.app.model.Occurrence
 import com.relay.app.model.Schedule
+import com.relay.app.model.VsCodeTracking
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
@@ -97,6 +98,10 @@ interface RelayApiService {
         @Path("projectId") projectId: String,
         @Query("provider") provider: String = "claude",
     ): AgentChatsResponse
+
+    /** 404/503 on older runners - callers treat any failure as "unknown". */
+    @GET("v1/vscode-tracking")
+    suspend fun vscodeTracking(): VsCodeTracking
 
     @GET("v1/peers")
     suspend fun listPeers(): List<Peer>
