@@ -41,7 +41,7 @@ type Server struct {
 	Compose  ComposeFuncs
 	Devices  *notify.Registry
 	// Handoff moves chats between runners (/v1/peers, /v1/handoff/*, see
-	// internal/handoff). nil → those endpoints return 503.
+	// internal/handoff). nil â†’ those endpoints return 503.
 	Handoff *handoff.Service
 	// VSCodeTracking backs GET /v1/vscode-tracking (hooks installed? last event).
 	// nil: endpoint returns 503.
@@ -64,17 +64,17 @@ type Server struct {
 	// enabled, since that's the only thing that reads it.
 	Activity *activity.Tracker
 	// Auth is the sign-in relay, one Manager per provider (/v1/auth*, see
-	// auth.go). Empty → every /v1/auth/{provider} returns 503.
+	// auth.go). Empty â†’ every /v1/auth/{provider} returns 503.
 	Auth []*auth.Manager
 	// Usage serves GET /v1/usage (recorded activity + sleep simulation,
-	// see internal/usage). nil → 503.
+	// see internal/usage). nil â†’ 503.
 	Usage *usage.Recorder
 	// Schedule serves /v1/schedule* (sleep/wake bookings + the plan file,
 	// see internal/schedule). nil (store failed to open) → 503.
 	Schedule *schedule.Service
 	// UpdateStatusPath is keeperd's update-status file (env
 	// RELAY_UPDATE_STATUS, set by keeperd), surfaced as runnerInfo.Update.
-	// "" (runner not started by keeperd) → no update field.
+	// "" (runner not started by keeperd) â†’ no update field.
 	UpdateStatusPath string
 
 	// opsMu guards containerOps and gitOps: per-project background compose
@@ -106,6 +106,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/projects/{projectId}/agent-chats", s.auth(s.handleListAgentChats))
 	mux.HandleFunc("GET /v1/sessions", s.auth(s.handleListAllSessions))
 	mux.HandleFunc("GET /v1/sessions/{sessionId}", s.auth(s.handleGetSession))
+	mux.HandleFunc("GET /v1/sessions/{sessionId}/agents", s.auth(s.handleListSubagents))
+	mux.HandleFunc("GET /v1/sessions/{sessionId}/agents/{agentId}/messages", s.auth(s.handleSubagentMessages))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/message", s.auth(s.handleSendMessage))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/stop", s.auth(s.handleStopSession))
 	mux.HandleFunc("POST /v1/sessions/{sessionId}/cancel", s.auth(s.handleCancelTurn))
