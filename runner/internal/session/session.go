@@ -209,6 +209,11 @@ type Manager struct {
 	// in cmd/runnerd/main.go.
 	OnNeedsInput func(Session)
 
+	// ExternalBusy, if set, reports whether something outside this manager
+	// (Claude in VS Code, via hooks) is mid-turn in the agent chat - makes
+	// ChatBusy true so the chat isn't handed to another machine.
+	ExternalBusy func(agentSessionID string) bool
+
 	// OnFinished, if set, is called (in its own goroutine, so it never
 	// blocks or can fail the state transition itself) whenever a session
 	// either completes a turn (an ACP session/prompt returning - once per

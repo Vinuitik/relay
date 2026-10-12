@@ -43,6 +43,9 @@ type Server struct {
 	// Handoff moves chats between runners (/v1/peers, /v1/handoff/*, see
 	// internal/handoff). nil → those endpoints return 503.
 	Handoff *handoff.Service
+	// VSCodeTracking backs GET /v1/vscode-tracking (hooks installed? last event).
+	// nil: endpoint returns 503.
+	VSCodeTracking func() (installed bool, lastEvent *time.Time)
 	// Suspend, if set, suspends this machine to sleep immediately on
 	// POST /v1/suspend (see handleSuspend) - a manual counterpart to
 	// idle.Monitor's automatic timeout, for "I'm done, don't wait 3
@@ -123,6 +126,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /v1/schedule/bookings/{id}", s.auth(s.scheduleOn(s.handleDeleteBooking)))
 	mux.HandleFunc("PUT /v1/schedule/bookings/{id}/occurrences/{date}", s.auth(s.scheduleOn(s.handleUpdateOccurrence)))
 	mux.HandleFunc("DELETE /v1/schedule/bookings/{id}/occurrences/{date}", s.auth(s.scheduleOn(s.handleCancelOccurrence)))
+	mux.HandleFunc("GET /v1/vscode-tracking", s.auth(s.handleVSCodeTracking))
 	mux.HandleFunc("GET /v1/projects/{projectId}/git", s.auth(s.handleGitStatus))
 	mux.HandleFunc("GET /v1/projects/{projectId}/git/diff", s.auth(s.handleGitDiff))
 	mux.HandleFunc("GET /v1/projects/{projectId}/git/log", s.auth(s.handleGitLog))
@@ -682,4 +686,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// handleVSCodeTracking returns {installed, lastEventAt}: health of the VS Code hooks.
+func (s *Server) handleVSCodeTracking(w http.ResponseWriter, r *http.Request) {
+	if s.VSCodeTracking == nil {
+		writeError(w, http.StatusServiceUnavailable, "vscode tracking is not available")
+		return
+	}
+	installed, at := s.VSCodeTracking()
+	var last any
+	if at != nil {
+		last = at.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"installed": installed, "lastEventAt": last})
 }

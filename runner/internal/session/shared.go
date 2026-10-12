@@ -320,6 +320,9 @@ func (m *Manager) transcriptFileSize(rec *record) (int64, bool) {
 // ChatBusy reports whether a Relay session showing agentSessionID is
 // mid-turn - a chat in that state must not be handed to another machine.
 func (m *Manager) ChatBusy(agentSessionID string) bool {
+	if m.ExternalBusy != nil && m.ExternalBusy(agentSessionID) {
+		return true
+	}
 	m.mu.Lock()
 	recs := make([]*record, 0, len(m.sessions))
 	for _, rec := range m.sessions {

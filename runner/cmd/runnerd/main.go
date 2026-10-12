@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -32,9 +33,17 @@ import (
 	"relay/runner/internal/session"
 	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/usage"
+	"relay/runner/internal/vscodehook"
 )
 
 func main() {
+	// vscode-hook <event>: Claude Code hook entry (see internal/vscodehook).
+	// Runs before config.Load and fails open - never breaks the user's Claude.
+	if len(os.Args) > 2 && os.Args[1] == vscodehook.Subcommand {
+		runVSCodeHook(os.Args[2])
+		return
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
@@ -154,6 +163,24 @@ func main() {
 			h.IdleMin = envMinutes("RELAY_HANDOFF_IDLE_MIN", 30)
 			go h.RunReturn(context.Background(), envMinutes("RELAY_HANDOFF_CHECK_MIN", 5))
 		}
+	}
+
+	// Claude-in-VS-Code tracking via Claude Code hooks (RELAY_VSCODE_HOOKS=off
+	// disables the settings.json install; state files are still read).
+	sessions.ExternalBusy = func(id string) bool { return vscodehook.Busy(cfg.RelayHome, id, time.Now()) }
+	if os.Getenv("RELAY_VSCODE_HOOKS") != "off" {
+		if exe, err := os.Executable(); err != nil {
+			log.Printf("vscode hooks: resolve binary: %v", err)
+		} else if err := vscodehook.Install(session.ClaudeDir(), exe); err != nil {
+			log.Printf("vscode hooks: install skipped: %v", err)
+		}
+	}
+	srv.VSCodeTracking = func() (bool, *time.Time) {
+		installed := vscodehook.Installed(session.ClaudeDir())
+		if at, ok := vscodehook.LastEvent(cfg.RelayHome); ok {
+			return installed, &at
+		}
+		return installed, nil
 	}
 
 	// tracker records phone-app foreground pings (POST /v1/activity) -
@@ -310,4 +337,20 @@ func writePairingQRPNG(cfg *config.Config, path string) {
 	}
 	fmt.Printf("Wrote pairing QR to %s (runner address: %s)\n", path, cfg.ListenAddr)
 	fmt.Println("This image encodes the runner key - do not commit or share it.")
+}
+
+// runVSCodeHook reads the hook JSON from stdin and records/guards. Any
+// failure exits 0 silently; exit 2 + stderr only for the stale-tab block.
+func runVSCodeHook(event string) {
+	defer func() { _ = recover() }()
+	home := vscodehook.DefaultHome()
+	if home == "" {
+		return
+	}
+	in, _ := io.ReadAll(io.LimitReader(os.Stdin, 4<<20))
+	code, msg := vscodehook.Handle(event, in, home, time.Now())
+	if code == 2 {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(2)
+	}
 }
