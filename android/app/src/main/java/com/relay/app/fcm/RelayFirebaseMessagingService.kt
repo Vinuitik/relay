@@ -51,6 +51,11 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
         super.onMessageReceived(message)
         Log.d(TAG, "FCM message received: data=${message.data} notification=${message.notification?.body}")
         ensureChannel()
+        val type = message.data["type"]
+        if (type == "vscode_permission") {
+            postVsCodePermission(message.data)
+            return
+        }
 
         val (defaultTitle, defaultBody) = notificationContentFor(message.data)
         val title = message.notification?.title ?: message.data["title"] ?: defaultTitle
@@ -64,7 +69,7 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, if (type == "vscode_waiting" || type == "chat_moved") VSCODE_CHANNEL_ID else CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(title)
             .setContentText(body)
@@ -115,6 +120,8 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
                 val hostname = data["hostname"] ?: "A runner"
                 "$hostname is going to sleep" to "No active session — suspending to save power."
             }
+            "vscode_waiting" -> "VS Code is waiting on you" to "Claude needs your attention."
+            "chat_moved" -> "Chat moved" to "A chat was handed off to another machine."
             "session_needs_input" -> "Agent needs your approval" to "A session is paused waiting for permission."
             else -> when (data["problem"]) {
                 "quota" -> "Claude quota exhausted" to "Your subscription limit is used up - the turn stopped."
@@ -124,8 +131,53 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
         }
     }
 
+    /** Allow/Deny notification; buttons go to [VsCodePermissionReceiver]. Self-cancels after ~130s. */
+    private fun postVsCodePermission(data: Map<String, String>) {
+        val permissionId = data["permissionId"].orEmpty()
+        val runnerRef = data["runnerRef"].orEmpty()
+        if (permissionId.isEmpty()) return
+        val notifId = permissionId.hashCode()
+        fun action(behavior: String, label: String, code: Int): NotificationCompat.Action {
+            val i = Intent(this, VsCodePermissionReceiver::class.java).apply {
+                action = VsCodePermissionReceiver.ACTION_ANSWER
+                putExtra(VsCodePermissionReceiver.EXTRA_RUNNER_REF, runnerRef)
+                putExtra(VsCodePermissionReceiver.EXTRA_PERMISSION_ID, permissionId)
+                putExtra(VsCodePermissionReceiver.EXTRA_BEHAVIOR, behavior)
+                putExtra(VsCodePermissionReceiver.EXTRA_NOTIF_ID, notifId)
+            }
+            val pi = PendingIntent.getBroadcast(
+                this, notifId * 2 + code, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            return NotificationCompat.Action.Builder(0, label, pi).build()
+        }
+        val tap = PendingIntent.getActivity(
+            this, notifId,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val body = data["body"] ?: data["summary"] ?: "Permission needed"
+        val n = NotificationCompat.Builder(this, VSCODE_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(data["title"] ?: "VS Code asks")
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(tap)
+            .setAutoCancel(true)
+            .setTimeoutAfter(130_000L)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .addAction(action("allow", "Allow", 0))
+            .addAction(action("deny", "Deny", 1))
+            .build()
+        NotificationManagerCompat.from(this).notify(notifId, n)
+    }
+
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(VSCODE_CHANNEL_ID, "VS Code prompts", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Permission questions and status from Claude in VS Code"
+            },
+        )
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Session finished",
@@ -139,5 +191,6 @@ class RelayFirebaseMessagingService : FirebaseMessagingService() {
     companion object {
         private const val TAG = "RelayFcmService"
         private const val CHANNEL_ID = "session_finished"
+        const val VSCODE_CHANNEL_ID = "vscode_prompts"
     }
 }

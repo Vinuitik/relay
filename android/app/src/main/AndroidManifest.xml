@@ -51,6 +51,10 @@
         </service>
 
         <receiver
+            android:name=".fcm.VsCodePermissionReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".reminders.ReminderReceiver"
             android:exported="false" />
 

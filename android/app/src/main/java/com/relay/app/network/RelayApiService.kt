@@ -25,6 +25,7 @@ import com.relay.app.model.Day
 import com.relay.app.model.Occurrence
 import com.relay.app.model.Schedule
 import com.relay.app.model.VsCodeTracking
+import com.relay.app.model.VsCodePermissionsResponse
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
@@ -36,6 +37,8 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 
 data class HealthResponse(val ok: Boolean)
+/** [behavior] = "allow" or "deny". */
+data class VsCodePermissionAnswer(val behavior: String)
 data class NewProjectRequest(val name: String, val path: String? = null)
 /** [agentSessionId] set = continue that saved agent conversation (e.g. from VS Code). */
 data class NewSessionRequest(val provider: String, val agentSessionId: String? = null)
@@ -311,4 +314,12 @@ interface RelayApiService {
      * was deleted instead. Check `isSuccessful` - see [com.relay.app.model.CancelOccurrenceResult]. */
     @DELETE("v1/schedule/bookings/{id}/occurrences/{date}")
     suspend fun cancelOccurrence(@Path("id") id: String, @Path("date") date: String): Response<Booking>
+
+    /** Pending VS Code permission questions. 404 on older runners (treat as none). */
+    @GET("v1/vscode/permissions")
+    suspend fun vscodePermissions(): VsCodePermissionsResponse
+
+    /** Answers one. 200 ok; 404 = already answered at the laptop or expired. */
+    @POST("v1/vscode/permissions/{id}")
+    suspend fun answerVscodePermission(@Path("id") id: String, @Body body: VsCodePermissionAnswer): Response<ResponseBody>
 }

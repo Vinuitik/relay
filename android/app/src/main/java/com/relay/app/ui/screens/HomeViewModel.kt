@@ -12,6 +12,8 @@ import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
 import com.relay.app.model.Session
 import com.relay.app.model.UpdateStatus
+import com.relay.app.model.VsCodePermission
+import com.relay.app.network.VsCodePermissionAnswer
 import com.relay.app.network.NewProjectRequest
 import com.relay.app.network.NewSessionRequest
 import com.relay.app.network.RelayApiClient
@@ -58,6 +60,12 @@ class HomeViewModel(private val schedules: ScheduleRepository) : ViewModel() {
     var updateStuck by mutableStateOf<UpdateStatus?>(null)
         private set
 
+    /** Pending VS Code permission questions on [runner]; empty = card hidden. */
+    var permissions by mutableStateOf<List<VsCodePermission>>(emptyList())
+        private set
+    /** Outcome of the last Allow/Deny tap, shown as a snackbar by the screen. */
+    var permissionNote by mutableStateOf<String?>(null)
+
     private var loadJob: Job? = null
     private var scheduleJob: Job? = null
     private val containerJobs = mutableMapOf<String, Job>()
@@ -69,6 +77,7 @@ class HomeViewModel(private val schedules: ScheduleRepository) : ViewModel() {
         if (switched) {
             projects = null
             needsYou = emptyList()
+            permissions = emptyList()
             updateStuck = null
             containers = emptyMap()
             error = null
@@ -115,6 +124,40 @@ class HomeViewModel(private val schedules: ScheduleRepository) : ViewModel() {
                 if (loadJob === coroutineContext[Job]) refreshing = false
             }
         }.also { loadJob = it; it.start() }
+    }
+
+    /** Polls the pending VS Code questions every 5s; the caller scopes this to Home being visible. */
+    suspend fun pollPermissions() {
+        while (true) {
+            val r = runner
+            if (r != null) {
+                permissions = try {
+                    RelayApiClient.forRunner(r).vscodePermissions().permissions
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    emptyList() // 404 on older runners, or unreachable: nothing to show
+                }
+            }
+            delay(5_000)
+        }
+    }
+
+    fun answerPermission(p: VsCodePermission, behavior: String) {
+        val r = runner ?: return
+        permissions = permissions.filter { it.id != p.id }
+        viewModelScope.launch {
+            permissionNote = try {
+                val resp = RelayApiClient.forRunner(r).answerVscodePermission(p.id, VsCodePermissionAnswer(behavior))
+                when {
+                    resp.isSuccessful -> if (behavior == "allow") "Allowed" else "Denied"
+                    resp.code() == 404 -> "Already answered or expired"
+                    else -> "Failed (${resp.code()})"
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                friendlyErrorMessage(e, r)
+            }
+        }
     }
 
     /** Fetches one row's compose status; never blocks the list. */

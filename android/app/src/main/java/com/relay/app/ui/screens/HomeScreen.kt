@@ -46,6 +46,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.repeatOnLifecycle
+import com.relay.app.model.VsCodePermission
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -117,6 +119,10 @@ fun HomeScreen(
     onPickFolder: () -> Unit,
 ) {
     LaunchedEffect(runner) { vm.selectRunner(runner) }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    LaunchedEffect(runner, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { vm.pollPermissions() }
+    }
 
     // "Today" card: the current runner's cached schedule, re-evaluated every minute (now marker).
     val scheduleCache by remember(runner.hostname) { vm.scheduleCache(runner) }.collectAsState(initial = null)
@@ -134,6 +140,10 @@ fun HomeScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     fun showError(msg: String) { scope.launch { snackbar.showSnackbar(msg) } }
+
+    LaunchedEffect(vm.permissionNote) {
+        vm.permissionNote?.let { snackbar.showSnackbar(it); vm.permissionNote = null }
+    }
 
     var showAddSheet by remember { mutableStateOf(false) }
     var showNewProject by remember { mutableStateOf(false) }
@@ -214,6 +224,8 @@ fun HomeScreen(
                 HomeList(
                     projects = projects,
                     needsYou = vm.needsYou,
+                    permissions = vm.permissions,
+                    onAnswerPermission = vm::answerPermission,
                     containers = vm.containers,
                     offline = error != null,
                     updateStuck = vm.updateStuck,
@@ -411,6 +423,8 @@ private fun UpdateStuckBanner(st: UpdateStatus) {
 private fun HomeList(
     projects: List<Project>,
     needsYou: List<Session>,
+    permissions: List<VsCodePermission>,
+    onAnswerPermission: (VsCodePermission, String) -> Unit,
     containers: Map<String, ContainersStatus>,
     offline: Boolean,
     updateStuck: UpdateStatus?,
@@ -445,6 +459,9 @@ private fun HomeList(
         }
         if (updateStuck != null) {
             item(key = "update-stuck") { UpdateStuckBanner(updateStuck) }
+        }
+        if (permissions.isNotEmpty()) {
+            item(key = "vscode-asks") { VsCodeAskCard(permissions, onAnswerPermission) }
         }
         if (today != null) {
             item(key = "today") { TodayCard(today, onSchedule) }
@@ -503,6 +520,28 @@ private fun HomeList(
  * Today's bookings on the current runner (from the schedule cache): span, a 24h day bar (awake =
  * primary, sleeps = dim primary band, now = tertiary tick) and the next sleep/wake change.
  */
+@Composable
+private fun VsCodeAskCard(permissions: List<VsCodePermission>, onAnswer: (VsCodePermission, String) -> Unit) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("VS Code is asking", style = MaterialTheme.typography.titleMedium)
+            permissions.forEach { p ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(p.summary, style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                    val where = p.project ?: p.cwd
+                    if (!where.isNullOrBlank()) {
+                        Text(where, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { onAnswer(p, "allow") }) { Text("Allow") }
+                        androidx.compose.material3.OutlinedButton(onClick = { onAnswer(p, "deny") }) { Text("Deny") }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun TodayCard(today: TodaySummary, onOpen: () -> Unit) {
     val track = MaterialTheme.colorScheme.surfaceContainerHighest

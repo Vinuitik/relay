@@ -324,3 +324,16 @@ data class SubAgentMessages(
     val next: Int = 0,
     val messages: List<Message> = emptyList(),
 )
+
+/** A VS Code (laptop) permission question awaiting an answer; `GET /v1/vscode/permissions`. */
+data class VsCodePermission(
+    val id: String,
+    val sessionId: String,
+    val cwd: String? = null,
+    val project: String? = null,
+    val toolName: String,
+    val summary: String,
+    val createdAt: String? = null,
+)
+
+data class VsCodePermissionsResponse(val permissions: List<VsCodePermission> = emptyList())
