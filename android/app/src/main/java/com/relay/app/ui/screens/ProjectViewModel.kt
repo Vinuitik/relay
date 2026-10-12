@@ -9,14 +9,20 @@ import com.relay.app.model.AgentChat
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Project
 import com.relay.app.model.Session
+import com.relay.app.network.HandoffRequest
 import com.relay.app.network.MessageRequest
 import com.relay.app.network.NewSessionRequest
 import com.relay.app.network.RelayApiClient
+import com.relay.app.network.errorCode
 import com.relay.app.network.friendlyErrorMessage
+import com.relay.app.network.peerName
 import com.relay.app.ui.components.epochOf
+import com.relay.app.ui.components.relativeTime
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 /**
@@ -24,7 +30,12 @@ import kotlinx.coroutines.launch
  * list and refreshes it behind a thin bar). Also resolves the project's name for the title and
  * flags [missing] when the runner no longer has this project (restored route gone stale).
  */
-class ProjectViewModel(private val runner: KnownRunner, private val projectId: String) : ViewModel() {
+class ProjectViewModel(
+    private val runner: KnownRunner,
+    private val projectId: String,
+    /** Every other known runner - candidates for "On <name>" chats. */
+    private val others: List<KnownRunner> = emptyList(),
+) : ViewModel() {
     private val api = RelayApiClient.forRunner(runner)
 
     var project by mutableStateOf<Project?>(null)
@@ -42,6 +53,12 @@ class ProjectViewModel(private val runner: KnownRunner, private val projectId: S
     /** Claude's own chats for this folder not yet open in Relay (VS Code's, CLI's) - "On this
      * computer". Empty until loaded or if the runner can't list them (older runner, no claude). */
     var laptopChats by mutableStateOf<List<AgentChat>>(emptyList())
+        private set
+    /** Chats on linked runners that have this same project (matched by git remote). */
+    var remoteChats by mutableStateOf<List<RemoteChat>>(emptyList())
+        private set
+    /** Set when the owner runner couldn't be reached: UI offers "Take over from last copy". */
+    var takeoverOffer by mutableStateOf<RemoteChat?>(null)
         private set
     /** A New chat / first message is in flight - disables the FAB and composer. */
     var creating by mutableStateOf(false)
@@ -62,7 +79,10 @@ class ProjectViewModel(private val runner: KnownRunner, private val projectId: S
                 // Slower (the runner spawns the agent to list), so it never holds up the list.
                 launch {
                     runCatching { api.listAgentChats(projectId).chats }
-                        .onSuccess { all -> laptopChats = all.filter { it.sessionId.isNullOrEmpty() } }
+                        .onSuccess { all ->
+                            laptopChats = all.filter { it.sessionId.isNullOrEmpty() }
+                            loadRemoteChats(all.map { it.agentSessionId }.toSet())
+                        }
                 }
                 val list = api.listSessions(projectId)
                 sessions = list.sortedWith(
@@ -80,6 +100,70 @@ class ProjectViewModel(private val runner: KnownRunner, private val projectId: S
                 if (loadJob === coroutineContext[Job]) refreshing = false
             }
         }.also { loadJob = it; it.start() }
+    }
+
+    /** For each linked runner holding the same project, list its chats we don't have. Best effort:
+     * an unreachable or unlinked runner just contributes nothing. */
+    private suspend fun loadRemoteChats(have: Set<String>) {
+        val key = runCatching { api.listProjects() }.getOrNull()
+            ?.find { it.id == projectId }?.remoteKey ?: return
+        val linked = runCatching { api.listPeers().map { it.name } }.getOrDefault(emptyList()).toSet()
+        remoteChats = coroutineScope {
+            others.filter { peerName(it) in linked }.map { o ->
+                async {
+                    runCatching {
+                        val oApi = RelayApiClient.forRunner(o)
+                        val p = oApi.listProjects().find { it.remoteKey == key } ?: return@runCatching emptyList()
+                        oApi.listAgentChats(p.id).chats
+                            .filter { it.agentSessionId !in have }
+                            .map { RemoteChat(o, it) }
+                    }.getOrDefault(emptyList())
+                }
+            }.awaitAll().flatten()
+        }
+    }
+
+    fun dismissTakeover() { takeoverOffer = null }
+
+    /** Pull [rc] here from its runner, then adopt it like a laptop chat. */
+    fun continueRemoteChat(rc: RemoteChat, onCreated: (Session) -> Unit, onError: (String) -> Unit) =
+        handoff(rc, takeover = false, onCreated, onError)
+
+    fun takeOver(rc: RemoteChat, onCreated: (Session) -> Unit, onError: (String) -> Unit) =
+        handoff(rc, takeover = true, onCreated, onError)
+
+    private fun handoff(rc: RemoteChat, takeover: Boolean, onCreated: (Session) -> Unit, onError: (String) -> Unit) {
+        if (creating) return
+        viewModelScope.launch {
+            creating = true
+            takeoverOffer = null
+            try {
+                val req = HandoffRequest(peerName(rc.runner), rc.chat.agentSessionId, projectId)
+                try {
+                    if (takeover) {
+                        val r = api.handoffTakeover(req)
+                        // Snackbar notice (onError just shows a message): the copy may lag.
+                        r.copySavedAt?.let { onError("Opened from the copy saved ${relativeTime(it)} - newer messages may be missing") }
+                    } else {
+                        api.handoffPull(req)
+                    }
+                } catch (e: Exception) {
+                    // "exists" = already here: just open it.
+                    when (errorCode(e)) {
+                        "exists" -> Unit
+                        "busy" -> { onError("Still working on ${rc.runner.label} - try again when it finishes"); return@launch }
+                        "unreachable" -> { takeoverOffer = rc; return@launch }
+                        else -> throw e
+                    }
+                }
+                onCreated(api.createSession(projectId, NewSessionRequest("claude", agentSessionId = rc.chat.agentSessionId)))
+                remoteChats = remoteChats.filter { it.chat.agentSessionId != rc.chat.agentSessionId }
+            } catch (e: Exception) {
+                onError(friendlyErrorMessage(e, runner))
+            } finally {
+                creating = false
+            }
+        }
     }
 
     /** Back from a chat: refresh behind the thin bar (no-op before the first load). */
@@ -135,3 +219,6 @@ class ProjectViewModel(private val runner: KnownRunner, private val projectId: S
         }
     }
 }
+
+/** A chat living on another (linked) runner. */
+data class RemoteChat(val runner: KnownRunner, val chat: AgentChat)

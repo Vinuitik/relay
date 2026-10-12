@@ -33,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,7 +46,10 @@ import androidx.compose.ui.unit.dp
 import com.relay.app.data.KnownRunnersRepository
 import com.relay.app.data.ScheduleRepository
 import com.relay.app.model.KnownRunner
+import com.relay.app.network.PeerRequest
 import com.relay.app.network.RelayApiClient
+import com.relay.app.network.peerName
+import com.relay.app.network.runnerBaseUrl
 import com.relay.app.network.friendlyErrorMessage
 import com.relay.app.ui.components.SignInsSheet
 import com.relay.app.ui.components.EmptyState
@@ -71,6 +75,33 @@ fun RunnerListScreen(
     var confirmSuspendRunner by remember { mutableStateOf<KnownRunner?>(null) }
     var renamingRunner by remember { mutableStateOf<KnownRunner?>(null) }
     var signingInRunner by remember { mutableStateOf<KnownRunner?>(null) }
+
+    // hostname -> names of peers registered on that runner (GET /v1/peers); absent = unknown.
+    var peers by remember { mutableStateOf<Map<String, Set<String>>>(emptyMap()) }
+    fun loadPeers() {
+        scope.launch {
+            peers = runners.associate { r ->
+                r.hostname to (runCatching { RelayApiClient.forRunner(r).listPeers().map { it.name }.toSet() }
+                    .getOrNull() ?: emptySet())
+            }
+        }
+    }
+    LaunchedEffect(runners) { loadPeers() }
+
+    /** Registers each runner as a peer of the other (the phone holds both keys). */
+    fun link(a: KnownRunner, b: KnownRunner) {
+        scope.launch {
+            val message = try {
+                RelayApiClient.forRunner(a).putPeer(peerName(b), PeerRequest(runnerBaseUrl(b), b.key)).body()?.close()
+                RelayApiClient.forRunner(b).putPeer(peerName(a), PeerRequest(runnerBaseUrl(a), a.key)).body()?.close()
+                "${a.label} and ${b.label} are linked"
+            } catch (e: Exception) {
+                "Linking failed: " + friendlyErrorMessage(e, a)
+            }
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            loadPeers()
+        }
+    }
 
     /**
      * Calls `POST /v1/suspend` on the runner directly (no WorkManager indirection - the user is
@@ -126,6 +157,8 @@ fun RunnerListScreen(
     } else {
         RunnerList(
             runners = runners,
+            peers = peers,
+            onLink = ::link,
             onBack = onBack,
             onPair = { showQrScan = true },
             onRunnerSelected = onRunnerSelected,
@@ -246,6 +279,8 @@ fun RunnerListScreen(
 @Composable
 private fun RunnerList(
     runners: List<KnownRunner>,
+    peers: Map<String, Set<String>>,
+    onLink: (KnownRunner, KnownRunner) -> Unit,
     onBack: (() -> Unit)?,
     onPair: () -> Unit,
     onRunnerSelected: (KnownRunner) -> Unit,
@@ -291,7 +326,13 @@ private fun RunnerList(
                         ListItem(
                             headlineContent = { Text(runner.label) },
                             supportingContent = {
-                                Text("${runner.hostname}:${runner.port}", style = MaterialTheme.typography.codeSmall)
+                                val linkedTo = runners.filter { it.hostname != runner.hostname && peerName(it) in peers[runner.hostname].orEmpty() }
+                                Column {
+                                    Text("${runner.hostname}:${runner.port}", style = MaterialTheme.typography.codeSmall)
+                                    if (linkedTo.isNotEmpty()) {
+                                        Text("Linked with ${linkedTo.joinToString { it.label }}", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
                             },
                             trailingContent = {
                                 Box {
@@ -319,6 +360,13 @@ private fun RunnerList(
                                             text = { Text("Sign-ins") },
                                             onClick = { showMenu = false; onSignIn(runner) },
                                         )
+                                        runners.filter { it.hostname != runner.hostname }.forEach { other ->
+                                            val isLinked = peerName(other) in peers[runner.hostname].orEmpty()
+                                            DropdownMenuItem(
+                                                text = { Text(if (isLinked) "Re-link with ${other.label}" else "Link with ${other.label}") },
+                                                onClick = { showMenu = false; onLink(runner, other) },
+                                            )
+                                        }
                                         HorizontalDivider()
                                         DropdownMenuItem(
                                             text = { Text("Remove", color = MaterialTheme.colorScheme.error) },

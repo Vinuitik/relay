@@ -45,7 +45,19 @@ fun friendlyErrorMessage(e: Exception, runner: KnownRunner): String {
     }
 }
 
-private data class ErrorBody(val error: String?)
+private data class ErrorBody(val error: String?, val code: String? = null)
+
+/** Peer name under which [other] is registered on a runner: its label, made URL-safe. */
+fun peerName(other: KnownRunner): String =
+    other.label.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "runner" }
+
+/** `http://host:port` the other runner is reached at (same as this phone uses). */
+fun runnerBaseUrl(r: KnownRunner): String = "http://${r.hostname}:${r.port}"
+
+/** The runner's machine-readable `code` from an error response (`busy`, `unreachable`, ...). */
+fun errorCode(e: Exception): String? = (e as? HttpException)?.let {
+    runCatching { errorBodyAdapter.fromJson(it.response()?.errorBody()?.source()?.peek()?.readUtf8().orEmpty())?.code }.getOrNull()
+}
 
 private val errorBodyAdapter =
     Moshi.Builder().add(KotlinJsonAdapterFactory()).build().adapter(ErrorBody::class.java)

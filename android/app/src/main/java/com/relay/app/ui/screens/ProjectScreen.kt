@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -34,6 +35,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -91,6 +93,26 @@ fun ProjectScreen(
         vm.newChat(provider, onCreated = { onOpenChat(it.id) }, onError = ::showError)
     }
 
+    vm.takeoverOffer?.let { rc ->
+        AlertDialog(
+            onDismissRequest = vm::dismissTakeover,
+            title = { Text("${rc.runner.label} is unreachable") },
+            text = {
+                Text(
+                    "You can take over from the last copy of this chat saved on this computer. " +
+                        "It may be missing the newest messages from ${rc.runner.label}" +
+                        " Newer messages may be missing.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.takeOver(rc, onCreated = { onOpenChat(it.id) }, onError = ::showError)
+                }) { Text("Take over from last copy") }
+            },
+            dismissButton = { TextButton(onClick = vm::dismissTakeover) { Text("Cancel") } },
+        )
+    }
+
     Scaffold(
         topBar = {
             Column {
@@ -136,6 +158,9 @@ fun ProjectScreen(
                     onContinue = { chat ->
                         vm.continueLaptopChat(chat, onCreated = { onOpenChat(it.id) }, onError = ::showError)
                     },
+                    onContinueRemote = { rc ->
+                        vm.continueRemoteChat(rc, onCreated = { onOpenChat(it.id) }, onError = ::showError)
+                    },
                     onStart = { text ->
                         onProviderUsed(lastProvider)
                         vm.startWithMessage(lastProvider, text, onCreated = { onOpenChat(it.id) }, onError = ::showError)
@@ -151,6 +176,7 @@ private fun ChatsContent(
     vm: ProjectViewModel,
     onOpenChat: (String) -> Unit,
     onContinue: (AgentChat) -> Unit,
+    onContinueRemote: (RemoteChat) -> Unit,
     onStart: (String) -> Unit,
 ) {
     RefreshableBox(refreshing = vm.refreshing, onRefresh = { vm.refresh() }) {
@@ -176,6 +202,19 @@ private fun ChatsContent(
                     }
                     items(vm.laptopChats, key = { "agent:" + it.agentSessionId }) { c ->
                         LaptopChatRow(c, enabled = !vm.creating) { onContinue(c) }
+                    }
+                }
+                vm.remoteChats.groupBy { it.runner.hostname }.forEach { (host, group) ->
+                    item(key = "remote-header:$host") {
+                        Text(
+                            "On ${group.first().runner.label}",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 4.dp),
+                        )
+                    }
+                    items(group, key = { "remote:$host:" + it.chat.agentSessionId }) { rc ->
+                        LaptopChatRow(rc.chat, enabled = !vm.creating) { onContinueRemote(rc) }
                     }
                 }
                 item(key = "fab-space") { Box(Modifier.padding(bottom = 88.dp)) }

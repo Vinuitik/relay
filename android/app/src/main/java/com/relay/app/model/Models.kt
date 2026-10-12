@@ -11,6 +11,9 @@ data class Project(
     val name: String,
     val path: String,
     val createdAt: String,
+    /** Normalized git remote (host/owner/repo); null when the folder has none. Matches the same
+     * project across runners. */
+    val remoteKey: String? = null,
 )
 
 data class Session(
@@ -287,3 +290,16 @@ data class ConfigOption(
 }
 
 data class ConfigChoice(val value: String? = null, val name: String, val description: String? = null)
+
+/** GET /v1/peers entry: another runner this one can hand chats to/from. */
+data class Peer(val name: String, val baseUrl: String)
+
+/** Result of handoff pull/takeover. [maybeStale]/[copySavedAt] only on takeover. */
+data class HandoffResult(
+    val agentChatId: String,
+    val projectId: String,
+    val bytes: Long = 0,
+    val maybeStale: Boolean = false,
+    val copySavedAt: String? = null,
+    val source: String? = null,
+)

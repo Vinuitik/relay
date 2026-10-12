@@ -338,7 +338,7 @@ fun RelayNavHost(
             val runner = runnerFor(entry) ?: return@composable UnknownRunnerPlaceholder()
             val projectId = entry.arguments?.getString("projectId").orEmpty()
             KeepCurrentRunner(runner.hostname, currentHost, prefs)
-            val vm: ProjectViewModel = viewModel(factory = viewModelFactory { initializer { ProjectViewModel(runner, projectId) } })
+            val vm: ProjectViewModel = viewModel(factory = viewModelFactory { initializer { ProjectViewModel(runner, projectId, runners.filter { it.hostname != runner.hostname }) } })
             val filesVm: FileBrowserViewModel = viewModel(factory = viewModelFactory { initializer { FileBrowserViewModel(runner, projectId) } })
             val containersVm: ContainersViewModel = viewModel(factory = viewModelFactory { initializer { ContainersViewModel(runner, projectId) } })
             val gitVm: GitViewModel = viewModel(factory = viewModelFactory { initializer { GitViewModel(runner, projectId) } })

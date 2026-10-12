@@ -11,6 +11,8 @@ import com.relay.app.model.ContainersStatus
 import com.relay.app.model.Device
 import com.relay.app.model.FileContent
 import com.relay.app.model.FileEntry
+import com.relay.app.model.HandoffResult
+import com.relay.app.model.Peer
 import com.relay.app.model.Project
 import com.relay.app.model.RunnerInfo
 import com.relay.app.model.Session
@@ -25,6 +27,7 @@ import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.PUT
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
@@ -45,6 +48,9 @@ data class PermissionRequest(val optionId: String)
 data class GitPathsRequest(val paths: List<String> = emptyList(), val all: Boolean = false)
 data class GitCommitRequest(val message: String)
 data class GitSwitchRequest(val branch: String, val create: Boolean = false, val remote: Boolean = false)
+data class PeerRequest(val baseUrl: String, val key: String)
+data class HandoffRequest(val peer: String?, val agentChatId: String, val projectId: String)
+
 /** The code a paste-code sign-in page shows after login, pasted on the phone. */
 data class AuthFinishRequest(val code: String)
 
@@ -91,6 +97,23 @@ interface RelayApiService {
         @Path("projectId") projectId: String,
         @Query("provider") provider: String = "claude",
     ): AgentChatsResponse
+
+    @GET("v1/peers")
+    suspend fun listPeers(): List<Peer>
+
+    @PUT("v1/peers/{name}")
+    suspend fun putPeer(@Path("name") name: String, @Body request: PeerRequest): Response<ResponseBody>
+
+    @DELETE("v1/peers/{name}")
+    suspend fun deletePeer(@Path("name") name: String): Response<ResponseBody>
+
+    /** Call on the TARGET runner: pulls the chat's transcript from [HandoffRequest.peer]. */
+    @POST("v1/handoff/pull")
+    suspend fun handoffPull(@Body request: HandoffRequest): HandoffResult
+
+    /** For when the owner runner is unreachable: use the last copy this side holds. */
+    @POST("v1/handoff/takeover")
+    suspend fun handoffTakeover(@Body request: HandoffRequest): HandoffResult
 
     /** Sessions across every project (Home's "Needs you"). [state] = comma list, e.g.
      * `"waiting,busy"`; null = every state. Runner sorts waiting first, then busy, newest first. */
