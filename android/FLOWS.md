@@ -1,4 +1,4 @@
-# Android app flows
+﻿# Android app flows
 
 Files: MainActivity.kt, RelayNavHost.kt, HomeScreen.kt, HomeViewModel.kt, ProjectScreen.kt,
 ProjectViewModel.kt, RunnerListScreen.kt, QrScanScreen.kt, ChatScreen.kt, ChatViewModel.kt, MarkdownText.kt, Theme.kt,
@@ -554,27 +554,33 @@ Gaps: [NOT IMPLEMENTED] manual project linking UI (projects match only by identi
 tap never switches the current runner to the one that notified; remote lists refresh only on
 `ProjectViewModel.refresh`, not polled. Untested on a device.
 
-## Subagent chips + agent view (Chat)
+## Subagent sub-chat panel (Chat)
 
-Files: ChatScreen.kt, ChatViewModel.kt, AgentView.kt, RelayApiService.kt, Models.kt (`SubAgent`, `SubAgentMessages`).
+Files: ChatScreen.kt, ChatViewModel.kt, AgentPanel.kt, RelayApiService.kt, Models.kt (`SubAgent`, `SubAgentMessages`).
 Runner side: runner/FLOWS.md "Subagent transcripts".
 
 ChatViewModel init / `setVisible(true)` / busy→idle transition → `refreshAgents()` →
 `listAgents(sessionId)` (404 = none; other failures keep the list, silently) → `agents`; keeps
-re-fetching every `AGENTS_POLL_MS` (5s) **only while some agent is `running`**, then stops. ChatScreen's
-lifecycle observer calls `setVisible(false)` on ON_STOP (cancels the job) and `true` on ON_START.
-→ `AgentChips` (horizontal row above the transcript, hidden when empty; lamp lit = running +
-description) → tap → `openAgent = id` → `AgentView(vm, agent)`.
-AgentView: full-screen `Dialog` (read-only, Back closes) → `LaunchedEffect(agentId)` loop:
-`agentMessages(id, after)` → append, `after = res.next` → every `AGENT_MESSAGES_POLL_MS` (3s) while
-`running`; on the flip to done, refetch from 0 once (`after` polling does not re-deliver a tool
-row's status change) → stop. Labels: first user message "Task from parent", last agent message once
-done "Final report". Reuses `UserBubble`/`ToolRow` (now `internal`) and `MarkdownText`.
-To change: `AgentView.kt` (`AgentChips`, `AgentView`, `AGENT_MESSAGES_POLL_MS`), `ChatViewModel.refreshAgents()` / `AGENTS_POLL_MS`.
-Gaps: the view is a Dialog, not a route - no deep link, not restored, no back-stack entry;
-agent polling errors show inline text and retry every 3s while the dialog is open; no way to send
-input to a subagent. Untested on a device.
-
+re-fetching every `AGENTS_POLL_MS` (5s) **only while some agent is `running`**, then stops. First
+non-empty list sets `selectedAgentId` once (first running agent, else the last); later agents never
+change it. ChatScreen's lifecycle observer calls `setVisible(false)` on ON_STOP and `true` on ON_START.
+→ ChatScreen `BoxWithConstraints` → `AgentPanel(vm, maxHeight = 65% of body)` pinned above the
+transcript, hidden when `agents` is empty.
+Collapsed: one bar = lamp (lit while any running) + "N agents · M running" / "all done" + chevron;
+tap toggles `vm.agentsExpanded` (VM state, survives config changes).
+Expanded (`AnimatedVisibility`, 200ms EaseOut expand/shrink, chat stays underneath): scrollable tab
+chips (description + lamp; tap → `vm.selectedAgentId`) → `AgentFeed(selected)` at fixed 65% height.
+AgentFeed is composed **only while expanded**, so polling stops on collapse and restarts from 0 on
+expand or tab switch: `agentMessages(id, after)` → append, `after = res.next` → every
+`AGENT_MESSAGES_POLL_MS` (3s) while `running`; on the flip to done refetch from 0 once (`after`
+polling does not re-deliver a tool row's status change). Rows: first user message = `TaskBlock`
+("Task from main agent", 4 lines + Show more/less), tools = `ToolRow`, text = `MarkdownText`,
+last agent message once done = highlighted "Final report". Auto-scroll to the tail unless the user
+scrolled up (`following` re-evaluated when a scroll gesture ends).
+To change: `AgentPanel.kt` (`AgentPanel`, `AgentFeed`, `TaskBlock`, `AGENT_MESSAGES_POLL_MS`), `ChatViewModel.refreshAgents()` / `AGENTS_POLL_MS`.
+[NOT IMPLEMENTED]: chat directly to an agent (Claude Code only lets the parent message subagents) - no input in the panel.
+Gaps: the feed is not cached across collapse/tab switch (refetched); panel is always 65% tall when
+expanded (LazyColumn fills); feed errors show inline and retry every 3s. Untested on a device.
 ## VS Code permission prompts on the phone
 
 Files: RelayFirebaseMessagingService.kt (`postVsCodePermission`), VsCodePermissionReceiver.kt,
@@ -918,8 +924,9 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Pull / take over / unreachable dialog | `ui/screens/ProjectViewModel.kt` (`handoff`, `takeOver`, `takeoverOffer`), `ProjectScreen.kt` (takeover AlertDialog) |
 | Busy auto-wait (interval, limit, dialog) | `ui/screens/ProjectViewModel.kt` (`WAIT_POLL_MS`, `WAIT_LIMIT_MS`, `waitingFor`, `cancelWaiting`), `ProjectScreen.kt` (waiting AlertDialog) |
 | VS Code tracking line per runner | `ui/screens/RunnerListScreen.kt` (tracking `Text`), `RelayApiService.vscodeTracking`, `model/Models.kt` (`VsCodeTracking`) |
-| Subagent chips row | `ui/screens/AgentView.kt` (`AgentChips`), `ChatScreen.kt` (`openAgent`) |
-| Agent view dialog / its poll interval | `ui/screens/AgentView.kt` (`AgentView`, `AGENT_MESSAGES_POLL_MS`) |
+| Sub-chat panel bar / tabs / expand animation | `ui/screens/AgentPanel.kt` (`AgentPanel`), `ChatScreen.kt` (`BoxWithConstraints`, panel max height) |
+| Panel feed rows / task block / auto-scroll / poll interval | `ui/screens/AgentPanel.kt` (`AgentFeed`, `TaskBlock`, `AGENT_MESSAGES_POLL_MS`) |
+| Panel expanded + selected agent state / default selection | `ui/screens/ChatViewModel.kt` (`agentsExpanded`, `selectedAgentId`, `refreshAgents`) |
 | Agents list fetch / poll / pause when hidden | `ui/screens/ChatViewModel.kt` (`refreshAgents`, `setVisible`, `AGENTS_POLL_MS`), `ChatScreen.kt` (lifecycle observer) |
 | Agent API calls / types | `network/RelayApiService.kt` (`listAgents`, `agentMessages`), `model/Models.kt` (`SubAgent`, `SubAgentMessages`) |
 | VS Code prompt notification (Allow/Deny, timeout, text) | `fcm/RelayFirebaseMessagingService.kt` (`postVsCodePermission`) |

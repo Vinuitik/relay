@@ -67,7 +67,11 @@ class ChatViewModel(
 
     private var pollJob: Job? = null
 
-    /** Background subagents of this chat; empty = hide the chips row. */
+    /** Sub-chat panel state; lives here so it survives config changes. */
+    var agentsExpanded by mutableStateOf(false)
+    var selectedAgentId by mutableStateOf<String?>(null)
+
+    /** Background subagents of this chat; empty = hide the sub-chat panel. */
     var agents by mutableStateOf<List<SubAgent>>(emptyList())
         private set
     private var agentsJob: Job? = null
@@ -136,13 +140,17 @@ class ChatViewModel(
                     if (e is retrofit2.HttpException && e.code() == 404) emptyList() else return@launch
                 }
                 agents = list
+                // Default once: first running agent, else the latest. Never re-picked when more appear.
+                if (selectedAgentId == null && list.isNotEmpty()) {
+                    selectedAgentId = (list.firstOrNull { it.status == "running" } ?: list.last()).agentId
+                }
                 if (list.none { it.status == "running" }) return@launch
                 delay(AGENTS_POLL_MS)
             }
         }
     }
 
-    /** Read-only agent transcript, for [AgentView]. */
+    /** Read-only agent transcript, for [AgentPanel]. */
     suspend fun agentMessages(agentId: String, after: Int) = api.agentMessages(sessionId, agentId, after)
 
     fun friendly(e: Exception) = friendlyErrorMessage(e, runner)

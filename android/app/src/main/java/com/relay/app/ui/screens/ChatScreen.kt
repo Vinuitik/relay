@@ -18,6 +18,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -124,7 +125,6 @@ fun ChatScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var signInOpen by remember { mutableStateOf(false) }
-    var openAgent by remember { mutableStateOf<String?>(null) }
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, vm) {
         val obs = androidx.lifecycle.LifecycleEventObserver { _, ev ->
@@ -162,8 +162,10 @@ fun ChatScreen(
             )
         },
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            AgentChips(vm.agents, onOpen = { openAgent = it })
+        BoxWithConstraints(modifier = Modifier.padding(padding).fillMaxSize()) {
+        val panelMax = maxHeight * 0.65f
+        Column(modifier = Modifier.fillMaxSize()) {
+            AgentPanel(vm, maxHeight = panelMax)
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     session != null -> Transcript(vm, session, onSignIn = { signInOpen = true })
@@ -208,10 +210,7 @@ fun ChatScreen(
                 },
             )
         }
-    }
-
-    openAgent?.let { id ->
-        vm.agents.find { it.agentId == id }?.let { AgentView(vm, it, onBack = { openAgent = null }) }
+        }
     }
 
     // Login-expired card → phone-side sign-in. The card stays in history; on success the sheet
