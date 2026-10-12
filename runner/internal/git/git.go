@@ -247,6 +247,13 @@ func remoteURL(ctx context.Context, root, upstream string) string {
 	return strings.TrimSpace(out)
 }
 
+// Origin is root's primary remote URL (origin, else the first remote) with
+// any embedded credentials dropped; "" if none or git fails. It is a
+// project's identity when matching the same repo across machines.
+func Origin(ctx context.Context, root string) string {
+	return RedactURL(remoteURL(ctx, root, ""))
+}
+
 func pushRemote(ctx context.Context, root, upstream string) string {
 	out, err := run(ctx, root, LocalTimeout, []string{"remote"})
 	if err != nil {

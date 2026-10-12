@@ -317,6 +317,50 @@ func (m *Manager) transcriptFileSize(rec *record) (int64, bool) {
 	return fi.Size(), true
 }
 
+// ChatBusy reports whether a Relay session showing agentSessionID is
+// mid-turn - a chat in that state must not be handed to another machine.
+func (m *Manager) ChatBusy(agentSessionID string) bool {
+	m.mu.Lock()
+	recs := make([]*record, 0, len(m.sessions))
+	for _, rec := range m.sessions {
+		recs = append(recs, rec)
+	}
+	m.mu.Unlock()
+	for _, rec := range recs {
+		rec.mu.Lock()
+		busy := rec.acpSession == agentSessionID && !isTerminal(rec.data.State) && rec.turnActive
+		rec.mu.Unlock()
+		if busy {
+			return true
+		}
+	}
+	return false
+}
+
+// DropChat stops the live Relay session showing agentSessionID, if any -
+// called after its transcript was handed to another machine, so the session
+// doesn't try to resume a file that is no longer here.
+func (m *Manager) DropChat(agentSessionID string) {
+	if id, ok := m.linkedSessions()[agentSessionID]; ok {
+		_, _ = m.Stop(id)
+	}
+}
+
+// ClaudeDir is Claude Code's config dir: $CLAUDE_CONFIG_DIR, else ~/.claude.
+func ClaudeDir() string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude")
+}
+
+// FindTranscript is findTranscript for other packages (chat handoff).
+func FindTranscript(sessionID string) string { return findTranscript(sessionID) }
+
 var agentSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 
 // findTranscript locates Claude Code's transcript for a session id:

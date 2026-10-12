@@ -16,6 +16,7 @@ import (
 
 	"relay/runner/internal/activity"
 	"relay/runner/internal/auth"
+	"relay/runner/internal/handoff"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/schedule"
@@ -39,6 +40,9 @@ type Server struct {
 	Sessions *session.Manager
 	Compose  ComposeFuncs
 	Devices  *notify.Registry
+	// Handoff moves chats between runners (/v1/peers, /v1/handoff/*, see
+	// internal/handoff). nil → those endpoints return 503.
+	Handoff *handoff.Service
 	// Suspend, if set, suspends this machine to sleep immediately on
 	// POST /v1/suspend (see handleSuspend) - a manual counterpart to
 	// idle.Monitor's automatic timeout, for "I'm done, don't wait 3
@@ -132,6 +136,15 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/projects/{projectId}/git/fetch", s.auth(s.handleGitFetch))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files", s.auth(s.handleListFiles))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files/content", s.auth(s.handleFileContent))
+	mux.HandleFunc("GET /v1/peers", s.auth(s.handleListPeers))
+	mux.HandleFunc("PUT /v1/peers/{name}", s.auth(s.handleSetPeer))
+	mux.HandleFunc("DELETE /v1/peers/{name}", s.auth(s.handleDeletePeer))
+	mux.HandleFunc("POST /v1/handoff/release", s.auth(s.handleHandoffRelease))
+	mux.HandleFunc("POST /v1/handoff/status", s.auth(s.handleHandoffStatus))
+	mux.HandleFunc("GET /v1/handoff/copy/{agentChatId}", s.auth(s.handleHandoffCopy))
+	mux.HandleFunc("POST /v1/handoff/pull", s.auth(s.handleHandoffPull))
+	mux.HandleFunc("POST /v1/handoff/takeover", s.auth(s.handleHandoffTakeover))
+	mux.HandleFunc("GET /v1/handoff/lent", s.auth(s.handleHandoffLent))
 	mux.HandleFunc("GET /v1/auth", s.auth(s.handleAuthList))
 	mux.HandleFunc("GET /v1/auth/{provider}", s.auth(s.handleAuthStatus))
 	mux.HandleFunc("POST /v1/auth/{provider}/start", s.auth(s.handleAuthStart))
@@ -273,7 +286,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.Projects.List())
+	writeJSON(w, http.StatusOK, s.projectViews(r.Context()))
 }
 
 type createProjectRequest struct {

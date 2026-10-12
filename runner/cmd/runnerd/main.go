@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 	"relay/runner/internal/auth"
 	"relay/runner/internal/compose"
 	"relay/runner/internal/config"
+	"relay/runner/internal/git"
+	"relay/runner/internal/handoff"
 	"relay/runner/internal/idle"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
@@ -138,6 +141,21 @@ func main() {
 		Down:   compose.Down,
 	}, devices)
 
+	// Chat handoff between runners (laptop <-> server): peers.json,
+	// handoffs.json and handed-off/ live in RELAY_HOME. The auto-return loop
+	// runs only when this runner is a chat's "home" (RELAY_HANDOFF_HOME=true);
+	// RELAY_HANDOFF_IDLE_MIN (default 30) / RELAY_HANDOFF_CHECK_MIN (default 5).
+	if h, err := handoff.New(cfg.RelayHome, sessions, projects, git.Origin, session.ClaudeDir); err != nil {
+		log.Printf("chat handoff disabled: %v", err)
+	} else {
+		srv.Handoff = h
+		if os.Getenv("RELAY_HANDOFF_HOME") == "true" {
+			h.HomeMode = true
+			h.IdleMin = envMinutes("RELAY_HANDOFF_IDLE_MIN", 30)
+			go h.RunReturn(context.Background(), envMinutes("RELAY_HANDOFF_CHECK_MIN", 5))
+		}
+	}
+
 	// tracker records phone-app foreground pings (POST /v1/activity) -
 	// wired unconditionally so the endpoint always works, shared between
 	// the API handler and idle.Monitor (only the latter actually reads it,
@@ -235,6 +253,14 @@ func main() {
 
 // pairingURI builds the relay:// URI both -qr and -qr-png encode, refusing
 // addresses the phone could never reach. See printPairingQR.
+// envMinutes reads a positive whole number of minutes from env var name.
+func envMinutes(name string, def int) time.Duration {
+	if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
+		def = n
+	}
+	return time.Duration(def) * time.Minute
+}
+
 func pairingURI(cfg *config.Config) string {
 	// Refuse to encode an address the phone can never reach. RELAY_LISTEN_ADDR
 	// defaults to 127.0.0.1:7777, so running `-qr` without setting it would
