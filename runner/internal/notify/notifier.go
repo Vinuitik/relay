@@ -17,6 +17,9 @@ type Notifier interface {
 	// here must never block or retry against a machine that's already
 	// mid-shutdown.
 	NotifyRunnerSuspending(device Device, hostname string) error
+	// NotifyMessage sends a generic data push: data["type"]=typ, plus
+	// title/body and any extra keys (VS Code permission asks, chat moved).
+	NotifyMessage(device Device, typ, title, body string, extra map[string]string) error
 }
 
 // noopNotifier is used whenever RELAY_FCM_CREDENTIALS is unset or unreadable.
@@ -37,6 +40,11 @@ func (noopNotifier) NotifySessionNeedsInput(Device, Session) error {
 
 func (noopNotifier) NotifyRunnerSuspending(Device, string) error {
 	log.Printf("FCM not configured, skipping suspend notification")
+	return nil
+}
+
+func (noopNotifier) NotifyMessage(Device, string, string, string, map[string]string) error {
+	log.Printf("FCM not configured, skipping message notification")
 	return nil
 }
 

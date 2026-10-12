@@ -23,6 +23,7 @@ import (
 	"relay/runner/internal/session"
 	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/usage"
+	"relay/runner/internal/vscodeperm"
 )
 
 // Version is the API version reported by GET /v1/runner/info.
@@ -46,6 +47,17 @@ type Server struct {
 	// VSCodeTracking backs GET /v1/vscode-tracking (hooks installed? last event).
 	// nil: endpoint returns 503.
 	VSCodeTracking func() (installed bool, lastEvent *time.Time)
+	// Perms holds phone-answerable VS Code permission prompts
+	// (/v1/vscode/permissions, see vscodeperm.go). nil → 503.
+	Perms    *vscodeperm.Store
+	PermHold time.Duration // long-poll limit; 0 = vscodeperm.DefaultHoldSec
+	// Push sends a data push to every registered device (nil → no push).
+	Push func(typ, title, body string, data map[string]string)
+	// WaitingDebounce limits "VS Code is waiting" pushes per chat;
+	// NotifyDelay (0 = 2s) is how long the Notification handler waits for a
+	// matching permission request before pushing.
+	WaitingDebounce *vscodeperm.Debouncer
+	NotifyDelay     time.Duration
 	// Suspend, if set, suspends this machine to sleep immediately on
 	// POST /v1/suspend (see handleSuspend) - a manual counterpart to
 	// idle.Monitor's automatic timeout, for "I'm done, don't wait 3
@@ -129,6 +141,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /v1/schedule/bookings/{id}/occurrences/{date}", s.auth(s.scheduleOn(s.handleUpdateOccurrence)))
 	mux.HandleFunc("DELETE /v1/schedule/bookings/{id}/occurrences/{date}", s.auth(s.scheduleOn(s.handleCancelOccurrence)))
 	mux.HandleFunc("GET /v1/vscode-tracking", s.auth(s.handleVSCodeTracking))
+	mux.HandleFunc("POST /v1/vscode/permissions", s.auth(s.handleVSCodePermissionRequest))
+	mux.HandleFunc("GET /v1/vscode/permissions", s.auth(s.handleVSCodePermissionList))
+	mux.HandleFunc("POST /v1/vscode/permissions/{id}", s.auth(s.handleVSCodePermissionAnswer))
+	mux.HandleFunc("POST /v1/vscode/notification", s.auth(s.handleVSCodeNotification))
 	mux.HandleFunc("GET /v1/projects/{projectId}/git", s.auth(s.handleGitStatus))
 	mux.HandleFunc("GET /v1/projects/{projectId}/git/diff", s.auth(s.handleGitDiff))
 	mux.HandleFunc("GET /v1/projects/{projectId}/git/log", s.auth(s.handleGitLog))

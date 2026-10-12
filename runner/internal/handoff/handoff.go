@@ -71,6 +71,9 @@ type Service struct {
 	IdleMin  time.Duration // idle time before auto-return
 	Client   *http.Client
 	Now      func() time.Time
+	// OnReleased, if set, runs (own goroutine) after Release succeeded -
+	// used for the "Chat moved to <peer>" push.
+	OnReleased func(chatID string)
 }
 
 // New builds a Service persisting peers.json / handoffs.json under home.
@@ -164,6 +167,9 @@ func (s *Service) Release(ctx context.Context, id, remote string) ([]byte, error
 		if err := s.Lent.Put(l); err != nil {
 			log.Printf("handoff: record lent chat %s: %v", id, err)
 		}
+	}
+	if s.OnReleased != nil {
+		go s.OnReleased(id)
 	}
 	return data, nil
 }

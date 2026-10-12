@@ -34,6 +34,7 @@ import (
 	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/usage"
 	"relay/runner/internal/vscodehook"
+	"relay/runner/internal/vscodeperm"
 )
 
 func main() {
@@ -113,6 +114,14 @@ func main() {
 			}
 		}
 	}
+	// push sends a generic data push to every registered device.
+	push := func(typ, title, body string, data map[string]string) {
+		for _, d := range devices.List() {
+			if err := notifier.NotifyMessage(d, typ, title, body, data); err != nil {
+				log.Printf("notify device %s (%s): %v", d.ID, typ, err)
+			}
+		}
+	}
 	sessions.OnNeedsInput = func(sess session.Session) {
 		for _, d := range devices.List() {
 			if err := notifier.NotifySessionNeedsInput(d, notify.Session{ID: sess.ID, ProjectID: sess.ProjectID}); err != nil {
@@ -158,6 +167,13 @@ func main() {
 		log.Printf("chat handoff disabled: %v", err)
 	} else {
 		srv.Handoff = h
+		h.OnReleased = func(chatID string) {
+			where := "the other machine"
+			if ps := h.Peers.List(); len(ps) == 1 {
+				where = ps[0].Name
+			}
+			push("chat_moved", "Chat moved to "+where, "", map[string]string{"agentChatId": chatID})
+		}
 		if os.Getenv("RELAY_HANDOFF_HOME") == "true" {
 			h.HomeMode = true
 			h.IdleMin = envMinutes("RELAY_HANDOFF_IDLE_MIN", 30)
@@ -168,12 +184,23 @@ func main() {
 	// Claude-in-VS-Code tracking via Claude Code hooks (RELAY_VSCODE_HOOKS=off
 	// disables the settings.json install; state files are still read).
 	sessions.ExternalBusy = func(id string) bool { return vscodehook.Busy(cfg.RelayHome, id, time.Now()) }
+	vscodehook.PermissionHold = time.Duration(vscodeperm.HoldSec()) * time.Second
 	if os.Getenv("RELAY_VSCODE_HOOKS") != "off" {
 		if exe, err := os.Executable(); err != nil {
 			log.Printf("vscode hooks: resolve binary: %v", err)
 		} else if err := vscodehook.Install(session.ClaudeDir(), exe); err != nil {
 			log.Printf("vscode hooks: install skipped: %v", err)
 		}
+	}
+	// Phone-answerable VS Code permission prompts. The hook finds this
+	// runner through $RELAY_HOME/listen-addr. RELAY_PERMISSION_HOLD_SEC (120)
+	// is how long a prompt waits for the phone.
+	srv.Perms = vscodeperm.NewStore()
+	srv.PermHold = time.Duration(vscodeperm.HoldSec()) * time.Second
+	srv.Push = push
+	srv.WaitingDebounce = vscodeperm.NewDebouncer(2 * time.Minute)
+	if err := os.WriteFile(filepath.Join(cfg.RelayHome, vscodeperm.AddrFile), []byte(cfg.ListenAddr), 0o600); err != nil {
+		log.Printf("vscode permissions: write listen-addr: %v", err)
 	}
 	srv.VSCodeTracking = func() (bool, *time.Time) {
 		installed := vscodehook.Installed(session.ClaudeDir())
@@ -348,6 +375,16 @@ func runVSCodeHook(event string) {
 		return
 	}
 	in, _ := io.ReadAll(io.LimitReader(os.Stdin, 4<<20))
+	switch event {
+	case "PermissionRequest":
+		// Long-poll the runner; print the decision, or nothing (VS Code asks as usual).
+		if out := vscodeperm.RunPermissionHook(in, home); out != nil {
+			fmt.Println(string(out))
+		}
+		return
+	case "Notification":
+		defer vscodeperm.PostNotification(in, home)
+	}
 	code, msg := vscodehook.Handle(event, in, home, time.Now())
 	if code == 2 {
 		fmt.Fprintln(os.Stderr, msg)

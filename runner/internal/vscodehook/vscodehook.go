@@ -29,7 +29,20 @@ const StaleAfter = 30 * time.Minute
 const Subcommand = "vscode-hook"
 
 // Events we install, in settings.json order.
-var Events = []string{"UserPromptSubmit", "Stop", "Notification"}
+var Events = []string{"UserPromptSubmit", "Stop", "Notification", "PermissionRequest"}
+
+// PermissionHold is how long a PermissionRequest hook may wait for the phone
+// (set from RELAY_PERMISSION_HOLD_SEC by the runner before Install).
+var PermissionHold = 120 * time.Second
+
+// Timeout is the settings.json hook timeout (seconds) for an event:
+// PermissionRequest = hold + 30s, everything else 5s.
+func Timeout(event string) int {
+	if event == "PermissionRequest" {
+		return int(PermissionHold/time.Second) + 30
+	}
+	return 5
+}
 
 // MovedMessage is shown to the user when a stale tab is blocked.
 const MovedMessage = "This chat moved to another machine via Relay. Reopen it from history after it comes back, or continue on the phone."
@@ -210,11 +223,15 @@ func Merge(settings map[string]any, exe string) bool {
 					hm["command"] = want
 					changed = true
 				}
+				if t, _ := hm["timeout"].(json.Number); t.String() != fmt.Sprint(Timeout(ev)) {
+					hm["timeout"] = Timeout(ev)
+					changed = true
+				}
 			}
 		}
 		if !found {
 			groups = append(groups, map[string]any{"hooks": []any{
-				map[string]any{"type": "command", "command": want, "timeout": 5},
+				map[string]any{"type": "command", "command": want, "timeout": Timeout(ev)},
 			}})
 			hooks[ev] = groups
 			changed = true

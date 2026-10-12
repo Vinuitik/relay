@@ -124,6 +124,20 @@ func (n *fcmNotifier) NotifyRunnerSuspending(device Device, hostname string) err
 	return n.sendData(device, runnerSuspendingData(device, hostname))
 }
 
+// NotifyMessage sends a generic data-only FCM message (see Notifier).
+func (n *fcmNotifier) NotifyMessage(device Device, typ, title, body string, extra map[string]string) error {
+	return n.sendData(device, messageData(device, typ, title, body, extra))
+}
+
+func messageData(device Device, typ, title, body string, extra map[string]string) map[string]string {
+	d := map[string]string{}
+	for k, v := range extra {
+		d[k] = v
+	}
+	d["type"], d["title"], d["body"], d["runnerRef"] = typ, title, body, device.RunnerRef
+	return d
+}
+
 // The *Data builders produce each push's FCM data map (shared/API.md "FCM
 // message data.type values"). Every payload carries runnerRef - the
 // device's registered address for this runner, "" if it never sent one.
