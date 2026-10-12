@@ -9,7 +9,8 @@ KnownRunnersRepository.kt, AppPrefsRepository.kt, RelayApiClient.kt, RelayApiSer
 RelayFirebaseMessagingService.kt, RegisterDeviceWorker.kt, ScheduleRepository.kt, ScheduleModels.kt,
 ScheduleScreen.kt, ScheduleViewModel.kt, ScheduleLayout.kt, BookingEditorScreen.kt,
 BookingEditorViewModel.kt, BookingEditorLogic.kt, TodaySchedule.kt, ReminderSettingsDialog.kt,
-ReminderLogic.kt, ReminderPrefs.kt, ReminderReceiver.kt (+ ReminderRescheduleReceiver), ReminderScheduler.kt
+ReminderLogic.kt, ReminderPrefs.kt, ReminderReceiver.kt (+ ReminderRescheduleReceiver), ReminderScheduler.kt,
+AgentView.kt (AgentChips, AgentView), VsCodePermissionReceiver.kt
 
 ## Scope
 
@@ -501,6 +502,109 @@ next action; load failure with no data → `FullScreenError`.
 To change polling: `GitViewModel.pollWhileVisible`. Labels/buttons: `BranchCard`, `OpResult`,
 `CommitBox`. Runner side: runner/FLOWS.md "Git".
 
+## Runner linking and "On <other runner>" chats
+
+Files: RunnerListScreen.kt, ProjectViewModel.kt, ProjectScreen.kt, RelayApiClient.kt (`peerName`,
+`runnerBaseUrl`, `errorCode`), RelayApiService.kt, Models.kt, RelayNavHost.kt.
+Runner side (peers, handoff, busy/unreachable codes): runner/FLOWS.md "Moving chats between machines".
+
+Link: runner row ⋮ "Link with <other>" / "Re-link with <other>" → `RunnerListScreen.link(a, b)` →
+`putPeer(peerName(b), PeerRequest(runnerBaseUrl(b), b.key))` on A, then the mirror on B (the phone
+holds both keys, so it is the only place that can link them) → Toast "A and B are linked" →
+`loadPeers()` (`GET /v1/peers` per runner; failure = empty set) → row shows "Linked with <labels>".
+`peerName` = label lowercased, non `[a-z0-9]` runs → `-` (empty → "runner"): renaming a runner on
+the phone changes its peer name, so an old link no longer matches until re-linked.
+To change the link wording / peer name rule: `RunnerListScreen.link()`, `RelayApiClient.peerName()`.
+
+List: `ProjectViewModel.refresh` → `listAgentChats` → `loadRemoteChats(have)` (inside the same
+`onSuccess`, so it never blocks the list) → this project's `remoteKey` (git remote) from
+`listProjects` → `listPeers` → for each other known runner whose `peerName` is linked (in parallel):
+`listProjects` → the project with the same `remoteKey` → `listAgentChats` minus `agentSessionId`s
+already here → `remoteChats: List<RemoteChat(runner, chat)>`. Any failure = that runner contributes
+nothing. `others` is passed in by RelayNavHost (`runners` minus the current host) at VM construction.
+UI: `ChatsContent` groups by host → header "On <label>" + `LaptopChatRow` per chat.
+To change: `ProjectViewModel.loadRemoteChats()`, `ProjectScreen.kt` (`ChatsContent`, `onContinueRemote`).
+
+Pull: tap → `continueRemoteChat(rc)` → `handoff(rc, takeover=false)` →
+`handoffPull(HandoffRequest(peerName(rc.runner), agentChatId, projectId))` **on this runner** (it
+pulls from the owner) → `createSession(claude, agentSessionId)` → Chat. `errorCode(e)` (the runner's
+JSON `code`) drives the outcome:
+- `exists` → already here, just open it
+- `busy` → auto-wait (below)
+- `unreachable` → `takeoverOffer = rc` → AlertDialog "<runner> is unreachable" → "Take over from last
+  copy" → `takeOver(rc)` → `handoffTakeover` (uses the copy this side holds) → Snackbar "Opened from
+  the copy saved <relativeTime> - newer messages may be missing" → Chat
+- other → `friendlyErrorMessage`
+To change the dialogs/messages: `ProjectViewModel.handoff()`, `ProjectScreen.kt` (takeover AlertDialog).
+
+Auto-wait on busy: `handoff()` loops inside `handoffJob` — on `busy` it sets
+`waitingFor = rc` (AlertDialog "Waiting for <runner>… opens as soon as it does", Cancel =
+`cancelWaiting()` → cancels the job) → `delay(WAIT_POLL_MS = 5s)` → retries until `WAIT_LIMIT_MS = 10 min`
+→ Snackbar "still busy - gave up waiting". Takeover never waits (busy → gives up at once).
+To change: `ProjectViewModel` (`WAIT_POLL_MS`, `WAIT_LIMIT_MS`).
+
+VS Code tracking line per runner: `RunnerListScreen` `LaunchedEffect(runners)` →
+`vscodeTracking()` per runner (any failure = absent = line hidden, e.g. older runner) → under the
+address: "VS Code tracking: missing" (`!installed`) / "on" / "on (last seen just now|<ago> ago)" from
+`lastEventAt`. Loaded once per composition of the list, not polled. Runner side: runner/FLOWS.md "VS Code tracking (hooks)".
+To change: `RunnerListScreen.kt` (tracking `Text`), `RelayApiService.vscodeTracking`.
+
+Gaps: [NOT IMPLEMENTED] manual project linking UI (projects match only by identical git remote);
+[NOT IMPLEMENTED] unlink (`deletePeer` exists on the service, nothing calls it); a notification
+tap never switches the current runner to the one that notified; remote lists refresh only on
+`ProjectViewModel.refresh`, not polled. Untested on a device.
+
+## Subagent chips + agent view (Chat)
+
+Files: ChatScreen.kt, ChatViewModel.kt, AgentView.kt, RelayApiService.kt, Models.kt (`SubAgent`, `SubAgentMessages`).
+Runner side: runner/FLOWS.md "Subagent transcripts".
+
+ChatViewModel init / `setVisible(true)` / busy→idle transition → `refreshAgents()` →
+`listAgents(sessionId)` (404 = none; other failures keep the list, silently) → `agents`; keeps
+re-fetching every `AGENTS_POLL_MS` (5s) **only while some agent is `running`**, then stops. ChatScreen's
+lifecycle observer calls `setVisible(false)` on ON_STOP (cancels the job) and `true` on ON_START.
+→ `AgentChips` (horizontal row above the transcript, hidden when empty; lamp lit = running +
+description) → tap → `openAgent = id` → `AgentView(vm, agent)`.
+AgentView: full-screen `Dialog` (read-only, Back closes) → `LaunchedEffect(agentId)` loop:
+`agentMessages(id, after)` → append, `after = res.next` → every `AGENT_MESSAGES_POLL_MS` (3s) while
+`running`; on the flip to done, refetch from 0 once (`after` polling does not re-deliver a tool
+row's status change) → stop. Labels: first user message "Task from parent", last agent message once
+done "Final report". Reuses `UserBubble`/`ToolRow` (now `internal`) and `MarkdownText`.
+To change: `AgentView.kt` (`AgentChips`, `AgentView`, `AGENT_MESSAGES_POLL_MS`), `ChatViewModel.refreshAgents()` / `AGENTS_POLL_MS`.
+Gaps: the view is a Dialog, not a route - no deep link, not restored, no back-stack entry;
+agent polling errors show inline text and retry every 3s while the dialog is open; no way to send
+input to a subagent. Untested on a device.
+
+## VS Code permission prompts on the phone
+
+Files: RelayFirebaseMessagingService.kt (`postVsCodePermission`), VsCodePermissionReceiver.kt,
+HomeViewModel.kt (`pollPermissions`, `answerPermission`), HomeScreen.kt (`VsCodeAskCard`),
+RelayApiService.kt, Models.kt (`VsCodePermission`), AndroidManifest.xml.
+Runner side (hook → pending list → push): runner/FLOWS.md "VS Code permission prompts on the phone".
+
+Push path: FCM `type=vscode_permission` (data: `permissionId`, `runnerRef`, `title`, `body`/`summary`)
+→ `onMessageReceived` → `postVsCodePermission()` → high-priority notification on channel
+`vscode_prompts` with **Allow** / **Deny** actions (PendingIntent broadcasts to the non-exported
+`VsCodePermissionReceiver`, request codes `notifId*2` / `notifId*2+1`) and `setTimeoutAfter(130s)`;
+tapping the body = plain launch of MainActivity. Button → `VsCodePermissionReceiver.onReceive()` →
+`goAsync()` + IO scope → `KnownRunnersRepository` lookup by `runnerRef` == `hostname` →
+`answerVscodePermission(id, {behavior})` → notification replaced with the outcome ("Allowed" /
+"Denied" / "Already answered or expired" on 404 / "Failed (code)" / "Couldn't reach the runner" /
+"Runner not found"), auto-dismissed after 5s.
+Other new pushes: `vscode_waiting` ("VS Code is waiting on you") and `chat_moved` ("Chat moved") use
+the same `vscode_prompts` channel (`VSCODE_CHANNEL_ID`) via the normal `notificationContentFor` path.
+To change the buttons/timeout/outcome text: `postVsCodePermission()`, `VsCodePermissionReceiver.onReceive()`.
+
+Home card: `HomeScreen` `repeatOnLifecycle(STARTED) { vm.pollPermissions() }` → every 5s
+`vscodePermissions()` on the **selected runner only** (404/unreachable → empty) → `VsCodeAskCard`
+("VS Code is asking": summary, project/cwd, Allow / Deny) → `answerPermission(p, behavior)` removes
+the row optimistically → same POST → `permissionNote` Snackbar with the same outcome strings.
+To change: `HomeViewModel.pollPermissions()`, `HomeScreen.kt` (`VsCodeAskCard`).
+
+Gaps: Home polls only the selected runner, so a prompt on another runner is only answerable from
+its notification; notification tap does not switch the current runner or open the project;
+if POST_NOTIFICATIONS is denied the phone-side prompt never shows. Untested on a device.
+
 ## FCM device registration
 
 `RelayFirebaseMessagingService.onNewToken(token)` → enqueues `RegisterDeviceWorker` (WorkManager)
@@ -677,6 +781,22 @@ as stray arguments — `appdistribution:distribute` failed outright with "Too ma
 - **Booking times are formatted client-side** with `String.format` in the default locale
   (`BookingEditorLogic.formatMinutes`) - a locale with non-ASCII digits would send times the runner
   rejects (400).
+- **Polling costs battery.** Home polls pending VS Code permissions every 5s; the agents list polls
+  every 5s only while an agent runs; the agent view polls every 3s while running; a pull on a busy
+  chat retries every 5s for up to 10 min. All are plain HTTP loops scoped to a visible screen
+  (`repeatOnLifecycle(STARTED)`, `setVisible`, ViewModel scope) so they stop in the background,
+  but they keep the radio awake while Home/Chat is open. No push-driven refresh for any of them.
+- **`VsCodePermissionReceiver` runs under `goAsync()`**: a receiver gets roughly 10s before the system
+  flags it as an ANR, and `finish()` must be called. The POST uses default OkHttp timeouts, so a
+  runner that hangs can outlast the window and the outcome line never appears. The coroutine scope is
+  a process-wide `SupervisorJob`, not lifecycle-bound; if the process is killed mid-call the answer is lost silently.
+- **Notification id = `permissionId.hashCode()`**; button request codes are `id*2` / `id*2+1`.
+  A hash collision between two live prompts would make one overwrite the other (unlikely, not
+  guarded). The outcome notification reuses the id, replacing the prompt.
+- **Permission prompts expire**: the notification self-cancels at 130s; a later tap gets 404 =
+  "Already answered or expired" (also what you see when you answered at the laptop first).
+- **Linking stores each runner's key on the other runner** (`putPeer` sends `PeerRequest.key`), so
+  compromising one runner's data exposes the other's key. Peer names derive from the phone's labels.
 - **FCM is live end-to-end in code**, gated only on the runner side having
   `RELAY_FCM_CREDENTIALS` pointed at a real service-account key (see runner/FLOWS.md) — without
   that the runner still registers devices but silently skips sending.
@@ -791,3 +911,19 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Dockerized build command | this file, "Building" |
 | Distribution target (Firebase project/app) | `.firebaserc`, `app/google-services.json` |
 | Auto-distribute on push to main | `.github/workflows/android-deploy.yml` |
+| Runner linking (Link/Re-link menu, "Linked with" line, peer name rule) | `ui/screens/RunnerListScreen.kt` (`link`, `loadPeers`), `network/RelayApiClient.kt` (`peerName`, `runnerBaseUrl`) |
+| Peer / handoff API calls and types | `network/RelayApiService.kt` (`listPeers`, `putPeer`, `deletePeer`, `handoffPull`, `handoffTakeover`, `PeerRequest`, `HandoffRequest`), `model/Models.kt` |
+| Runner error `code` parsing (`busy`/`unreachable`/`exists`) | `network/RelayApiClient.kt` (`errorCode`, `ErrorBody`) |
+| "On <runner>" chat list | `ui/screens/ProjectViewModel.kt` (`loadRemoteChats`, `RemoteChat`), `ProjectScreen.kt` (`ChatsContent`, `onContinueRemote`), `RelayNavHost.kt` (`others` arg) |
+| Pull / take over / unreachable dialog | `ui/screens/ProjectViewModel.kt` (`handoff`, `takeOver`, `takeoverOffer`), `ProjectScreen.kt` (takeover AlertDialog) |
+| Busy auto-wait (interval, limit, dialog) | `ui/screens/ProjectViewModel.kt` (`WAIT_POLL_MS`, `WAIT_LIMIT_MS`, `waitingFor`, `cancelWaiting`), `ProjectScreen.kt` (waiting AlertDialog) |
+| VS Code tracking line per runner | `ui/screens/RunnerListScreen.kt` (tracking `Text`), `RelayApiService.vscodeTracking`, `model/Models.kt` (`VsCodeTracking`) |
+| Subagent chips row | `ui/screens/AgentView.kt` (`AgentChips`), `ChatScreen.kt` (`openAgent`) |
+| Agent view dialog / its poll interval | `ui/screens/AgentView.kt` (`AgentView`, `AGENT_MESSAGES_POLL_MS`) |
+| Agents list fetch / poll / pause when hidden | `ui/screens/ChatViewModel.kt` (`refreshAgents`, `setVisible`, `AGENTS_POLL_MS`), `ChatScreen.kt` (lifecycle observer) |
+| Agent API calls / types | `network/RelayApiService.kt` (`listAgents`, `agentMessages`), `model/Models.kt` (`SubAgent`, `SubAgentMessages`) |
+| VS Code prompt notification (Allow/Deny, timeout, text) | `fcm/RelayFirebaseMessagingService.kt` (`postVsCodePermission`) |
+| Allow/Deny button handling + outcome text | `fcm/VsCodePermissionReceiver.kt` (`onReceive`), `AndroidManifest.xml` (`<receiver>`) |
+| `vscode_prompts` channel / `vscode_waiting` + `chat_moved` text | `fcm/RelayFirebaseMessagingService.kt` (`VSCODE_CHANNEL_ID`, `notificationContentFor`) |
+| Home "VS Code is asking" card + 5s poll | `ui/screens/HomeScreen.kt` (`VsCodeAskCard`), `HomeViewModel.kt` (`pollPermissions`, `answerPermission`, `permissionNote`) |
+| VS Code permission API / types | `network/RelayApiService.kt` (`vscodePermissions`, `answerVscodePermission`, `VsCodePermissionAnswer`), `model/Models.kt` (`VsCodePermission`) |
