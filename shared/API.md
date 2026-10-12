@@ -282,7 +282,44 @@ Event { kind: "warn" | "sleep" | "wake", date: string, at: string }
 | POST | `/v1/auth/{provider}/start` | - | `200 AuthResult` | starts the CLI login (can take up to ~20s): paste-code providers → `{state:"awaiting_code", url}`; device flow → `{state:"awaiting_approval", url, userCode}`, then poll `GET /v1/auth/{provider}` until `signed_in`/`failed` (github: runs `gh auth setup-git` after login). A login already waiting (< 10 min old) is reused. If the CLI never prints a URL: `200 {state:"failed", message}`. The pending login is killed after 10 min. `404` / `503` as above. |
 | POST | `/v1/auth/{provider}/finish` | `{code: string}` | `200 AuthResult` | paste-code providers only: sends the code from the callback page to the waiting login (can take up to ~60s): `{state:"signed_in", message}` or `{state:"failed", message}`. claude: on success, idle Claude sessions restart their agent silently and resume on the next message (busy ones are left alone). `400` empty code or device-flow provider, `409` no login in progress, `404` / `503` as above. |
 
+| GET | `/v1/sessions/{sessionId}/agents` | - | `200 SubagentInfo[]` | background agents (Agent tool) the chat spawned, read from Claude's transcripts, oldest first; `[]` if none / no transcript. `SubagentInfo = {agentId, description, status: "running"\|"done", startedAt, lastActivityAt, messageCount}`. `running` = no final report and file touched < 5 min ago. `404 {error}` unknown session. |
+| GET | `/v1/sessions/{sessionId}/agents/{agentId}/messages?after=<n>` | - | `200 SubagentPage` | read-only transcript of one subagent: `{status, total, next, messages: Message[]}` (up to 200 per call; pass `next` back as `after` for newer ones; thinking and tool-result bodies are left out). `404 {error}` unknown session or agent. |
+| GET | `/v1/vscode-tracking` | - | `200 {installed: bool, lastEventAt: string?}` | health of the Claude Code hooks that track Claude in VS Code: `installed` = all hooks present in `~/.claude/settings.json`; `lastEventAt` = newest hook event (RFC3339), `null` = never fired. `503` not available. |
+| GET | `/v1/vscode/permissions` | - | `200 {permissions: VSCodePermission[]}` | VS Code permission prompts currently waiting for an answer, oldest first. `VSCodePermission = {id, sessionId, cwd, project?, toolName, summary, createdAt}` (`project` = registered project id when `cwd` matches one; `summary` e.g. `"Bash: npm test"`). `503` not enabled. |
+| POST | `/v1/vscode/permissions/{id}` | `{behavior: "allow"\|"deny", message?: string}` | `200 {ok:true}` | answers a waiting prompt (first answer wins - VS Code's own dialog may be answered first). `400` behavior not allow/deny; `404` prompt is gone (answered or timed out); `503` not enabled. |
+| POST | `/v1/vscode/permissions` | hook input `{session_id, cwd, tool_name, tool_input}` | `200 {behavior, message?}` or `204` | **called by the runner's own `PermissionRequest` hook, not the phone.** Registers the prompt, pushes `vscode_permission`, then long-polls up to `RELAY_PERMISSION_HOLD_SEC` (120): `200` = phone answered, `204` = nobody did (VS Code asks as usual). `400` bad body, `503` not enabled. |
+| POST | `/v1/vscode/notification` | hook input `{session_id, cwd, notification_type, message}` | `204` | **hook-only.** For `permission_prompt` / `elicitation_dialog` with no matching pending permission, pushes `vscode_waiting` (max 1 per chat / 2 min). |
+| GET | `/v1/peers` | - | `200 {name, baseUrl}[]` | other runners this one can exchange chats with (laptop <-> server). Keys are never returned. `503 {error}` handoff not configured. |
+| PUT | `/v1/peers/{name}` | `{baseUrl: string, key: string}` | `200 {name, baseUrl}` | adds/replaces a peer: `baseUrl` is its http(s) address, `key` its `X-Relay-Key` (stored in `$RELAY_HOME/peers.json`). `400` name/baseUrl/key missing or not http(s). |
+| DELETE | `/v1/peers/{name}` | - | `200 {ok:true}` | removes a peer. |
+| POST | `/v1/handoff/pull` | `{peer, agentChatId, projectId, link?: bool}` | `200 HandoffInstalled` | **move a chat here**: fetches `agentChatId` from `peer` (which releases it - the file leaves its Claude folder) and writes it into local project `projectId`. `HandoffInstalled = {agentChatId, projectId, bytes}`. The project's git remote must match the peer's chat project unless `link:true` (projects linked by hand). Errors: see below. |
+| POST | `/v1/handoff/takeover` | `{peer?, agentChatId, projectId}` | `200 {agentChatId, projectId, bytes, maybeStale: true, copySavedAt, source}` | restores a chat from a handed-off copy when its owner is asleep/unreachable: `peer` set = that peer's copy, empty = this runner's own. `source` = `"own"` or the peer name. `maybeStale` is always true (turns made after the handoff are missing). Errors: see below. |
+| GET | `/v1/handoff/lent` | - | `200 {agentChatId, projectId?, remote?, at}[]` | chats this ("home") runner lent out and has not got back yet. |
+| POST | `/v1/handoff/release` | `{agentChatId, remote?}` | `200` body = transcript (`application/x-ndjson`) | **runner-to-runner (called by the target's `pull`).** Hands the chat over and moves its file to `$RELAY_HOME/handed-off/`; pushes `chat_moved`. `remote` given and different from the chat's project remote → `409 mismatch`. |
+| POST | `/v1/handoff/status` | `{chatIds: string[]}` | `200 {chats: {<id>: {present, busy, idleSeconds}}}` | **runner-to-runner (auto-return).** Per chat here: exists, mid-turn (Relay or VS Code), seconds since the transcript last changed. |
+| GET | `/v1/handoff/copy/{agentChatId}` | - | `200` transcript (`application/x-ndjson`), header `X-Relay-Copy-At` (RFC3339) | **runner-to-runner (takeover).** The handed-off copy kept here; `404 not_found` if none. |
+
 Errors: `4xx/5xx` bodies are `{"error": string}`.
+
+Handoff endpoints (`/v1/handoff/*`, `/v1/peers`) return `{"error": string, "code": string}` on failure;
+`503` (`chat handoff not configured`) when the feature is off. `GET /v1/projects` entries also carry
+`remoteUrl?` (origin URL, credentials stripped) and `remoteKey?` (normalised host/owner/repo) - two
+projects on two runners are "the same" when `remoteKey` matches.
+
+| status | `code` | meaning |
+|---|---|---|
+| 409 | `busy` | chat is mid-turn (a Relay session or Claude in VS Code) |
+| 409 | `mismatch` | project git remotes differ |
+| 409 | `exists` | chat already exists on this runner |
+| 404 | `not_found` | chat (or handed-off copy) not found |
+| 404 | `no_peer` | unknown peer name |
+| 404 | `no_project` | unknown `projectId` |
+| 400 | `bad_id` | invalid chat id |
+| 422 | `no_remote` | local project has no git remote to match on (use `link:true`) |
+| 502 | `unreachable` | peer is asleep / not reachable |
+| 500 | `internal` | anything else |
+
+A peer's own error code is passed through (e.g. the peer's `busy` comes back from `pull` as `409 busy`).
 
 Every git endpoint: `404` unknown project, `409` not a repo (except GET `/git`) or another git
 operation running for the project, `503` git not installed.
@@ -300,6 +337,12 @@ so the app knows which runner sent the push. `data.type` is:
   permission request (session `waiting`)
 - `runner_suspending` — `data: {type, hostname, runnerRef}`, sent best-effort right before the runner
   suspends to sleep (never on a manual `/v1/sessions/{id}/stop`) — see runner/FLOWS.md "Idle-suspend".
+- `vscode_permission` — `data: {type, title: "VS Code asks", body: <summary>, permissionId, sessionId, projectId, summary, runnerRef}`,
+  Claude in VS Code is asking permission and the phone can answer via `POST /v1/vscode/permissions/{id}`
+- `vscode_waiting` — `data: {type, title, body: <message>, sessionId, runnerRef}`, VS Code is waiting on the
+  user (a prompt the phone can't answer); at most one per chat per 2 minutes
+- `chat_moved` — `data: {type, title: "Chat moved to <peer>", body, agentChatId, runnerRef}`, this runner
+  handed a chat to the other machine
 
 An older app build (or a message missing `type` entirely) falls back to the `session_finished`
 text, so this list can grow without breaking already-installed clients.

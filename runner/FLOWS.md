@@ -1,6 +1,6 @@
 # Runner flows
 
-Files: main.go, config.go, project.go, session.go, compose.go, api.go, git.go (internal/git + api),
+Files: handoff.go, vscodehook.go, vscodeperm.go, subagents.go (new sections below), main.go, config.go, project.go, session.go, compose.go, api.go, git.go (internal/git + api),
 registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go
 
 This file covers **`runnerd`** only — the per-machine daemon that runs projects/sessions and
@@ -170,10 +170,137 @@ moves the mark. Every turn's end → `markTranscript` (our own writes aren't "so
 To change what counts as a turn: `turnMarkers` in shared.go. Transcript location: `findTranscript`
 (env `CLAUDE_CONFIG_DIR`, else `~/.claude`).
 
-VS Code side: nothing to do - its "Past Conversations" lists the Relay-written chats. A VS Code tab
-left open keeps its own in-memory copy, though: reopen the chat from history after using the phone.
-Forks (both sides typing on stale copies) → **tolerated, not detected or shown**
-[NOT IMPLEMENTED: VS Code-side guard via a `UserPromptSubmit` hook, fork banner].
+VS Code side: its "Past Conversations" lists the Relay-written chats. A tab left open keeps its own
+in-memory copy, so a fork (both sides typing on stale copies on one machine) is still possible. Now covered:
+Relay learns when VS Code is mid-turn (hooks → `ChatBusy`, see "VS Code tracking (hooks)"), a tab for a chat
+that moved to the other machine is blocked on its next prompt (stale-tab guard), VS Code permission prompts
+can be answered from the phone ("VS Code permission prompts on the phone"), and chats can move between
+machines ("Moving chats between machines"). [NOT IMPLEMENTED: fork banner for same-machine concurrent typing.]
+
+### Moving chats between machines (laptop <-> server handoff)
+
+Files: internal/handoff/handoff.go (`Release`, `Status`, `Copy`, `Install`, `Pull`, `Takeover`,
+`RunReturn`, `ReturnTick`, `peerCall`), store.go (`PeerStore`, `LentStore`), match.go
+(`NormalizeRemote`, `SelectIdle`, `ChatStatus`), internal/api/handoff.go (handlers, `projectViews`),
+internal/session/shared.go (`ChatBusy`, `DropChat`), cmd/runnerd/main.go (wiring, `envMinutes`)
+
+Design: `HANDOFF-chat-sync.md`. A chat lives on the machine whose `~/.claude/projects/<dir>/<id>.jsonl`
+holds it; moving the file moves ownership. Transfer is **pull-based**: the *target* asks the *source*.
+Machines know each other as **peers** (`PUT /v1/peers/{name}` with the other runner's `baseUrl` + `key`).
+Two projects are "the same" when their git remotes normalise equal (`NormalizeRemote`; shown as
+`remoteKey` in `GET /v1/projects`).
+
+Pull (phone tells the TARGET): `POST /v1/handoff/pull {peer, agentChatId, projectId}` → `Service.Pull()`
+→ peer known? (`ErrNoPeer`) → project known? → chat already here? (`ErrExists`) → local `git.Origin`
+(none → `ErrNoRemote`, unless `link:true`) → `peerCall` `POST peer /v1/handoff/release {agentChatId, remote}`
+→ source `Release()` → `Install()` writes the jsonl into Claude's folder for the project path.
+Release (on the SOURCE): `findChat` → `ChatBusy` (Relay turn **or** VS Code hook state busy → `ErrBusy`)
+→ remote mismatch → `ErrMismatch` → read bytes → **move** file to `$RELAY_HOME/handed-off/<id>.jsonl`
+(outside Claude's folder, so VS Code no longer lists it) → `DropChat` (kill its Relay session/agent) →
+if `HomeMode`, record in `handoffs.json` (`LentStore`: id, projectId, remote, time) → `OnReleased` →
+push `chat_moved` ("Chat moved to <peer>") to the phone.
+To change what blocks a release: `session.Manager.ChatBusy()`. Push text: `h.OnReleased` in main.go.
+
+Auto-return (HOME machine only, `RELAY_HANDOFF_HOME=true`): `Service.RunReturn()` every
+`RELAY_HANDOFF_CHECK_MIN` (default 5) → `ReturnTick()` → for each peer `POST /v1/handoff/status {chatIds}`
+(unreachable/asleep → skip, retry next tick) → `SelectIdle()` = present, not busy, `idleSeconds` ≥
+`RELAY_HANDOFF_IDLE_MIN` (default 30) → `Pull(peer, id, lent.ProjectID, link:true)`. Lent entry with no
+`projectId` → skipped (needs a manual pull). Idle = transcript file mtime (`Status`).
+
+Take over (owner asleep/unreachable): `POST /v1/handoff/takeover {peer?, agentChatId, projectId}` →
+`Service.Takeover()` → `peer` set: `GET peer /v1/handoff/copy/{id}` (its `handed-off/` copy, time in header
+`X-Relay-Copy-At`); `peer` empty: this runner's own `handed-off/` copy (`Copy()`) → `Install()` →
+response `maybeStale:true` (turns the other machine added after the handoff are missing).
+`GET /v1/handoff/lent` lists what this home runner lent out.
+
+Peer errors keep their JSON `code` (`busy`, `mismatch`, ...): `PeerError.Is` maps them back to the
+package errors, so the target answers with the same code. To change codes/status: `api.writeHandoffError()`.
+
+State (all under `$RELAY_HOME`): `peers.json` (**holds the other runner's API key in plain text**;
+`GET /v1/peers` never returns it), `handoffs.json` (lent chats), `handed-off/<id>.jsonl` (last copy of
+each released chat; overwritten on the next release of the same id, **never cleaned**).
+
+Gaps: [NOT IMPLEMENTED] manual project linking UI on the phone (API takes `link:true`, no screen);
+**no live laptop<->server test yet** (unit tests with fake peers only); single-phase transfer: if the
+`release` response is lost after the source moved the file, the chat exists only in `handed-off/` →
+recover with takeover; busy-check vs move is not atomic (a turn starting in between is lost to the copy);
+mtime-based idle can be reset by Claude touching the file.
+
+### VS Code tracking (hooks)
+
+Files: internal/vscodehook/vscodehook.go (`Handle`, `StateFor`, `ShouldBlock`, `Busy`, `ParseBusy`,
+`LastEvent`, `Merge`, `Install`, `Installed`, `Command`, `Timeout`), cmd/runnerd/main.go
+(`runVSCodeHook`, wiring), session/session.go (`ExternalBusy`), internal/api/api.go (`VSCodeTracking`)
+
+Why: VS Code's Claude doesn't go through Relay, so Relay can't otherwise see "mid-turn in VS Code" (needed
+so a handoff doesn't move a chat under a running turn) nor stop a stale tab writing to a moved chat.
+
+Install (runner start): `main.go` → unless `RELAY_VSCODE_HOOKS=off` → `vscodehook.Install(claudeDir, exe)`
+→ `Merge()` adds 4 hooks (`UserPromptSubmit`, `Stop`, `Notification`, `PermissionRequest`), each running
+`<runnerd path> vscode-hook <Event>`, to `~/.claude/settings.json` (ours recognised by `IsOurs`; idempotent;
+other hooks untouched) → original saved **once** as `settings.json.relay-bak` → atomic write (`.relay-tmp`
++ rename). Unparsable settings.json → left alone, logged. Hook timeout 5s, `PermissionRequest` = hold + 30s.
+To change which events: `vscodehook.Events`. `RELAY_VSCODE_HOOKS=off` does NOT remove installed hooks -
+delete the entries or restore `.relay-bak` by hand.
+
+Hook run (Claude → `runnerd vscode-hook <event>`, stdin JSON): `main.runVSCodeHook()` (before
+`config.Load`; panics swallowed) → `vscodehook.Handle()`:
+- `UserPromptSubmit`: **stale-tab guard** - `ShouldBlock(transcript missing here, handed-off/<id>.jsonl exists)`
+  → exit 2 + `MovedMessage` on stderr (prompt blocked). Else state `busy`.
+- `Stop` → `idle`; `Notification` → `waiting` (`idle_prompt` ignored: it fires after finished turns).
+- State written to `$RELAY_HOME/vscode-state/<sessionId>.json` `{state,event,at}`.
+Read side: `Busy(home,id)` = state busy/waiting **and** newer than `StaleAfter` (30 min, so a crashed
+VS Code can't pin a chat) → `Manager.ExternalBusy` → `ChatBusy` → handoff refuses (`ErrBusy`).
+Health: `GET /v1/vscode-tracking` → `{installed, lastEventAt}` (`Installed()` + `LastEvent()` = newest
+state-file time), shown per runner on the phone. `lastEventAt:null` = hooks never fired yet.
+To change the stale limit: `vscodehook.StaleAfter`. Block text: `vscodehook.MovedMessage`.
+
+### VS Code permission prompts on the phone
+
+Files: internal/vscodeperm/vscodeperm.go (`Store`, `Item`, `Decision`, `Summarize`, `MatchProject`,
+`Debouncer`), vscodeperm/client.go (`RunPermissionHook`, `PostNotification`, `baseURL`, `readKey`, `Output`,
+`HoldSec`, `AddrFile`), internal/api/vscodeperm.go (handlers, `maybePushWaiting`), notify/fcm.go +
+notifier.go (`NotifyMessage`), cmd/runnerd/main.go (`push`, wiring)
+
+"Race" design: VS Code's own dialog may show at the same time; whoever answers first wins.
+Permission: `PermissionRequest` hook → `runnerd vscode-hook PermissionRequest` → `RunPermissionHook()` finds
+the runner (`$RELAY_HOME/listen-addr`, else `RELAY_LISTEN_ADDR`, else `127.0.0.1:7777`; wildcard host →
+loopback) and the key (`readKey`, read-only) → `POST /v1/vscode/permissions` (long-poll) →
+`handleVSCodePermissionRequest` → `Store.Add()` (`MatchProject`: project id by longest path prefix of `cwd`;
+`Summarize`: "Bash: npm test") → push `vscode_permission` to all devices → `Store.Wait(hold)`.
+Phone: `GET /v1/vscode/permissions` → `POST /v1/vscode/permissions/{id} {behavior:"allow"|"deny", message?}` →
+`Store.Answer()` → hook prints `Output()` JSON (`hookSpecificOutput.decision`), VS Code proceeds.
+No answer within `RELAY_PERMISSION_HOLD_SEC` (default 120) → `204` → hook prints nothing → VS Code asks as
+usual. Runner unreachable / any error → same (fail open).
+Notification: `Notification` hook → `PostNotification()` → `POST /v1/vscode/notification` → `204` at once; for
+`permission_prompt` / `elicitation_dialog` → `maybePushWaiting()` after `NotifyDelay` (2s) → skip if a
+pending permission covers that chat (already pushed) → skip if `WaitingDebounce` (1 per chat / 2 min) →
+push `vscode_waiting` ("VS Code is waiting on you").
+Pushes: `main.push` → `Notifier.NotifyMessage()` (generic data-only FCM: `type,title,body,runnerRef` + extras).
+`listen-addr` is written at every start (`vscodeperm.AddrFile`).
+To change the wait: `RELAY_PERMISSION_HOLD_SEC` (restart the runner: it also sets the hook timeout in
+settings.json). Summary wording: `vscodeperm.Summarize()`.
+
+Gaps: **PermissionRequest / Notification behaviour in real VS Code not live-verified** (unit tests only;
+payload fields follow Claude Code's hook docs).
+
+### Subagent transcripts
+
+Files: internal/session/subagents.go (`Subagents`, `SubagentMessages`, `listSubagents`, `parseSubagent`,
+`status`, `page`), internal/api/subagents.go (handlers, `writeSubagentError`)
+
+Read-only view of background agents (Claude's Agent tool) a chat spawned, straight from Claude's files;
+nothing cached, every call re-reads: `<claude dir>/projects/<enc cwd>/<agentSessionId>/subagents/agent-<id>.jsonl`
+(+ `agent-<id>.meta.json` `{agentType, description, toolUseId}`).
+List: `GET /v1/sessions/{id}/agents` → `Manager.Subagents()` → `subagentsDir` (no transcript / none spawned →
+`[]`) → `listSubagents` → `[{agentId, description, status, startedAt, lastActivityAt, messageCount}]`, oldest first.
+Messages: `GET /v1/sessions/{id}/agents/{agentId}/messages?after=n` → `SubagentMessages()` → `parseSubagent`
+(prompt = user, assistant text = agent, `tool_use` = tool row whose status comes from the matching
+`tool_result`; thinking and tool_result bodies skipped; text clipped) → `page(after)` → up to
+`MaxSubagentMessages` (200) → `{status,total,next,messages}`; pass `next` back as `after` to poll.
+Status: **"running" = no final end_turn report AND file modified < 5 min ago** (`subagentRunningWindow`);
+a long silent tool call can show `done` early. Unknown session / agent → `404`.
+To change the window: `session.subagentRunningWindow`. Tool row titles: `toolTitle()` / `toolKind()`.
 
 ### Sessions (raw) - echo-agent, RELAY_PROVIDER_<NAME>
 
@@ -891,6 +1018,21 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 - **`session/load` / `session/list`** checked against claude-agent-acp 0.85.1 (2026-10-04, live:
   listed this repo's 16 VS Code chats, replayed one). `session/fork` exists too, unused.
 
+- **Chat sync is plain files + in-memory state.** Pending phone permission prompts (`vscodeperm.Store`) and
+  the `Debouncer` live in memory: a runner restart drops them (the waiting hook's poll fails → VS Code falls
+  back to its own dialog). `peers.json` stores the other runner's API key in clear text - anyone who can read
+  `$RELAY_HOME` can drive the peer. `handed-off/` copies are overwritten per chat id and never deleted. Peers
+  talk plain HTTP over the tailnet; a sleeping peer = `unreachable` (502).
+- **`~/.claude/settings.json` is rewritten** by `vscodehook.Install` (JSON re-encoded, 2-space indent: key
+  order/formatting change; one-time backup `settings.json.relay-bak`). Hooks run `runnerd vscode-hook`, so
+  moving the binary breaks them until the runner restarts and re-merges. **Hooks fail open**: any error →
+  exit 0 / no output, so a broken Relay never blocks Claude; the only deliberate block is the stale-tab guard.
+- **Hook → runner link**: the hook finds the runner via `$RELAY_HOME/listen-addr` (written at start) and
+  reads the key file; a custom `RELAY_LISTEN_ADDR` works through that file.
+- **Dev laptop quirk**: `D:\Relay` on the dev laptop is an SSHFS mount of the server's repo. Docker bind
+  mounts of it fail; builds there use `tar | docker run`.
+- **Handoff idle = transcript mtime**: Claude touching the file (mode/cost lines on load/exit) resets it.
+
 ## Change Index
 
 | Thing | Where |
@@ -981,3 +1123,22 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Restart idle agents after claude login | `internal/session/acp_session.go` (`RestartIdleAgents`), wired in `cmd/runnerd/main.go` (claude `OnSignedIn`) |
 | Fake CLIs in tests | `auth.Runner` / `auth.Proc` interfaces (`internal/auth/auth_test.go`, `providers_test.go`) |
 | Laptop auto-start at boot | `install/install-keeperd.ps1` ("Relay keeper" task, see "keeperd"); `start-relay-runner.ps1` is legacy |
+| Peers (add/remove, keys) | `PUT/DELETE /v1/peers/{name}`, `internal/handoff/store.go` (`PeerStore`, `$RELAY_HOME/peers.json`) |
+| Handoff release / pull / takeover logic | `internal/handoff/handoff.go` (`Release`, `Pull`, `Takeover`, `Install`) |
+| Handoff error → HTTP status/code | `internal/api/handoff.go` (`writeHandoffError`) |
+| "Same repo" matching | `internal/handoff/match.go` (`NormalizeRemote`), `api.projectViews` |
+| Auto-return on/off, idle threshold, interval | env `RELAY_HANDOFF_HOME=true`, `RELAY_HANDOFF_IDLE_MIN` (30), `RELAY_HANDOFF_CHECK_MIN` (5) → `main.go`, `handoff.RunReturn` / `SelectIdle` |
+| Lent-chat records / last copies | `$RELAY_HOME/handoffs.json` (`LentStore`), `$RELAY_HOME/handed-off/` |
+| "Chat moved" push | `main.go` (`h.OnReleased`), push type `chat_moved` |
+| What blocks a handoff (busy) | `session.Manager.ChatBusy()`, `ExternalBusy` in `main.go` |
+| Hook install on/off | env `RELAY_VSCODE_HOOKS=off`, `vscodehook.Install` / `Merge`, `~/.claude/settings.json` (+ `.relay-bak`) |
+| Which hook events / timeouts | `vscodehook.Events`, `vscodehook.Timeout` |
+| VS Code state files / stale limit | `$RELAY_HOME/vscode-state/<id>.json`, `vscodehook.StaleAfter` |
+| Stale-tab guard rule + message | `vscodehook.ShouldBlock`, `vscodehook.MovedMessage` |
+| VS Code tracking health | `GET /v1/vscode-tracking`, `main.go` (`srv.VSCodeTracking`) |
+| Permission hold time | env `RELAY_PERMISSION_HOLD_SEC` (120), `vscodeperm.HoldSec` |
+| Where the hook finds the runner | `$RELAY_HOME/listen-addr` (`vscodeperm.AddrFile`), env `RELAY_LISTEN_ADDR`, `vscodeperm.baseURL` |
+| Permission list / answer / summary text | `internal/api/vscodeperm.go`, `vscodeperm.Store`, `vscodeperm.Summarize` |
+| "VS Code is waiting" push (delay, debounce) | `api.maybePushWaiting`, `Server.NotifyDelay`, `vscodeperm.NewDebouncer` (`main.go`) |
+| Generic FCM data push | `notify.Notifier.NotifyMessage` (`fcm.go`), `main.push` |
+| Subagent list / messages / "running" window | `internal/session/subagents.go` (`subagentRunningWindow`), `internal/api/subagents.go` |
