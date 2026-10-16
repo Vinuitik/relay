@@ -369,7 +369,7 @@ fun RelayNavHost(
             KeepCurrentRunner(runner.hostname, currentHost, prefs)
             val projectId = entry.arguments?.getString("projectId").orEmpty()
             val sessionId = entry.arguments?.getString("sessionId").orEmpty()
-            val vm: ChatViewModel = viewModel(factory = viewModelFactory { initializer { ChatViewModel(runner, projectId, sessionId) } })
+            val vm: ChatViewModel = viewModel(factory = viewModelFactory { initializer { ChatViewModel(runner, projectId, sessionId, prefs) } })
             ChatScreen(
                 vm = vm,
                 onBack = { if (!navController.popBackStack()) goHome(navController) },

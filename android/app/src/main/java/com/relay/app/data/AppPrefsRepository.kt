@@ -15,6 +15,7 @@ private val Context.appPrefsDataStore by preferencesDataStore(name = "app_prefs"
  * - [currentRunner]: hostname Home shows (the runner switcher's selection).
  * - [lastRoute]: last Home/Project/Chat route, restored on a cold launch by RelayNavHost.
  * - [lastProvider]: provider the last "New chat" used, so the next one needs no dialog.
+ * - [draft]: unsent chat composer text per session.
  * - [usageCosts]: the Usage screen's money assumptions (idle watts per runner, the rest global).
  * Separate DataStore file from [KnownRunnersRepository] so the runners blob stays untouched.
  */
@@ -35,6 +36,14 @@ class AppPrefsRepository(context: Context) {
     suspend fun setCurrentRunner(hostname: String) = store.edit { it[Keys.CURRENT_RUNNER] = hostname }
     suspend fun setLastRoute(route: String) = store.edit { it[Keys.LAST_ROUTE] = route }
     suspend fun setLastProvider(provider: String) = store.edit { it[Keys.LAST_PROVIDER] = provider }
+
+    /** Unsent composer text per chat session, so leaving the app/screen doesn't wipe it. */
+    fun draft(sessionId: String): Flow<String> = store.data.map { it[stringPreferencesKey("draft_$sessionId")] ?: "" }
+
+    suspend fun setDraft(sessionId: String, text: String) = store.edit {
+        val key = stringPreferencesKey("draft_$sessionId")
+        if (text.isBlank()) it.remove(key) else it[key] = text
+    }
 
     fun usageCosts(hostname: String): Flow<UsageCosts> = store.data.map { p ->
         val d = UsageCosts()

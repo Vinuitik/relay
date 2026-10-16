@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.relay.app.data.AppPrefsRepository
 import com.relay.app.model.KnownRunner
 import com.relay.app.model.Session
 import com.relay.app.model.SubAgent
@@ -19,6 +20,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 
@@ -30,6 +32,7 @@ private const val POLL_WAITING_MS = 3000L
 // the message (it may not have flipped to busy yet); then give up and drop the optimistic bubble.
 private const val ECHO_WAIT_TICKS = 10
 private const val AGENTS_POLL_MS = 5000L
+private const val DRAFT_SAVE_MS = 300L
 
 /** One Snackbar: plain cause, plus Retry when there's something to retry. */
 class ChatEvent(val message: String, val retry: (() -> Unit)?)
@@ -44,6 +47,7 @@ class ChatViewModel(
     val runner: KnownRunner,
     private val projectId: String,
     private val sessionId: String,
+    private val prefs: AppPrefsRepository,
 ) : ViewModel() {
     private val api = RelayApiClient.forRunner(runner)
 
@@ -54,7 +58,26 @@ class ChatViewModel(
         private set
     var projectName by mutableStateOf<String?>(null)
         private set
-    var input by mutableStateOf("")
+    private var inputState by mutableStateOf("")
+    /** Composer text; every edit is persisted (debounced) per session via [AppPrefsRepository.setDraft]. */
+    var input: String
+        get() = inputState
+        set(value) {
+            inputState = value
+            draftJob?.cancel()
+            draftJob = viewModelScope.launch {
+                delay(DRAFT_SAVE_MS)
+                prefs.setDraft(sessionId, value)
+            }
+        }
+    private var draftJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            val saved = prefs.draft(sessionId).first()
+            if (inputState.isEmpty()) inputState = saved // don't clobber text typed before the read landed
+        }
+    }
     var sending by mutableStateOf(false)
         private set
     /** Sent but not yet in [session]'s messages - rendered as a 60%-alpha user bubble. */

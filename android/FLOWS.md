@@ -108,7 +108,7 @@ QR scan by default (see "Pairing"); manual entry is the fallback.
 AppPrefsRepository (separate DataStore file `app_prefs`): `currentRunner` (Home's runner; set by
 the switcher, Manage runners tap, and on entering any project/chat route - `KeepCurrentRunner`),
 `lastRoute` (written by a NavController destination listener for home/project/chat only),
-`lastProvider` (written on every New chat / first message).
+`lastProvider` (written on every New chat / first message), `draft(sessionId)` (unsent chat composer text).
 
 Screen state lives in ViewModels scoped to the NavBackStackEntry (`viewModel()` inside each
 `composable {}`), built via `viewModelFactory { initializer { … } }` with the runner + ids:
@@ -152,6 +152,11 @@ between polls. Poll error with no data → `FullScreenError`; with data → poll
 - Send → `ChatViewModel.send()`: input cleared + optimistic bubble at 60% alpha (`pendingText`) →
   `sendMessage` → poll; first `user` message past the send point = echo → bubble 100%. Failure →
   text restored to input + Snackbar Retry. Idle with no echo after 10 ticks → bubble dropped.
+- Draft persistence: typing → `ChatViewModel.input` setter → 300ms debounce → `AppPrefsRepository.setDraft(sessionId, text)`
+  (key `draft_<sessionId>`, blank = key removed). Chat open → `ChatViewModel` init → `draft(sessionId).first()` →
+  `input` (skipped if already typed). `send()` clears input → draft removed; failed send restores it → saved again.
+  Survives screen exit, process death and swipe-away; lost only if edited <300ms before the process dies.
+  Drafts are never pruned for deleted sessions (one small key each). To change: `ChatViewModel.DRAFT_SAVE_MS`.
 - Stop (same 48dp slot as Send while busy/waiting) → `cancelTurn` → turn stops, session stays.
 - Motion (DESIGN.md): items appended after first load enter 8dp up + fade 180ms (`AppearOnce`);
   follow-bottom only if the user was at the bottom (stick = non-animated `scrollBy`, new item = one
@@ -840,6 +845,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Routes / deep link pattern / transitions | `ui/navigation/RelayNavHost.kt` (`Routes`, `forwardEnter`…`backExit`) |
 | Last-route restore | `ui/navigation/RelayNavHost.kt` (`RESTORE_PATTERN`, restore `LaunchedEffect`), `MainActivity.kt` (`restoreLastRoute`) |
 | Current runner / last route / last provider prefs | `data/AppPrefsRepository.kt` |
+| Chat draft persistence | `ChatViewModel.input` / `DRAFT_SAVE_MS`, `AppPrefsRepository.draft` / `setDraft` |
 | "On this computer" chats (VS Code's) | `ui/screens/ProjectViewModel.kt` (`laptopChats`, `continueLaptopChat`), `ProjectScreen.kt` (`LaptopChatRow`), `RelayApiService.listAgentChats` |
 | "Runner can't update" banner | `ui/screens/HomeScreen.kt` (`UpdateStuckBanner`), `HomeViewModel.updateStuck`, `UpdateStatus.stuck` |
 | Usage screen layout / heatmap | `ui/screens/UsageScreen.kt` |
