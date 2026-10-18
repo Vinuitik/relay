@@ -38,7 +38,12 @@ healthy? (`wlp0s20f3` `connected` in `nmcli` AND default gateway answers 1 of 3 
 for 30s before acting) → yes: clear counter, exit
 → flight mode on (`rfkill` soft block / `nmcli radio wifi` disabled)? → `rfkill unblock wifi`, exit
 → tries < 5? → PCI remove `0000:00:14.3` → 3s → PCI rescan → wait up to 60s for healthy → log
-→ tries = 5 → log "gave up" once, then silent until reboot (counter in `/run/relay-wifi-tries`).
+→ tries = 5 → if `/var/lib/relay/wifi-coldcycle-ok` exists and < `COLD_MAX` cold cycles in the last
+`COLD_WINDOW`: log, record epoch in `/var/lib/relay/wifi-coldcycles`, `rtcwake -m off -s 90` (full
+power-off, RTC boots it ~90s later — the only thing that clears a crashed chip) → else log "gave up"
+once, then silent until reboot (counter in `/run/relay-wifi-tries`).
+To enable/disable the cold cycle: create/remove `/var/lib/relay/wifi-coldcycle-ok`. Limits: `COLD_MAX`,
+`COLD_WINDOW`, `COLD_WAKE_S` in the script. **Enable only after** `sudo rtcwake -m off -s 90` is seen to boot.
 To change interval: `relay-wifi-watchdog.timer` `OnUnitActiveSec=`. Tries: `MAX_TRIES` in the script.
 
 **Install:** copy `power/server/` to the server (`scp`) → `sudo sh install.sh` → creates
@@ -67,6 +72,10 @@ Check: `systemctl list-timers 'relay-*'`. Remove: `sudo sh uninstall.sh`.
   8th; the card was dead the whole day. Reloading the module does not fix it; PCI remove/rescan does.
 - **Hardcoded `wlp0s20f3` / `0000:00:14.3`** in `relay-wifi-fix.sh`: a different Wi-Fi card or
   slot breaks the watchdog silently (it would never see "connected" and reset a non-existent path).
+- **Cold cycle uses the RTC alarm** — the same single alarm `relay-wake.timer` uses. `rtcwake -m off`
+  overwrites a pending scheduled wake; it is re-armed at the next suspend, so a booking wake that
+  fell inside the cycle is lost until then. If the BIOS ignores RTC wake from S5 the machine stays
+  off (hence opt-in). While Wi-Fi is down nothing can notify the phone; the only trace is the journal.
 - **PCI reset can fail too** (the 2026-10-09 17:41 boot never got the card up). Only a full
   power-off (hold power 10s, unplug charger) clears that. Watchdog logs "gave up" in that case.
 - **Wi-Fi power saving is left on** on purpose (user decision). It's the usual suspect for this
@@ -114,5 +123,7 @@ Check: `systemctl list-timers 'relay-*'`. Remove: `sudo sh uninstall.sh`.
 | Remove everything | `sudo sh uninstall.sh` |
 | Wi-Fi check interval | `relay-wifi-watchdog.timer` `OnUnitActiveSec=` |
 | Wi-Fi reset attempts | `MAX_TRIES` in `relay-wifi-fix.sh` |
+| Wi-Fi cold power-cycle on/off | file `/var/lib/relay/wifi-coldcycle-ok` (absent = off) |
+| Cold-cycle cap / delay | `COLD_MAX` / `COLD_WINDOW` / `COLD_WAKE_S` in `relay-wifi-fix.sh` |
 | Wi-Fi card name / PCI slot | `IFACE` / `PCI` in `relay-wifi-fix.sh` |
 | Logs | `journalctl -u relay-schedule-apply -u relay-sleep -u relay-wake -u relay-wifi-watchdog`; Wi-Fi driver: `journalctl -k \| grep iwlwifi`; kernel: `journalctl -k \| grep 'PM: suspend'` |
