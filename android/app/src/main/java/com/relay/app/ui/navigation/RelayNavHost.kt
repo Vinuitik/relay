@@ -57,6 +57,8 @@ import com.relay.app.ui.screens.BookingEditorScreen
 import com.relay.app.ui.screens.BookingEditorViewModel
 import com.relay.app.ui.screens.ScheduleScreen
 import com.relay.app.ui.screens.ScheduleViewModel
+import com.relay.app.ui.screens.TokensScreen
+import com.relay.app.ui.screens.TokensViewModel
 import com.relay.app.ui.screens.UsageScreen
 import com.relay.app.ui.screens.UsageViewModel
 import com.relay.app.ui.screens.RunnerListScreen
@@ -75,6 +77,7 @@ object Routes {
     const val PROJECT = "r/{host}/p/{projectId}?tab={tab}"
     const val CHAT = "r/{host}/p/{projectId}/s/{sessionId}"
     const val USAGE = "r/{host}/usage"
+    const val TOKENS = "r/{host}/tokens"
     const val SCHEDULE = "r/{host}/schedule"
     const val SCHEDULE_EDIT = "r/{host}/schedule/edit?bookingId={bookingId}&date={date}"
 
@@ -83,6 +86,7 @@ object Routes {
 
     fun folderPicker(host: String) = "r/${enc(host)}/pick-folder"
     fun usage(host: String) = "r/${enc(host)}/usage"
+    fun tokens(host: String) = "r/${enc(host)}/tokens"
     fun schedule(host: String) = "r/${enc(host)}/schedule"
     /** Booking editor: an occurrence (bookingId + date), a new booking on [date], or both null. */
     fun scheduleEdit(host: String, bookingId: String? = null, date: String? = null): String {
@@ -218,6 +222,7 @@ fun RelayNavHost(
                 onSwitchRunner = { r -> scope.launch { prefs.setCurrentRunner(r.hostname) } },
                 onManageRunners = { goRunners(navController) },
                 onUsage = { navController.navigate(Routes.usage(runner.hostname)) },
+                onTokens = { navController.navigate(Routes.tokens(runner.hostname)) },
                 onSchedule = { navController.navigate(Routes.schedule(runner.hostname)) },
                 onOpenProject = { pid, tab -> navController.navigate(Routes.project(runner.hostname, pid, tab)) },
                 onOpenChat = { pid, sid -> navController.navigate(Routes.chat(runner.hostname, pid, sid)) },
@@ -254,6 +259,15 @@ fun RelayNavHost(
                 onCostsChange = { c -> scope.launch { prefs.setUsageCosts(runner.hostname, c) } },
                 onBack = { navController.popBackStack() },
             )
+        }
+
+        composable(
+            route = Routes.TOKENS,
+            arguments = listOf(navArgument("host") { type = NavType.StringType }),
+        ) { entry ->
+            val runner = runnerFor(entry) ?: return@composable UnknownRunnerPlaceholder()
+            val vm: TokensViewModel = viewModel(factory = viewModelFactory { initializer { TokensViewModel(runner) } })
+            TokensScreen(vm = vm, title = runner.label, onBack = { navController.popBackStack() })
         }
 
         composable(

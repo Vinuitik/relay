@@ -324,6 +324,26 @@ Feeds idle-suspend and the recorder's `app` signal.
 To change defaults (5 W idle, 0.5 W asleep, £0.25/kWh, £35.60 device, 1 W device):
 `AppPrefsRepository.UsageCosts`. To change ping rate: `MainActivity.ACTIVITY_PING_MS`.
 
+## Tokens (where did my plan go?)
+
+Files: TokensScreen.kt, TokensViewModel.kt, Models.kt (`TokensReport`, `TokenCounts`, `TokenDay`,
+`TokenBucket`, `TokenSession`), RelayApiService.kt (`tokens()`), HomeScreen.kt (menu entries)
+
+```
+Home runner switcher ▾ → "Tokens · <runner>"  |  Home ⋮ with one runner → "Tokens"
+  → Routes.TOKENS "r/{host}/tokens"
+  → TokensViewModel.refresh() → GET /v1/tokens?days=N  (1/3/7/14/30 chips, default 7; pull to refresh)
+  → TokensScreen: Spent (≈ units, calls, output, cache) · Per day (bars) · By model · By project ·
+                  Heaviest chats (flags in plain words) · How to spend less · estimate disclaimer
+```
+
+One runner = one machine's transcripts (the Dell and the Acer are separate screens; switch runner
+to compare). Units are an estimate — the runner computes everything
+(`runner/internal/tokens/FLOWS.md`); the phone only draws it, so thresholds/weights change there.
+To change the flag wording: `FLAG_HELP` (TokensScreen.kt). Day choices: `DAY_CHOICES`.
+[NOT IMPLEMENTED]: live in-chat token counter, merged view across runners, Anthropic plan-meter
+(the 5-hour / weekly %) — that number is only on claude.ai/usage, no public API.
+
 ## Schedule (server sleep/wake bookings)
 
 Server side: runner/internal/schedule/FLOWS.md (rules, plan file) → power/server/FLOWS.md (timers).
@@ -842,6 +862,7 @@ Files/Containers routes → Project tabs. The always-visible Sleep button → ru
 | Thing | Where |
 |---|---|
 | APK signing key / version number | `app/build.gradle.kts` (`signingConfigs`, `RELAY_BUILD_NUMBER`), `.github/workflows/android-deploy.yml`, secrets `RELAY_KEYSTORE_B64`/`RELAY_KEYSTORE_PASSWORD` |
+| Tokens screen / flag wording / day chips | `ui/screens/TokensScreen.kt` (`FLAG_HELP`, `DAY_CHOICES`), `TokensViewModel.kt`, `network/RelayApiService.kt` (`tokens()`) |
 | Routes / deep link pattern / transitions | `ui/navigation/RelayNavHost.kt` (`Routes`, `forwardEnter`…`backExit`) |
 | Last-route restore | `ui/navigation/RelayNavHost.kt` (`RESTORE_PATTERN`, restore `LaunchedEffect`), `MainActivity.kt` (`restoreLastRoute`) |
 | Current runner / last route / last provider prefs | `data/AppPrefsRepository.kt` |

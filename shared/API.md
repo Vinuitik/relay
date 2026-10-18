@@ -186,6 +186,32 @@ UsageReport {
 Stats { count, medianSec, p90Sec, meanSec, totalSec }
 ```
 
+### TokensReport
+
+Plan-token use read from Claude's transcripts on the runner's machine (see
+runner/internal/tokens/FLOWS.md). Lists are always `[]`, never `null`. **`units` is a weighted
+estimate, not the exact plan share.** Counters are flattened into every object that has them.
+
+```
+TokensReport {
+  days: number, generatedAt: string,           // RFC3339
+  totals: Counts, flagged: Counts,             // flagged = everything inside heavy chats
+  byDay: [{date: "YYYY-MM-DD", ...Counts}],    // every day in the window, oldest first, runner's local zone
+  byModel: [{name, ...Counts}],                // heaviest first
+  byProject: [{name, sessions, ...Counts}],
+  sessions: [{                                 // heaviest first, max 40; subagents folded in
+    id, project, title, model,                 // title = first thing you typed; model = most used
+    firstAt, lastAt,
+    prompts: number, toolCalls: number, shellCalls: number, subagentCalls: number,
+    maxContext: number,                        // tokens re-read on the biggest single call
+    flags: ("long-chain"|"huge-context"|"opus-mechanical"|"many-shell")[],
+    ...Counts
+  }],
+  estimate: string                             // human-readable disclaimer
+}
+Counts { calls, input, output, cacheWrite, cacheRead, units }
+```
+
 ### Schedule (bookings for the server's sleep/wake)
 
 All dates `"YYYY-MM-DD"`, times `"HH:MM"` 24h, wall-clock in the runner's zone (`timezone`).
@@ -256,6 +282,7 @@ Event { kind: "warn" | "sleep" | "wake", date: string, at: string }
 | POST | `/v1/devices` | `{fcmToken: string, runnerRef?: string}` | `200 Device` | registers/updates this phone's FCM push token with this runner (`runnerRef`: the address the phone uses for this runner, e.g. its Tailscale hostname - stored and echoed in every push; re-registering overwrites it), so the runner can notify it on session-finish (or on suspend, see below). Call on every known runner, and again whenever the token refreshes. Runner-side sending is a no-op until a Firebase credential is configured — see Technology Notes in runner/FLOWS.md. |
 | POST | `/v1/suspend` | - | `202 {}` | manually suspends this machine to sleep (S3 on Linux, Modern Standby on Windows) right now, instead of waiting for the idle timeout. `409` if any session is currently busy (never kills active work); `503` if the runner wasn't started with `RELAY_IDLE_SUSPEND_ENABLED=true` — this endpoint deliberately reuses that same opt-in gate, see runner/FLOWS.md "Idle-suspend". |
 | POST | `/v1/activity` | - | `202 {}` | tells the runner "the phone app is in the foreground right now" — one of the signals idle-suspend uses to decide whether to suspend the machine, alongside session busy/idle state and local keyboard/mouse input. Call every 30s while, and only while, the app is in the foreground; stop calling when it's backgrounded or closed. Always accepted, even if idle-suspend is disabled on this runner — see runner/FLOWS.md "Idle-suspend". |
+| GET | `/v1/tokens?days=<1-90>` | - | `200 TokensReport` | plan-token use per day/model/project/chat from Claude's transcripts on this machine, with "heavy chat" flags. `days` default 7 (out of range clamps to 7/90). `503` scanner not wired. See runner/internal/tokens/FLOWS.md. |
 | GET | `/v1/usage?days=<1-90>&limits=<m1,m2,...>` | - | `200 UsageReport` | recorded activity + idle-suspend simulation (nothing is ever suspended). `days` default 14, `limits` default `5,15,30,60` (minutes, 1-1440). Recording is always on, independent of `RELAY_IDLE_SUSPEND_ENABLED`; data is kept 90 days. `400` bad params, `503` recorder failed to start. See runner/internal/usage/FLOWS.md. |
 | GET | `/v1/schedule` | - | `200 Schedule` | bookings, the current plan and whether the server has applied it. |
 | GET | `/v1/schedule/occurrences?from=&to=` | - | `200 Occurrence[]` | expanded days in `[from, to]` inclusive, sorted. `400` bad dates or span > 62 days. |

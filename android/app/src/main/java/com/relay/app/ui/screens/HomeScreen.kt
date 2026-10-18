@@ -113,6 +113,7 @@ fun HomeScreen(
     onSwitchRunner: (KnownRunner) -> Unit,
     onManageRunners: () -> Unit,
     onUsage: () -> Unit,
+    onTokens: () -> Unit,
     onSchedule: () -> Unit,
     onOpenProject: (projectId: String, tab: String) -> Unit,
     onOpenChat: (projectId: String, sessionId: String) -> Unit,
@@ -162,6 +163,7 @@ fun HomeScreen(
                             onSwitch = onSwitchRunner,
                             onManageRunners = onManageRunners,
                             onUsage = onUsage,
+                            onTokens = onTokens,
                             onSchedule = onSchedule,
                         )
                     }
@@ -183,6 +185,11 @@ fun HomeScreen(
                                     text = { Text("Usage") },
                                     leadingIcon = { Icon(Icons.Outlined.Insights, contentDescription = null) },
                                     onClick = { menu = false; onUsage() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Tokens") },
+                                    leadingIcon = { Icon(Icons.Outlined.Insights, contentDescription = null) },
+                                    onClick = { menu = false; onTokens() },
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Schedule") },
@@ -319,6 +326,7 @@ private fun RunnerSwitcher(
     onSwitch: (KnownRunner) -> Unit,
     onManageRunners: () -> Unit,
     onUsage: () -> Unit,
+    onTokens: () -> Unit,
     onSchedule: () -> Unit,
 ) {
     val single = runners.size <= 1
@@ -371,6 +379,11 @@ private fun RunnerSwitcher(
                 text = { Text("Usage · ${current.label}") },
                 leadingIcon = { Icon(Icons.Outlined.Insights, contentDescription = null) },
                 onClick = { expanded = false; onUsage() },
+            )
+            DropdownMenuItem(
+                text = { Text("Tokens · ${current.label}") },
+                leadingIcon = { Icon(Icons.Outlined.Insights, contentDescription = null) },
+                onClick = { expanded = false; onTokens() },
             )
             DropdownMenuItem(
                 text = { Text("Schedule · ${current.label}") },

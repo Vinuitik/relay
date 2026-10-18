@@ -22,6 +22,7 @@ import (
 	"relay/runner/internal/schedule"
 	"relay/runner/internal/session"
 	"relay/runner/internal/updatestatus"
+	"relay/runner/internal/tokens"
 	"relay/runner/internal/usage"
 	"relay/runner/internal/vscodeperm"
 )
@@ -81,6 +82,9 @@ type Server struct {
 	// Usage serves GET /v1/usage (recorded activity + sleep simulation,
 	// see internal/usage). nil â†’ 503.
 	Usage *usage.Recorder
+	// Tokens serves GET /v1/tokens (plan-token usage read from Claude's
+	// transcripts, see internal/tokens). nil -> 503.
+	Tokens *tokens.Scanner
 	// Schedule serves /v1/schedule* (sleep/wake bookings + the plan file,
 	// see internal/schedule). nil (store failed to open) → 503.
 	Schedule *schedule.Service
@@ -133,6 +137,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/activity", s.auth(s.handleActivity))
 	mux.HandleFunc("POST /v1/suspend", s.auth(s.handleSuspend))
 	mux.HandleFunc("GET /v1/usage", s.auth(s.handleUsage))
+	mux.HandleFunc("GET /v1/tokens", s.auth(s.handleTokens))
 	mux.HandleFunc("GET /v1/schedule", s.auth(s.scheduleOn(s.handleGetSchedule)))
 	mux.HandleFunc("GET /v1/schedule/occurrences", s.auth(s.scheduleOn(s.handleScheduleOccurrences)))
 	mux.HandleFunc("POST /v1/schedule/bookings", s.auth(s.scheduleOn(s.handleCreateBooking)))

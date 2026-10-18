@@ -442,6 +442,12 @@ To change how local input is read (Windows): `internal/activity/local_windows.go
 Always-on per-minute activity log + turn spans → `GET /v1/usage` sleep simulation. Full flow:
 `internal/usage/FLOWS.md`.
 
+## Token usage (where did my plan go?)
+
+`GET /v1/tokens?days=N` → `internal/tokens` reads Claude's transcripts (chats + subagents) on this
+machine → per day / model / project / chat + "heavy chat" flags. Full flow, thresholds and
+caveats: `internal/tokens/FLOWS.md`.
+
 ## Schedule (server sleep/wake bookings)
 
 Bookings → SQLite → plan file → root applier timers. Full flow: `internal/schedule/FLOWS.md`;
@@ -1037,6 +1043,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 | Thing | Where |
 |---|---|
+| Token usage endpoint / flags / cost weights | `internal/tokens` (see `internal/tokens/FLOWS.md`), `internal/api/tokens.go` |
 | Key generation / storage | `internal/config/config.go` |
 | Projects root / registry file location | `internal/config/config.go` (env `RELAY_HOME`) |
 | Listen address | `internal/config/config.go` (env `RELAY_LISTEN_ADDR`) |

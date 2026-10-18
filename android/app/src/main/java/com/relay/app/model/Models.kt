@@ -257,6 +257,50 @@ data class UsageReport(
     val replyLatency: UsageStats = UsageStats(),
 )
 
+/** Mirrors shared/API.md `TokensReport` - `GET /v1/tokens`: plan-token use read from Claude's transcripts. */
+data class TokensReport(
+    val days: Int,
+    val generatedAt: String,
+    val totals: TokenCounts,
+    val byDay: List<TokenDay> = emptyList(),
+    val byModel: List<TokenBucket> = emptyList(),
+    val byProject: List<TokenBucket> = emptyList(),
+    val sessions: List<TokenSession> = emptyList(),
+    /** Everything inside chats the runner flagged as heavy. */
+    val flagged: TokenCounts = TokenCounts(),
+    val estimate: String = "",
+)
+
+/** [units] is a weighted estimate (cache read 0.1x, write 1.25x, output 5x, model-scaled). */
+data class TokenCounts(
+    val calls: Int = 0,
+    val input: Long = 0,
+    val output: Long = 0,
+    val cacheWrite: Long = 0,
+    val cacheRead: Long = 0,
+    val units: Double = 0.0,
+)
+
+data class TokenDay(val date: String, val calls: Int = 0, val units: Double = 0.0)
+
+data class TokenBucket(val name: String, val sessions: Int = 0, val calls: Int = 0, val units: Double = 0.0)
+
+data class TokenSession(
+    val id: String,
+    val project: String = "",
+    val title: String = "",
+    val model: String = "",
+    val prompts: Int = 0,
+    val toolCalls: Int = 0,
+    val shellCalls: Int = 0,
+    val subagentCalls: Int = 0,
+    val maxContext: Long = 0,
+    /** "long-chain" | "huge-context" | "opus-mechanical" | "many-shell". */
+    val flags: List<String> = emptyList(),
+    val calls: Int = 0,
+    val units: Double = 0.0,
+)
+
 data class UsageLimit(
     val idleMinutes: Int,
     val awakePct: Double,

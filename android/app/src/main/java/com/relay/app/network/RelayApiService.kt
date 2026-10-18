@@ -18,6 +18,7 @@ import com.relay.app.model.RunnerInfo
 import com.relay.app.model.Session
 import com.relay.app.model.SubAgent
 import com.relay.app.model.SubAgentMessages
+import com.relay.app.model.TokensReport
 import com.relay.app.model.UsageReport
 import com.relay.app.model.Booking
 import com.relay.app.model.BookingInput
@@ -208,6 +209,11 @@ interface RelayApiService {
      * [com.relay.app.ui.screens.UsageScreen]. */
     @GET("v1/usage")
     suspend fun usage(@Query("days") days: Int): UsageReport
+
+    /** Plan-token use over the last [days], read from Claude's transcripts - see
+     * [com.relay.app.ui.screens.TokensScreen]. */
+    @GET("v1/tokens")
+    suspend fun tokens(@Query("days") days: Int): TokensReport
 
     /** Lists a directory within a project — `path` omitted/blank means the project root. See
      * shared/API.md and [com.relay.app.ui.screens.FileBrowserContent]. Read-only. */

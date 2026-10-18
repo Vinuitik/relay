@@ -31,6 +31,7 @@ import (
 	"relay/runner/internal/project"
 	"relay/runner/internal/schedule"
 	"relay/runner/internal/session"
+	"relay/runner/internal/tokens"
 	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/usage"
 	"relay/runner/internal/vscodehook"
@@ -217,6 +218,7 @@ func main() {
 	tracker := activity.NewTracker()
 	srv.Activity = tracker
 	srv.UpdateStatusPath = os.Getenv(updatestatus.EnvVar)
+	srv.Tokens = tokens.New(session.ClaudeDir) // GET /v1/tokens, see internal/tokens
 
 	// Usage recorder: always on (independent of idle-suspend) - logs which
 	// activity sources were live each minute plus every agent turn, so
