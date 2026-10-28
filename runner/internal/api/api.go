@@ -4,6 +4,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log"
@@ -184,7 +185,8 @@ func (s *Server) Routes() http.Handler {
 // deliberately not wrapped - it requires no auth per shared/API.md.
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Relay-Key") != s.Key {
+		// Constant-time, so response timing doesn't leak how much of a guess matched.
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Relay-Key")), []byte(s.Key)) != 1 {
 			writeError(w, http.StatusUnauthorized, "invalid or missing X-Relay-Key")
 			return
 		}
