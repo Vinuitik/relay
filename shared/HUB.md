@@ -39,6 +39,9 @@ Runner → hub:
 - Runner dispatches to its own `http.Handler` in-process, adding `X-Relay-Key: <its own key>` itself; the hub never knows the runner key.
 - Runner handles requests concurrently and only accepts paths starting with `/v1/`; anything else → `status 404`.
 - Max body 4 MiB each way; larger → `413` (runner) / `502` (hub).
+- Max frame: hub accepts 8 MiB + 64 KiB (a JSON-escaped body can be bigger than the body). A runner response
+  frame over that would make the hub close the uplink, so the runner sends `502` instead.
+- Oversized browser request → hub answers `413` itself.
 
 ## Browser proxy
 `ANY /relay/api/devices/{deviceId}/v1/**` (session + CSRF + TOTP gate on `/relay/**`)
