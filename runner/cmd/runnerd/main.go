@@ -33,6 +33,7 @@ import (
 	"relay/runner/internal/session"
 	"relay/runner/internal/tokens"
 	"relay/runner/internal/updatestatus"
+	"relay/runner/internal/uplink"
 	"relay/runner/internal/usage"
 	"relay/runner/internal/vscodehook"
 	"relay/runner/internal/vscodeperm"
@@ -67,6 +68,16 @@ func main() {
 	// covers *-pairing-qr.png).
 	if len(os.Args) > 2 && os.Args[1] == "-qr-png" {
 		writePairingQRPNG(cfg, os.Args[2])
+		return
+	}
+
+	// pair --hub URL --code CODE [--name NAME]: pair with a Relay hub
+	// (HabitTracker) and write hub.json; the uplink below then dials it.
+	// See shared/HUB.md and internal/uplink/FLOWS.md.
+	if len(os.Args) > 1 && os.Args[1] == "pair" {
+		if err := runPair(os.Args[2:], cfg.RelayHome, os.Stdout); err != nil {
+			log.Fatalf("pair: %v", err)
+		}
 		return
 	}
 
@@ -301,8 +312,19 @@ func main() {
 	// never 0.0.0.0, per ARCHITECTURE.md's "Registration / connection"
 	// section - set RELAY_LISTEN_ADDR to that interface's address when
 	// deploying; enforcing that binding choice is outside this milestone.
+	handler := srv.Routes()
+
+	// Hub uplink: only when paired (hub.json present). Dials out to the hub
+	// and serves its forwarded /v1/* requests through the same handler.
+	if hubCfg, err := uplink.Load(cfg.RelayHome); err != nil {
+		log.Printf("uplink disabled: %v", err)
+	} else if hubCfg != nil {
+		up := &uplink.Client{Config: *hubCfg, Handler: handler, Key: cfg.Key}
+		go up.Run(context.Background())
+	}
+
 	log.Printf("runner listening on %s (projects root: %s)", cfg.ListenAddr, cfg.ProjectsRoot)
-	if err := http.ListenAndServe(cfg.ListenAddr, srv.Routes()); err != nil {
+	if err := http.ListenAndServe(cfg.ListenAddr, handler); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
 }

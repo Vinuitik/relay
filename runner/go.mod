@@ -3,6 +3,7 @@ module relay/runner
 go 1.22
 
 require (
+	github.com/coder/websocket v1.8.12
 	github.com/mdp/qrterminal/v3 v3.2.1
 	golang.org/x/sys v0.30.0
 	modernc.org/sqlite v1.36.1

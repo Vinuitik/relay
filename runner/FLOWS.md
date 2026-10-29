@@ -1043,6 +1043,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 | Thing | Where |
 |---|---|
+| Hub uplink (HabitTracker) + `runnerd pair` / hub.json | `internal/uplink` (see `internal/uplink/FLOWS.md`), `cmd/runnerd/pair.go` |
 | Token usage endpoint / flags / cost weights | `internal/tokens` (see `internal/tokens/FLOWS.md`), `internal/api/tokens.go` |
 | Key generation / storage | `internal/config/config.go` |
 | Projects root / registry file location | `internal/config/config.go` (env `RELAY_HOME`) |
