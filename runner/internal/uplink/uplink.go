@@ -21,6 +21,10 @@ const (
 	// readLimit caps one incoming frame: a 4 MiB body JSON-escaped can grow
 	// up to 6x (\u00XX), plus the envelope. Bigger frames close the socket.
 	readLimit = 6*MaxBody + 64<<10
+	// maxFrameOut is the hub's frame limit (8 MiB + 64 KiB, Spring side). A response
+	// frame above it would make the hub close the whole uplink, so it is replaced
+	// by a 502 instead.
+	maxFrameOut = 8<<20 + 64<<10
 	// requestTimeout bounds one dispatched request; the hub gives up at 30s.
 	requestTimeout = 60 * time.Second
 )
@@ -143,6 +147,10 @@ func (c *Client) runOnce(ctx context.Context) (connected bool, err error) {
 		go func(f Frame) {
 			defer wg.Done()
 			out, _ := json.Marshal(c.dispatch(connCtx, f))
+			if len(out) > maxFrameOut {
+				out, _ = json.Marshal(Frame{Type: "res", ID: f.ID, Status: http.StatusBadGateway,
+					ContentType: "application/json", Body: `{"error":"response too large for the hub"}`})
+			}
 			writeMu.Lock()
 			defer writeMu.Unlock()
 			if err := conn.Write(connCtx, websocket.MessageText, out); err != nil && connCtx.Err() == nil {

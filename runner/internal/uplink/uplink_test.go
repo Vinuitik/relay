@@ -36,6 +36,9 @@ func runnerHandler(slowGate chan struct{}) http.Handler {
 			fmt.Fprintf(w, `{"method":%q,"q":%q,"body":%s}`, r.Method, r.URL.Query().Get("x"), b)
 		case "/v1/huge":
 			w.Write([]byte(strings.Repeat("a", MaxBody+1)))
+		case "/v1/escapey":
+			// Within MaxBody, but JSON-escapes 6x () past the hub's frame limit.
+			w.Write([]byte(strings.Repeat("", MaxBody)))
 		case "/v1/slow":
 			<-slowGate
 			w.Write([]byte("slow"))
@@ -132,8 +135,9 @@ func TestRequestsRoundTrip(t *testing.T) {
 		sendReq(t, c, Frame{ID: "dotdot", Method: "GET", Path: "/v1/../admin"})
 		sendReq(t, c, Frame{ID: "big", Method: "POST", Path: "/v1/echo", Body: strings.Repeat("a", MaxBody+1)})
 		sendReq(t, c, Frame{ID: "huge", Method: "GET", Path: "/v1/huge"})
+		sendReq(t, c, Frame{ID: "escapey", Method: "GET", Path: "/v1/escapey"})
 		m := map[string]Frame{}
-		for i := 0; i < 5; i++ {
+		for i := 0; i < 6; i++ {
 			f := readRes(t, c)
 			m[f.ID] = f
 		}
@@ -161,6 +165,9 @@ func TestRequestsRoundTrip(t *testing.T) {
 		if m[id].Status != 413 {
 			t.Errorf("%s status = %d, want 413", id, m[id].Status)
 		}
+	}
+	if m["escapey"].Status != 502 {
+		t.Errorf("escapey status = %d, want 502", m["escapey"].Status)
 	}
 }
 
