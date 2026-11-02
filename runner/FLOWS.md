@@ -1,7 +1,7 @@
 # Runner flows
 
 Files: handoff.go, vscodehook.go, vscodeperm.go, subagents.go (new sections below), main.go, config.go, project.go, session.go, compose.go, api.go, git.go (internal/git + api),
-registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go
+registry.go, notifier.go, fcm.go, idle.go, shutdown_unix.go, shutdown_windows.go, internal/jobs (jobs.go, run.go), internal/api/jobs.go
 
 This file covers **`runnerd`** only — the per-machine daemon that runs projects/sessions and
 **puts its own machine to sleep**. It has no wake ability and never can: while a machine is
@@ -503,6 +503,42 @@ Read-only by design, per ARCHITECTURE.md "Runner responsibilities" - no write/de
 
 To change the size cap: `internal/api/api.go` (`maxViewableFileSize`).
 To change path-escape rules: `internal/project/project.go` (`Registry.ResolvePath`).
+
+## Jobs (one-shot headless claude for the hub)
+
+Files: internal/jobs/jobs.go (`Manager`), internal/jobs/run.go (`Args`, `Manager.run`, `translator`),
+internal/api/jobs.go, cmd/runnerd/main.go (`srv.Jobs`, `busyStatus`)
+
+The HabitTracker hub runs its AI (repo map, plan, KPI text) on this machine's Claude Code through
+these endpoints (contract: shared/API.md "Job").
+
+POST /v1/jobs → `handleCreateJob` → `Manager.Submit` (validate kind/prompt/maxTurns/model;
+map/plan: `Dir(projectId)` = `project.Registry.Dir`; `FindCLI` = `auth.Claude().FindCLI`) →
+queued → `startLocked` (≤ `MaxConcurrent`=2 running) → `go Manager.run`
+→ cwd = project dir (kpi: `os.MkdirTemp("relay-job-")`, removed after)
+→ `claude <Args>` with the prompt on **stdin**
+→ stdout stream-json line by line → `translator.line`:
+  assistant `tool_use` → step ("Reading src/a.go", "Searching for X", "Finding files *.go",
+  "Started subagent: D"; subagent tool calls prefixed "(subagent) ") · top-level assistant `text` →
+  text · system `permission_denied` → error "Blocked Read: ..." · `result` → result + usage
+  (inputTokens = input + cache creation + cache read)
+→ `Manager.done` → done / failed (error result, or exit without a result → stderr tail) → next
+queued job starts.
+To change the step wording: `translator.step`. To change limits: consts in jobs.go
+(`MaxConcurrent`, `Retention`, `MaxEvents`, `MaxEventText`, `MaxResult`).
+
+`Args` (map/plan; kpi is the same with `--tools ""`):
+`-p --output-format stream-json --verbose --restricted --strict-mcp-config --tools Read,Grep,Glob,Agent
+--disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch --permission-mode dontAsk
+--permission-prompts none --no-session-persistence [--model M] [--max-turns N]`.
+To change the tool set / flags: `jobs.Args` (`readOnlyTools`, `deniedTools`).
+
+GET /v1/jobs/{id}?after=N → `Manager.Get` (events with seq > N; `nextSeq` = highest seq).
+DELETE /v1/jobs/{id} → `Manager.Cancel` → queued: dropped; running: state `cancelled` + context
+cancel → process SIGKILLed (`exec.CommandContext`, `WaitDelay` 5s).
+
+Busy: queued/running jobs make `anyBusy` true (runner info `busy`, `POST /v1/suspend` → 409) and
+feed idle-suspend via `busyStatus{sessions, srv.Jobs}` (`Manager.IdleStatus`).
 
 ## Git (the phone's Git tab)
 
@@ -1058,6 +1094,28 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 - **`session/load` / `session/list`** checked against claude-agent-acp 0.85.1 (2026-10-04, live:
   listed this repo's 16 VS Code chats, replayed one). `session/fork` exists too, unused.
 
+- **Jobs are in memory only** (`internal/jobs`): a runner restart loses queued, running and finished
+  jobs (the hub gets `404` and must resubmit); the killed `claude` dies with the runner's process
+  group only if the OS takes it down — an orphaned job may keep running to completion unseen.
+  Finished jobs are swept 1 h after finishing (lazily, on the next Submit/Get). Max 2 run at once;
+  the queue is unbounded and FIFO. Events capped at 2000/job, 500 bytes each; result capped at
+  1 MiB — together under the hub's 4 MiB body limit for normal text, but heavy JSON escaping
+  (control chars, `<>&` → `\u003c`) could still push a full job over; poll with `after` to keep
+  responses small.
+- **Job confinement = Claude Code's `--restricted` mode, not an OS sandbox.** Verified live
+  (claude 2.1.273, 2026-11-02): Read/Grep/Glob on absolute paths outside the project, `../`
+  paths, a symlink inside the project pointing outside, and `/etc/hostname` were all refused
+  ("is outside <cwd>; --restricted confines the file tools to the working directory"), in the main
+  agent **and** in an Agent subagent; Grep with no path did not follow the outside symlink; a
+  subagent asked to run Bash / Write had neither tool. `--restricted` also ignores user/project/
+  local settings files (no user hooks or allow rules apply), `--strict-mcp-config` drops MCP,
+  `dontAsk` + `--permission-prompts none` deny anything that would prompt. Limits: it is enforced
+  by the claude CLI itself — a claude version that changes or drops `--restricted` breaks it
+  (flag unknown → claude exits, job fails, so it fails closed, but a semantic change would not);
+  **managed settings and `--settings` still apply**; everything *inside* the project folder is
+  readable, including `.env` / secrets files, and that content goes to Anthropic and back to the
+  hub as result text. Cancel kills the direct `claude` process only (Windows `claude.cmd` shim:
+  the node child may survive).
 - **Chat sync is plain files + in-memory state.** Pending phone permission prompts (`vscodeperm.Store`) and
   the `Debouncer` live in memory: a runner restart drops them (the waiting hook's poll fails → VS Code falls
   back to its own dialog). `peers.json` stores the other runner's API key in clear text - anyone who can read
@@ -1077,6 +1135,9 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 | Thing | Where |
 |---|---|
+| Hub jobs: endpoints / queue / limits | `internal/api/jobs.go`, `internal/jobs/jobs.go` consts (`MaxConcurrent`, `Retention`, `MaxEvents`, `MaxResult`) |
+| Hub jobs: claude flags, tool set, confinement | `jobs.Args` (`readOnlyTools`, `deniedTools`) in `internal/jobs/run.go`; binary: env `RELAY_CLAUDE_CLI` / PATH (`auth.Provider.FindCLI`) |
+| Hub jobs: step wording | `translator.step` / `translator.line` in `internal/jobs/run.go` |
 | Hub uplink (HabitTracker) + `runnerd pair` / hub.json | `internal/uplink` (see `internal/uplink/FLOWS.md`), `cmd/runnerd/pair.go` |
 | Token usage endpoint / flags / cost weights | `internal/tokens` (see `internal/tokens/FLOWS.md`), `internal/api/tokens.go` |
 | Key generation / storage | `internal/config/config.go` |

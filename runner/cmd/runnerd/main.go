@@ -27,6 +27,7 @@ import (
 	"relay/runner/internal/git"
 	"relay/runner/internal/handoff"
 	"relay/runner/internal/idle"
+	"relay/runner/internal/jobs"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/schedule"
@@ -264,6 +265,9 @@ func main() {
 	// successful claude login, idle claude agents are restarted so they read
 	// the new credentials; busy ones are left alone. See internal/auth.
 	srv.Auth = auth.NewManagers()
+	// One-shot headless claude jobs for the hub (/v1/jobs*): read-only,
+	// confined to the project folder. See internal/jobs.
+	srv.Jobs = jobs.New(projects.Dir, auth.Claude().FindCLI)
 	for _, m := range srv.Auth {
 		if m.Provider.ID == "claude" {
 			m.OnSignedIn = func() {
@@ -288,7 +292,7 @@ func main() {
 		if capab.Reached == idle.SleepHibernate {
 			log.Printf("idle: WARNING - hibernation makes this a full power-off; wake needs WoL and a ~60s boot")
 		}
-		mon := idle.NewMonitor(sessions, idle.DefaultShutdowner, idleCfg)
+		mon := idle.NewMonitor(busyStatus{sessions, srv.Jobs}, idle.DefaultShutdowner, idleCfg)
 		mon.BeforeShutdown = beforeShutdown
 		// Sources (b) and (c) of the idle decision - see internal/idle's
 		// package doc. LocalInput is activity.LocalIdleTime directly:
@@ -426,4 +430,17 @@ func runVSCodeHook(event string) {
 		fmt.Fprintln(os.Stderr, msg)
 		os.Exit(2)
 	}
+}
+
+// busyStatus folds running/queued jobs into idle-suspend's busy check:
+// busy if either is, else idle since the later of the two.
+type busyStatus struct{ a, b idle.SessionStatus }
+
+func (s busyStatus) IdleStatus() (bool, time.Time) {
+	ab, at := s.a.IdleStatus()
+	bb, bt := s.b.IdleStatus()
+	if bt.After(at) {
+		at = bt
+	}
+	return ab || bb, at
 }

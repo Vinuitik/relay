@@ -18,6 +18,7 @@ import (
 	"relay/runner/internal/activity"
 	"relay/runner/internal/auth"
 	"relay/runner/internal/handoff"
+	"relay/runner/internal/jobs"
 	"relay/runner/internal/notify"
 	"relay/runner/internal/project"
 	"relay/runner/internal/schedule"
@@ -93,6 +94,10 @@ type Server struct {
 	// RELAY_UPDATE_STATUS, set by keeperd), surfaced as runnerInfo.Update.
 	// "" (runner not started by keeperd) â†’ no update field.
 	UpdateStatusPath string
+	// Jobs runs one-shot headless claude jobs for the hub (/v1/jobs*, see
+	// jobs.go and internal/jobs). nil → 503. Running/queued jobs count as
+	// busy for anyBusy.
+	Jobs *jobs.Manager
 
 	// opsMu guards containerOps and gitOps: per-project background compose
 	// operations (see containers.go). runSync makes them run inline, for
@@ -173,6 +178,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/handoff/pull", s.auth(s.handleHandoffPull))
 	mux.HandleFunc("POST /v1/handoff/takeover", s.auth(s.handleHandoffTakeover))
 	mux.HandleFunc("GET /v1/handoff/lent", s.auth(s.handleHandoffLent))
+	mux.HandleFunc("POST /v1/jobs", s.auth(s.jobsOn(s.handleCreateJob)))
+	mux.HandleFunc("GET /v1/jobs/{id}", s.auth(s.jobsOn(s.handleGetJob)))
+	mux.HandleFunc("DELETE /v1/jobs/{id}", s.auth(s.jobsOn(s.handleCancelJob)))
 	mux.HandleFunc("GET /v1/auth", s.auth(s.handleAuthList))
 	mux.HandleFunc("GET /v1/auth/{provider}", s.auth(s.handleAuthStatus))
 	mux.HandleFunc("POST /v1/auth/{provider}/start", s.auth(s.handleAuthStart))
@@ -218,6 +226,9 @@ type runnerInfo struct {
 // counts: session.StateIdle (a claude-stream-json session between turns,
 // process still alive) must never block a suspend.
 func (s *Server) anyBusy() bool {
+	if s.Jobs != nil && s.Jobs.Active() > 0 {
+		return true
+	}
 	for _, p := range s.Projects.List() {
 		for _, sess := range s.Sessions.ListByProject(p.ID) {
 			if sess.State == session.StateBusy {

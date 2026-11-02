@@ -127,7 +127,7 @@ func NewManager(p Provider) *Manager {
 	return &Manager{
 		Provider:      p,
 		Runner:        execRunner{},
-		FindCLI:       p.findCLI,
+		FindCLI:       p.FindCLI,
 		URLTimeout:    20 * time.Second,
 		CodeTimeout:   10 * time.Minute,
 		FinishTimeout: 60 * time.Second,

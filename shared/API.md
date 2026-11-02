@@ -256,6 +256,43 @@ Schedule {
 Event { kind: "warn" | "sleep" | "wake", date: string, at: string }
 ```
 
+### Job (one-shot headless claude jobs, for the hub)
+
+```
+JobRequest {
+  kind: "map" | "plan" | "kpi",
+  projectId?: string,         // required for map/plan; ignored for kpi
+  prompt: string,             // non-empty, <= 1 MiB; sent to claude on stdin
+  model?: string,             // claude --model (alias or full name)
+  maxTurns?: number           // claude --max-turns; 0/omitted = claude's default
+}
+Job {
+  jobId: string,              // "job_<16 hex>"
+  kind: "map" | "plan" | "kpi",
+  state: "queued" | "running" | "done" | "failed" | "cancelled",
+  events: JobEvent[],         // only seq > ?after, oldest first
+  nextSeq: number,            // highest seq so far (0 = none): pass it back as ?after
+  result?: string,            // done only; > 1 MiB is cut and ends "[truncated by runner: ...]"
+  error?: string,             // failed/cancelled
+  usage?: { inputTokens: number, outputTokens: number }  // inputTokens includes cache reads/writes
+}
+JobEvent {
+  seq: number,                // 1, 2, ... per job
+  at: string,                 // RFC3339
+  kind: "step" | "text" | "error",
+  text: string                // <= 500 bytes. step: "Reading src/Foo.java", "Searching for X",
+                              //   "Finding files *.go", "Started subagent: <description>",
+                              //   "(subagent) Reading ..."; text: Claude's own words;
+                              //   error: "Blocked Read: ..." (a refused tool call) or the failure
+}
+```
+
+map/plan: Claude Code runs in the project folder, **read-only and confined to it** (tools Read,
+Grep, Glob, Agent only; reads outside the folder are refused). kpi: an empty temp folder, **no
+tools** (pure text). At most 2 jobs run at once, the rest wait `queued`. Max 2000 events per job
+(the 2000th says the limit was hit). Jobs live in the runner's memory: kept 1 h after finishing,
+**all lost on runner restart** (GET then returns `404`). See runner/FLOWS.md "Jobs".
+
 ## Endpoints
 
 | Method | Path | Body | Response | Notes |
@@ -304,6 +341,9 @@ Event { kind: "warn" | "sleep" | "wake", date: string, at: string }
 | POST | `/v1/projects/{projectId}/git/pull` | - | `202 GitStatus` | background `pull --ff-only` (never merges; diverged → `lastError`). |
 | POST | `/v1/projects/{projectId}/git/fetch` | - | `202 GitStatus` | background `fetch --prune`. |
 | GET | `/v1/projects/{projectId}/files/content?path=<relative>` | - | `200 FileContent` | returns one file's text content. `400` if `path` is missing/escapes the project dir/is a directory, `404` if it doesn't exist, `413` if over 1MiB, `415` if it looks binary (a null byte in the first 512 bytes). |
+| POST | `/v1/jobs` | `JobRequest` | `202 {jobId}` | queues a one-shot headless claude job (see `Job`). `400` bad kind / empty prompt / map or plan without `projectId`; `404` unknown project; `503` claude CLI not found (`RELAY_CLAUDE_CLI` / PATH) or jobs not enabled. |
+| GET | `/v1/jobs/{id}?after=<seq>` | - | `200 Job` | progress + result; `events` only with `seq > after` (default 0 = all). Poll with `after=nextSeq`. `400` bad `after`; `404` unknown or expired job. |
+| DELETE | `/v1/jobs/{id}` | - | `200 Job` | cancels: a queued job is dropped, a running one's process is killed; state `cancelled`. A finished job is returned unchanged. `404` unknown. |
 | GET | `/v1/auth` | - | `200 AuthStatus[]` | every provider's login state, in a fixed order (statuses run in parallel, ≤10s each). Missing CLI → `cliFound:false`, not an error. |
 | GET | `/v1/auth/{provider}` | - | `200 AuthStatus` | one provider's login state. `404` unknown provider, `503` if its CLI isn't found (`RELAY_<CLI>_CLI` / PATH). |
 | POST | `/v1/auth/{provider}/start` | - | `200 AuthResult` | starts the CLI login (can take up to ~20s): paste-code providers → `{state:"awaiting_code", url}`; device flow → `{state:"awaiting_approval", url, userCode}`, then poll `GET /v1/auth/{provider}` until `signed_in`/`failed` (github: runs `gh auth setup-git` after login). A login already waiting (< 10 min old) is reused. If the CLI never prints a URL: `200 {state:"failed", message}`. The pending login is killed after 10 min. `404` / `503` as above. |

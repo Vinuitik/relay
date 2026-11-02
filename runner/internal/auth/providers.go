@@ -132,8 +132,9 @@ func ParseGcloudStatus(out []byte, _ error) (bool, string) {
 	return false, ""
 }
 
-// findCLI resolves the provider's binary: $CLIEnv, else PATH.
-func (p Provider) findCLI() (string, error) {
+// FindCLI resolves the provider's binary: $CLIEnv, else PATH. Also used by
+// internal/jobs (via runnerd) to locate claude.
+func (p Provider) FindCLI() (string, error) {
 	if v := strings.TrimSpace(os.Getenv(p.CLIEnv)); v != "" {
 		if _, err := os.Stat(v); err != nil {
 			return "", fmt.Errorf("%w: %s=%q: %v", p.notFound(), p.CLIEnv, v, err)
