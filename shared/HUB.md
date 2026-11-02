@@ -11,10 +11,25 @@ browser ──HTTPS(session + 2FA)──▶ HabitTracker ◀──WSS (device to
          /relay/api/devices/{id}/v1/...           /relay/uplink
 ```
 
-## Pairing (once per machine)
+## QR pairing (recommended, phone first)
+1. Machine: `runnerd pair [--hub https://<host>] [--name laptop]` (hub default: `$RELAY_HUB`, else `https://habittrackerdima.me`;
+   the Linux installer runs it at the end)
+   → `POST /relay/pair/start` `{"name":"laptop"}` (no session, no CSRF)
+   → `200 {"claimId":"<20 chars A-Z2-9>","pollSecret":"<43-char base64url>","expiresInSeconds":600}`; `429` too many pending.
+2. Runner prints a QR of `https://<host>/relay/claim/<claimId>` (and the link as text).
+3. Phone opens the link → login + 2FA if needed → "Add *laptop*?" →
+   `GET /relay/api/claims/{id}` → `{"name"}` · Confirm `POST /relay/api/claims/{id}/approve` → `{"deviceId"}` (device created for THIS user) ·
+   "Not mine" `POST /relay/api/claims/{id}/deny` → `204`. All three `404` when expired, used or unknown.
+4. Runner polls every 2s: `POST /relay/pair/poll` `{"claimId","pollSecret"}` → `202 {"status":"pending"}` |
+   `200 {"deviceId","token"}` (once; the claim is then removed) | `404` declined / expired / unknown / wrong secret.
+5. Runner saves `hub.json` as below; an already-running runnerd notices the file within 5s and dials the uplink (no restart).
+- claimId is a bearer link (100 bits), never typed; pollSecret never leaves the machine. Claims are in hub memory only.
+- Confirm is the safety step: scanning someone else's QR would otherwise attach THEIR machine to your account.
+
+## Code pairing (desktop alternative)
 1. Browser (logged in + 2FA): `POST /relay/api/devices/pairing-code` → `{"code":"ABCD2345","expiresInSeconds":600}`.
    8 chars, single use, 10 min, bound to the user.
-2. Machine: `runnerd pair --hub https://<host> --code ABCD2345 [--name laptop]`
+2. Machine: `runnerd pair [--hub https://<host>] --code ABCD2345 [--name laptop]`
    → `POST /relay/pair` `{"code":"ABCD2345","name":"laptop"}` (no session, no CSRF: the code is the credential)
    → `200 {"deviceId":"<id>","token":"<43-char base64url, 32 random bytes>"}`; `400/404` bad or used code.
 3. Runner saves `{"hub":"https://<host>","deviceId":..,"token":..}` to `hub.json` (0600) next to `key.txt`.

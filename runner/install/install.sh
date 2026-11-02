@@ -22,6 +22,9 @@
 #   5. Installs the systemd unit as relay-runner@.service (templated on the
 #      user to run as, so it never runs as root)
 #   6. Enables + starts relay-runner@<user>.service
+#   then prints the Android-app QR, and (if not paired yet) runs
+#   `relay-runner pair`: a second QR - scan it with the phone, tap Confirm in
+#   HabitTracker (Ctrl-C skips)
 #
 # It does NOT touch docker or any project directories.
 
@@ -176,6 +179,20 @@ if [ -n "$KEY" ] && [ -n "$TS_IP" ]; then
 else
     echo "Add to phone app manually: known-runners list, using the key + addr above."
     echo "(QR skipped - need both a generated key and a Tailscale IP to encode)"
+fi
+echo
+# Phone-first HabitTracker pairing (shared/HUB.md "QR pairing"). The running
+# service picks up hub.json by itself, so no restart after this.
+if [ -f "$RUN_HOME/.relay/hub.json" ]; then
+    echo "HabitTracker: already paired ($RUN_HOME/.relay/hub.json) - skipping."
+else
+    echo "Pair with HabitTracker (use this machine from the web / phone app, no Tailscale needed)."
+    echo "Ctrl-C skips it; pair later with: sudo -u $RUN_USER /opt/relay/bin/relay-runner pair"
+    echo
+    trap ':' INT
+    runuser -u "$RUN_USER" -- env RELAY_HOME="$RUN_HOME/.relay" /opt/relay/bin/relay-runner pair \
+        || echo "    pairing skipped - run later: sudo -u $RUN_USER /opt/relay/bin/relay-runner pair"
+    trap - INT
 fi
 echo
 echo "status: systemctl status relay-runner@$RUN_USER"

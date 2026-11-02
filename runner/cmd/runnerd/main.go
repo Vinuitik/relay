@@ -71,8 +71,9 @@ func main() {
 		return
 	}
 
-	// pair --hub URL --code CODE [--name NAME]: pair with a Relay hub
-	// (HabitTracker) and write hub.json; the uplink below then dials it.
+	// pair [--hub URL] [--name NAME] [--code CODE]: pair with a Relay hub
+	// (HabitTracker) by phone QR (default) or browser code, and write
+	// hub.json; a running runner's uplink picks it up without a restart.
 	// See shared/HUB.md and internal/uplink/FLOWS.md.
 	if len(os.Args) > 1 && os.Args[1] == "pair" {
 		if err := runPair(os.Args[2:], cfg.RelayHome, os.Stdout); err != nil {
@@ -321,6 +322,17 @@ func main() {
 	} else if hubCfg != nil {
 		up := &uplink.Client{Config: *hubCfg, Handler: handler, Key: cfg.Key}
 		go up.Run(context.Background())
+	} else {
+		// Not paired yet: start as soon as `runnerd pair` writes hub.json.
+		go func() {
+			hubCfg, err := uplink.WaitForConfig(context.Background(), cfg.RelayHome, 5*time.Second)
+			if err != nil {
+				return
+			}
+			log.Printf("uplink: paired - connecting to %s", hubCfg.Hub)
+			up := &uplink.Client{Config: *hubCfg, Handler: handler, Key: cfg.Key}
+			up.Run(context.Background())
+		}()
 	}
 
 	log.Printf("runner listening on %s (projects root: %s)", cfg.ListenAddr, cfg.ProjectsRoot)

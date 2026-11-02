@@ -1,17 +1,28 @@
 # Hub uplink (runner → HabitTracker)
 
-Files: config.go, pair.go, uplink.go, ../../cmd/runnerd/pair.go, ../../cmd/runnerd/main.go (wiring)
+Files: config.go, pair.go, claim.go, uplink.go, ../../cmd/runnerd/pair.go, ../../cmd/runnerd/main.go (wiring)
 
 Contract: `shared/HUB.md` (hub side lives in HabitTracker `habitTracker/relay/`). Lets a browser reach
 this runner through the hub without Tailscale or inbound ports: the runner dials OUT.
 
 ## Pairing (once per machine)
-`runnerd pair --hub https://<host> --code ABCD2345 [--name laptop]`
+Hub for both flows: `--hub`, else `$RELAY_HUB`, else `uplink.DefaultHub` (`https://habittrackerdima.me`). To change the default: `uplink.DefaultHub` (+ relay.js `DEFAULT_HUB` in HabitTracker).
+
+### QR (recommended, phone first)
+`runnerd pair [--name laptop]` (installed binary: `/opt/relay/bin/relay-runner pair`; install.sh runs it at the end unless hub.json exists)
+→ `runPair()` → `pairByQR()` → `uplink.StartClaim()` → `POST <hub>/relay/pair/start {"name"}` → `Claim{ID, PollSecret, ExpiresIn}`
+→ `qrterminal.GenerateHalfBlock(Claim.URL(hub))` = `<hub>/relay/claim/<id>` + the link as text
+→ `uplink.WaitForApproval()` every `pollEvery` (2s) `POST <hub>/relay/pair/poll {"claimId","pollSecret"}`
+→ `200` → Config · `404` → `ErrClaimGone` (declined / expired / hub restarted) · `202`, other status, network error → retry until `ExpiresIn`
+→ `uplink.Save()` (below).
+
+### Code (desktop alternative)
+`runnerd pair --code ABCD2345 [--name laptop]`
 → `main()` (after `config.Load`, so `RELAY_HOME` exists) → `runPair()` (cmd/runnerd/pair.go; name defaults to `os.Hostname()`)
 → `uplink.Pair()` → `uplink.CheckHubURL()` (https only; plain http allowed only for localhost/loopback)
 → `POST <hub>/relay/pair {"code","name"}` → `200 {"deviceId","token"}` (`400/404` → "wrong, expired or already used")
 → `uplink.Save()` → `$RELAY_HOME/hub.json` mode 0600 `{"hub","deviceId","token"}` → prints `paired as <name>`.
-To change the pairing request/response shape: `uplink.Pair()`. Re-pairing just overwrites hub.json (restart runnerd to pick it up).
+To change the pairing request/response shape: `uplink.Pair()`. Re-pairing just overwrites hub.json. First pairing: a running runnerd picks it up by itself (`uplink.WaitForConfig`, 5s poll, started in `main()` when hub.json is absent). Re-pairing an already-paired runner still needs a restart.
 
 ## Uplink (every runnerd start)
 `main()` → `uplink.Load($RELAY_HOME)` → absent → nothing (not paired) / invalid → log `uplink disabled`
@@ -49,11 +60,20 @@ To change caps/timeouts: `MaxBody`, `readLimit`, `requestTimeout` in uplink.go.
 - **hub.json is read once at startup**: pairing or revoking does not affect a running runnerd until restart.
 - **URL**: hub may carry a path prefix (`https://h/prefix` → `wss://h/prefix/relay/uplink`); `http://localhost` → `ws://`.
 
+- **QR claim is in hub memory:** a hub restart while you're scanning → the runner gets `404` → "declined, expired or the hub restarted"; just run pair again.
+- **Pair must run as the service user:** hub.json goes to that user's `$RELAY_HOME` (default `~/.relay`). Pairing as another user writes a file the service never reads.
+- **`DefaultHub` is hardcoded:** a different HabitTracker host needs `--hub` / `RELAY_HUB`, and relay.js `DEFAULT_HUB` decides whether the browser's command shows `--hub`.
+
 ## Change Index
 | Thing | Where |
 |---|---|
 | Pair subcommand / flags / default name | `cmd/runnerd/pair.go` `runPair()`, dispatch in `cmd/runnerd/main.go` |
 | Pair HTTP call + error text | `uplink.Pair()` (pair.go) |
+| QR claim start / poll / link | `uplink.StartClaim()`, `WaitForApproval()`, `Claim.URL()` (claim.go) |
+| QR poll interval | `pollEvery` (cmd/runnerd/pair.go) |
+| Default hub | `uplink.DefaultHub`, env `RELAY_HUB` |
+| Pick up first pairing without restart | `uplink.WaitForConfig()` + goroutine in `cmd/runnerd/main.go` (5s) |
+| Installer pairing step | `runner/install/install.sh` (end, skipped if hub.json exists) |
 | https-only rule (localhost exception) | `uplink.CheckHubURL()` (config.go) |
 | hub.json location / format / mode | `uplink.FileName`, `Load()`, `Save()` (config.go), dir = `RELAY_HOME` |
 | Uplink URL derivation | `uplinkURL()` (config.go) |
