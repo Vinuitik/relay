@@ -186,6 +186,13 @@ func TestMapJobRunsConfinedAndTranslatesSteps(t *testing.T) {
 		}
 	}
 
+	settings, _ := flagValue(args, "--settings")
+	for _, r := range []string{`"Read(**/.env)"`, `"Read(**/.env.*)"`, `"Read(**/*.pem)"`, `"Read(**/secrets/**)"`, `"Read(**/.git/config)"`} {
+		if !strings.Contains(settings, r) {
+			t.Errorf("--settings %s missing deny %s", settings, r)
+		}
+	}
+
 	// ?after filters events.
 	j2, _ := m.Get(id, 5)
 	if len(j2.Events) != 2 || j2.Events[0].Seq != 6 {
@@ -211,6 +218,9 @@ func TestKPIJobHasNoToolsAndTempDir(t *testing.T) {
 	args, cwd, _ := readLog(t, log)
 	if v, ok := flagValue(args, "--tools"); !ok || v != "" {
 		t.Errorf("--tools = %q (present %v), want empty", v, ok)
+	}
+	if _, ok := flagValue(args, "--settings"); ok {
+		t.Errorf("kpi job got --settings (secret deny list is for map/plan)")
 	}
 	if cwd == proj || !strings.Contains(filepath.Base(cwd), "relay-job-") {
 		t.Errorf("cwd = %s, want a relay-job- temp dir", cwd)

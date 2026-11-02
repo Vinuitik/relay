@@ -288,7 +288,9 @@ JobEvent {
 ```
 
 map/plan: Claude Code runs in the project folder, **read-only and confined to it** (tools Read,
-Grep, Glob, Agent only; reads outside the folder are refused). kpi: an empty temp folder, **no
+Grep, Glob, Agent only; reads outside the folder are refused), and likely-secret files are
+hidden (`.env`, `.env.*` incl. `.env.example`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`,
+`secrets/**`, `.git/config`, `credentials*.json`; `.git/HEAD` and refs stay readable). kpi: an empty temp folder, **no
 tools** (pure text). At most 2 jobs run at once, the rest wait `queued`. Max 2000 events per job
 (the 2000th says the limit was hit). Jobs live in the runner's memory: kept 1 h after finishing,
 **all lost on runner restart** (GET then returns `404`). See runner/FLOWS.md "Jobs".

@@ -21,6 +21,27 @@ const readOnlyTools = "Read,Grep,Glob,Agent"
 // leave them out.
 const deniedTools = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
 
+// secretDeny keeps likely secrets inside the project out of map/plan jobs
+// (their output is stored by the hub). Passed as --settings
+// permissions.deny; Read rules also hide the files from Grep and Glob, in
+// subagents too (verified live). Claude's rule globs have no negation or
+// character classes and deny beats allow, so ".env.*" also blocks
+// .env.example / .env.sample - fail closed. .git/HEAD and refs stay
+// readable (the hub reads the commit sha); .git/config can hold tokens in
+// remote URLs.
+var secretDeny = []string{
+	"Read(**/.env)", "Read(**/.env.*)",
+	"Read(**/*.pem)", "Read(**/*.key)", "Read(**/*.p12)", "Read(**/*.pfx)",
+	"Read(**/id_rsa*)", "Read(**/id_ed25519*)", "Read(**/id_ecdsa*)",
+	"Read(**/secrets/**)", "Read(**/.git/config)", "Read(**/credentials*.json)",
+}
+
+// secretSettings is the --settings JSON for map/plan jobs.
+func secretSettings() string {
+	b, _ := json.Marshal(map[string]any{"permissions": map[string]any{"deny": secretDeny}})
+	return string(b)
+}
+
 // Args builds the claude command line for a job. The prompt goes on stdin
 // (no argv length limit, no "-"-prefixed prompt read as a flag).
 //
@@ -44,6 +65,9 @@ func Args(kind string, req Request) []string {
 		"--disallowedTools", deniedTools,
 		"--permission-mode", "dontAsk", "--permission-prompts", "none",
 		"--no-session-persistence",
+	}
+	if kind != KindKPI {
+		a = append(a, "--settings", secretSettings())
 	}
 	if req.Model != "" {
 		a = append(a, "--model", req.Model)

@@ -531,7 +531,8 @@ To change the step wording: `translator.step`. To change limits: consts in jobs.
 `-p --output-format stream-json --verbose --restricted --strict-mcp-config --tools Read,Grep,Glob,Agent
 --disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch --permission-mode dontAsk
 --permission-prompts none --no-session-persistence [--model M] [--max-turns N]`.
-To change the tool set / flags: `jobs.Args` (`readOnlyTools`, `deniedTools`).
+map/plan also get `--settings` with the secret deny-list (`secretDeny`, see Technology notes).
+To change the tool set / flags: `jobs.Args` (`readOnlyTools`, `deniedTools`, `secretDeny`).
 
 GET /v1/jobs/{id}?after=N → `Manager.Get` (events with seq > N; `nextSeq` = highest seq).
 DELETE /v1/jobs/{id} → `Manager.Cancel` → queued: dropped; running: state `cancelled` + context
@@ -1113,8 +1114,19 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   by the claude CLI itself — a claude version that changes or drops `--restricted` breaks it
   (flag unknown → claude exits, job fails, so it fails closed, but a semantic change would not);
   **managed settings and `--settings` still apply**; everything *inside* the project folder is
-  readable, including `.env` / secrets files, and that content goes to Anthropic and back to the
-  hub as result text. Cancel kills the direct `claude` process only (Windows `claude.cmd` shim:
+  readable **except the secret deny-list** below, and what is read goes to Anthropic and back to
+  the hub as result text.
+- **Secret deny-list for map/plan jobs** (`jobs.secretDeny`, passed as `--settings`
+  `{"permissions":{"deny":[...]}}`): `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`,
+  `id_rsa*` / `id_ed25519*` / `id_ecdsa*`, `secrets/**`, `.git/config`, `credentials*.json`, at any
+  depth. Verified live through runnerd (2026-11-02): all refused ("denied by your permission
+  settings") in the main agent and a subagent, `Grep SECRET_` over the folder found nothing (denied
+  files are skipped), while `.git/HEAD`, `.git/refs/heads/*` and normal files read fine. Limits: a
+  **blocklist** - a secret under any other name (`config/prod.yml`, `.npmrc`, `appsettings.json`)
+  is readable. **`.env.example` / `.env.sample` are blocked too**: Claude's rule globs have no
+  negation (`!(...)`) or character classes (`[^x]` tested, not honoured) and deny beats allow, so
+  `.env.*` can't spare them - fail closed. Deny-rule refusals come back as tool errors, not
+  `permission_denied`, so they show no "Blocked" event. kpi jobs don't get the list (no tools). Cancel kills the direct `claude` process only (Windows `claude.cmd` shim:
   the node child may survive).
 - **Chat sync is plain files + in-memory state.** Pending phone permission prompts (`vscodeperm.Store`) and
   the `Debouncer` live in memory: a runner restart drops them (the waiting hook's poll fails → VS Code falls
@@ -1136,7 +1148,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Thing | Where |
 |---|---|
 | Hub jobs: endpoints / queue / limits | `internal/api/jobs.go`, `internal/jobs/jobs.go` consts (`MaxConcurrent`, `Retention`, `MaxEvents`, `MaxResult`) |
-| Hub jobs: claude flags, tool set, confinement | `jobs.Args` (`readOnlyTools`, `deniedTools`) in `internal/jobs/run.go`; binary: env `RELAY_CLAUDE_CLI` / PATH (`auth.Provider.FindCLI`) |
+| Hub jobs: claude flags, tool set, confinement, secret deny-list | `jobs.Args` (`readOnlyTools`, `deniedTools`, `secretDeny`) in `internal/jobs/run.go`; binary: env `RELAY_CLAUDE_CLI` / PATH (`auth.Provider.FindCLI`) |
 | Hub jobs: step wording | `translator.step` / `translator.line` in `internal/jobs/run.go` |
 | Hub uplink (HabitTracker) + `runnerd pair` / hub.json | `internal/uplink` (see `internal/uplink/FLOWS.md`), `cmd/runnerd/pair.go` |
 | Token usage endpoint / flags / cost weights | `internal/tokens` (see `internal/tokens/FLOWS.md`), `internal/api/tokens.go` |
