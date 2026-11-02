@@ -1,3 +1,5 @@
+# Reference copy. install.sh embeds this unit (piped installs have no file
+# next to them) - change both together.
 [Unit]
 Description=Relay runner (via keeperd)
 After=network-online.target tailscaled.service

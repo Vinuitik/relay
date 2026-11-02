@@ -52,6 +52,10 @@ jobs:
                 -o "dist/$name-$os-$arch$ext" "./cmd/$cmd"
             done
           done
+          # One-command installers (runner/FLOWS.md "Install"): served from
+          # releases/latest/download/, verified like the binaries.
+          # install.ps1 downloads install-keeperd.ps1 for the scheduled tasks.
+          cp install/install.sh install/install.ps1 install/install-keeperd.ps1 dist/
           (cd dist && sha256sum * > SHA256SUMS)
 
       - name: Publish

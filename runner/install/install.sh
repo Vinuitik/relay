@@ -1,199 +1,312 @@
 #!/bin/sh
-# Installs a prebuilt relay-runner binary as a systemd service on Linux.
+# Installs (or upgrades) the Relay runner on a Linux machine with systemd.
 #
-# Usage:
+# One command, from your normal user account (that user will run the runner):
+#   curl -fsSL https://github.com/Vinuitik/relay/releases/latest/download/install.sh | sudo sh
+# Another user:  ... | sudo RELAY_USER=bob sh
+# Local binary (old mode, e.g. a dev build):
 #   sudo ./install.sh /path/to/relay-runner-linux-amd64 youruser
+#   (keeperd is taken from $KEEPERD_BIN, else keeperd[-linux-<arch>] next to
+#   that binary, else downloaded from the latest release)
 #
-# What it does (see the numbered steps below to review before running with
-# sudo - this touches /usr/local/bin, /etc/relay, and systemd unit files):
-#   1. Installs Tailscale (official install.sh, always latest - see
-#      runner/FLOWS.md "Tailscale" for why we don't pin a version) if not
-#      already present, and runs `tailscale up` if not already logged in -
-#      it will print a login URL right here in this terminal and wait; open
-#      that URL on any device to authenticate (a browser click can't be
-#      scripted, that's the one manual step left)
-#   2. Installs Node.js/npm via apt if not already present (apt-based systems
-#      only), then installs the claude / codex CLIs via npm if not present
-#   3. Copies the binary to /opt/relay/bin/relay-runner (owned by the run
-#      user, not root - see the comment at that step for why)
-#   4. Creates /etc/relay/ and drops in runner.env.example (won't overwrite
-#      an existing /etc/relay/runner.env), and auto-fills RELAY_LISTEN_ADDR
-#      with the Tailscale IP from step 1
-#   5. Installs the systemd unit as relay-runner@.service (templated on the
-#      user to run as, so it never runs as root)
-#   6. Enables + starts relay-runner@<user>.service
-#   then prints the Android-app QR, and (if not paired yet) runs
-#   `relay-runner pair`: a second QR - scan it with the phone, tap Confirm in
-#   HabitTracker (Ctrl-C skips)
+# Steps (review before running with sudo - this touches /opt/relay,
+# /etc/relay and /etc/systemd/system):
+#   1. Downloads keeperd + relay-runner for this CPU from the latest GitHub
+#      release and checks them against that release's SHA256SUMS
+#   2. Tailscale is OPTIONAL and never installed here. If it is installed and
+#      logged in, the runner listens on the Tailscale IP (direct phone-app
+#      access + Android QR); otherwise on 127.0.0.1:7777 and the machine is
+#      reached through the HabitTracker hub (step 8)
+#   3. Installs Node.js/npm via apt if missing (apt systems only), then the
+#      claude / codex CLIs via npm if missing
+#   4. Installs both binaries to /opt/relay/bin, owned by the run user (keeperd
+#      replaces them there without root on every release)
+#   5. Writes /etc/relay/runner.env if missing (never overwrites it)
+#   6. Writes the systemd unit relay-runner@.service (runs keeperd as the user)
+#   7. Enables + restarts relay-runner@<user>
+#   8. Unless already paired (hub.json exists): `relay-runner pair` - prints a
+#      QR, scan it with your phone and tap Confirm in HabitTracker. Ctrl-C skips.
+# Re-running it is an upgrade. It does NOT touch docker or project directories.
 #
-# It does NOT touch docker or any project directories.
+# Everything runs inside main(), called on the last line, so a download cut
+# off halfway executes nothing.
 
-set -e
+set -eu
 
-BINARY="$1"
-RUN_USER="$2"
+REPO="${RELAY_UPDATE_REPO:-Vinuitik/relay}"
+BIN_DIR=/opt/relay/bin
+ENV_FILE=/etc/relay/runner.env
+UNIT_FILE=/etc/systemd/system/relay-runner@.service
 
-if [ -z "$BINARY" ] || [ -z "$RUN_USER" ]; then
-    echo "usage: sudo $0 /path/to/relay-runner-linux-amd64 youruser" >&2
-    exit 1
-fi
-if [ "$(id -u)" -ne 0 ]; then
-    echo "must run as root (sudo) - it writes to /usr/local/bin and /etc/systemd" >&2
-    exit 1
-fi
-if ! id "$RUN_USER" >/dev/null 2>&1; then
-    echo "user '$RUN_USER' does not exist - create it first (adduser $RUN_USER) or pass an existing user" >&2
-    exit 1
-fi
+die() { echo "error: $*" >&2; exit 1; }
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# as_user CMD... - run as the service user (pairing / key files must be theirs).
+as_user() {
+    if command -v runuser >/dev/null 2>&1; then
+        runuser -u "$RUN_USER" -- "$@"
+    else
+        sudo -u "$RUN_USER" -- "$@"
+    fi
+}
 
-echo "1/6 checking Tailscale"
-if ! command -v tailscale >/dev/null 2>&1; then
-    echo "    not found - installing via the official script (curl | sh, always latest)"
-    curl -fsSL https://tailscale.com/install.sh | sh
-else
-    echo "    already installed ($(tailscale version | head -n1))"
-fi
-if ! tailscale ip -4 >/dev/null 2>&1; then
-    echo "    not logged in - running 'tailscale up' now. It will print a login URL below:"
-    echo "    open it on ANY device (phone, this laptop, doesn't matter) to authenticate."
-    echo "    This script will wait for you."
-    tailscale up || echo "    'tailscale up' didn't complete - you can run it again by hand later"
-fi
-if ! tailscale ip -4 >/dev/null 2>&1; then
-    echo "    still not logged in - RELAY_LISTEN_ADDR will be left unset"
+detect_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo amd64 ;;
+        aarch64|arm64) echo arm64 ;;
+        armv7*|armv6*|armhf|arm) echo arm ;;
+        *) die "unsupported CPU '$(uname -m)' - releases exist for amd64, arm64, arm" ;;
+    esac
+}
+
+# resolve_tag - the tag "latest" points at right now. Downloading from
+# /releases/download/<tag>/ (not /latest/) keeps the binaries and SHA256SUMS
+# from the same release even if a new one is published mid-install.
+resolve_tag() {
+    url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
+        || die "cannot reach https://github.com/$REPO/releases/latest"
+    tag="${url##*/}"
+    case "$tag" in
+        ""|latest|releases) die "no release found at https://github.com/$REPO/releases" ;;
+    esac
+    echo "$tag"
+}
+
+# fetch NAME... - download release assets NAME into $TMP and verify them.
+fetch() {
+    base="https://github.com/$REPO/releases/download/$TAG"
+    curl -fsSL -o "$TMP/SHA256SUMS" "$base/SHA256SUMS" || die "download $base/SHA256SUMS failed"
+    for name in "$@"; do
+        echo "    $name"
+        curl -fsSL -o "$TMP/$name" "$base/$name" || die "download $base/$name failed"
+        line="$(grep -E "^[0-9a-f]{64}  \*?$name\$" "$TMP/SHA256SUMS" || true)"
+        [ -n "$line" ] || die "$name is not listed in SHA256SUMS of $TAG"
+        (cd "$TMP" && echo "$line" | sha256sum -c - >/dev/null) || die "$name: SHA256 mismatch - not installing"
+    done
+}
+
+# install_bin SRC NAME - atomic replace (rename over a running binary is fine).
+install_bin() {
+    cp "$1" "$BIN_DIR/.$2.new"
+    chmod 0755 "$BIN_DIR/.$2.new"
+    mv -f "$BIN_DIR/.$2.new" "$BIN_DIR/$2"
+}
+
+write_env() {
+    mkdir -p /etc/relay
+    if [ ! -f "$ENV_FILE" ]; then
+        cat > "$ENV_FILE" <<'EOF'
+# Relay runner settings, read by keeperd + relay-runner at service start.
+# After editing: sudo systemctl restart relay-runner@<user>
+# Every setting, documented:
+#   https://github.com/Vinuitik/relay/blob/main/runner/install/runner.env.example
+
+# Where the runner keeps key.txt, hub.json, sessions. Default ~/.relay of the
+# service user.
+#RELAY_HOME=/home/youruser/.relay
+
+# Direct phone-app access over Tailscale: set to this machine's Tailscale IP
+# (tailscale ip -4). Unset = 127.0.0.1:7777, reachable only through the
+# HabitTracker hub (relay-runner pair) or from this machine.
+#RELAY_LISTEN_ADDR=100.x.y.z:7777
+EOF
+        echo "    wrote $ENV_FILE"
+    else
+        echo "    $ENV_FILE exists - kept"
+    fi
+    if [ -n "$TS_IP" ] && grep -q "^#RELAY_LISTEN_ADDR=" "$ENV_FILE" && ! grep -q "^RELAY_LISTEN_ADDR=" "$ENV_FILE"; then
+        sed -i "s/^#RELAY_LISTEN_ADDR=.*/RELAY_LISTEN_ADDR=$TS_IP:7777/" "$ENV_FILE"
+        echo "    RELAY_LISTEN_ADDR set to $TS_IP:7777 (Tailscale)"
+    fi
+}
+
+# Keep in sync with runner/install/relay-runner.service (the reference copy).
+write_unit() {
+    cat > "$UNIT_FILE" <<'EOF'
+[Unit]
+Description=Relay runner (via keeperd)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+# keeperd runs relay-runner as its child and swaps in new releases - see
+# runner/FLOWS.md "keeperd". It exits (code 3) after replacing its own binary;
+# Restart=always brings up the new one.
+ExecStart=/opt/relay/bin/keeperd
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+EnvironmentFile=-/etc/relay/runner.env
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+install_clis() {
+    if ! command -v npm >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1; then
+            echo "    npm not found - installing Node.js via apt (nodejs, npm)"
+            apt-get update -qq </dev/null && apt-get install -y nodejs npm </dev/null
+        else
+            echo "    npm not found and this isn't an apt-based system - skipping CLI install"
+            echo "    (install Node.js, then: npm install -g @anthropic-ai/claude-code @openai/codex)"
+        fi
+    fi
+    if command -v npm >/dev/null 2>&1; then
+        if ! command -v claude >/dev/null 2>&1; then
+            echo "    installing claude CLI (npm install -g @anthropic-ai/claude-code)"
+            npm install -g @anthropic-ai/claude-code </dev/null || echo "    claude CLI install failed - continuing"
+        else
+            echo "    claude CLI already installed"
+        fi
+        if ! command -v codex >/dev/null 2>&1; then
+            echo "    installing codex CLI (npm install -g @openai/codex)"
+            npm install -g @openai/codex </dev/null || echo "    codex CLI install failed - continuing"
+        else
+            echo "    codex CLI already installed"
+        fi
+    fi
+}
+
+main() {
+    LOCAL_BIN=""
+    if [ $# -ge 1 ]; then
+        LOCAL_BIN="$1"
+        [ -f "$LOCAL_BIN" ] || die "$LOCAL_BIN is not a file (usage: sudo $0 [/path/to/relay-runner user])"
+        RUN_USER="${2:-${RELAY_USER:-${SUDO_USER:-}}}"
+    else
+        RUN_USER="${RELAY_USER:-${SUDO_USER:-}}"
+    fi
+
+    [ "$(id -u)" -eq 0 ] || die "must run as root: curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sudo sh"
+    if [ -z "$RUN_USER" ] || [ "$RUN_USER" = root ]; then
+        die "the runner must not run as root. Run this with sudo from your normal account,
+       or name the user: curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sudo RELAY_USER=youruser sh"
+    fi
+    id "$RUN_USER" >/dev/null 2>&1 || die "user '$RUN_USER' does not exist (adduser $RUN_USER first)"
+    if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then
+        die "systemd not found - this installer only supports systemd Linux"
+    fi
+    command -v curl >/dev/null 2>&1 || die "curl not found"
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum not found (coreutils)"
+
+    ARCH="$(detect_arch)"
+    RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "$TMP"' EXIT
+
+    echo "1/8 downloading (user $RUN_USER, linux-$ARCH)"
+    KEEPERD_SRC=""
+    if [ -n "$LOCAL_BIN" ]; then
+        dir="$(dirname "$LOCAL_BIN")"
+        for k in "${KEEPERD_BIN:-}" "$dir/keeperd-linux-$ARCH" "$dir/keeperd"; do
+            [ -n "$k" ] && [ -f "$k" ] && KEEPERD_SRC="$k" && break
+        done
+    fi
+    if [ -z "$LOCAL_BIN" ] || [ -z "$KEEPERD_SRC" ]; then
+        TAG="$(resolve_tag)"
+        echo "    release $TAG"
+        if [ -z "$LOCAL_BIN" ]; then
+            fetch "keeperd-linux-$ARCH" "relay-runner-linux-$ARCH"
+            LOCAL_BIN="$TMP/relay-runner-linux-$ARCH"
+        else
+            fetch "keeperd-linux-$ARCH"
+        fi
+        [ -n "$KEEPERD_SRC" ] || KEEPERD_SRC="$TMP/keeperd-linux-$ARCH"
+    fi
+    echo "    verified"
+
+    echo "2/8 checking Tailscale (optional)"
     TS_IP=""
-else
-    TS_IP="$(tailscale ip -4)"
-    echo "    tailnet IP: $TS_IP"
-fi
-
-echo "2/6 checking claude / codex CLIs"
-if ! command -v npm >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-        echo "    npm not found - installing Node.js via apt (nodejs, npm)"
-        apt-get update -qq && apt-get install -y nodejs npm
+    if command -v tailscale >/dev/null 2>&1; then
+        TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+        if [ -n "$TS_IP" ]; then
+            echo "    logged in, tailnet IP $TS_IP"
+        else
+            echo "    installed but not logged in - skipping (hub only)"
+        fi
     else
-        echo "    npm not found and this isn't an apt-based system - skipping CLI install,"
-        echo "    install Node.js/npm yourself then re-run this script (or install"
-        echo "    manually: npm install -g @anthropic-ai/claude-code @openai/codex)"
+        echo "    not installed - skipping (the HabitTracker hub doesn't need it)"
     fi
-fi
-if command -v npm >/dev/null 2>&1; then
-    if ! command -v claude >/dev/null 2>&1; then
-        echo "    installing claude CLI (npm install -g @anthropic-ai/claude-code)"
-        npm install -g @anthropic-ai/claude-code
-    else
-        echo "    claude CLI already installed"
+
+    echo "3/8 checking claude / codex CLIs"
+    install_clis
+
+    echo "4/8 installing binaries to $BIN_DIR"
+    mkdir -p "$BIN_DIR"
+    install_bin "$KEEPERD_SRC" keeperd
+    install_bin "$LOCAL_BIN" relay-runner
+    chown -R "$RUN_USER":"$RUN_USER" /opt/relay
+    if [ -f /usr/local/bin/relay-runner ]; then
+        echo "    removing stale binary at old location /usr/local/bin/relay-runner"
+        rm -f /usr/local/bin/relay-runner
     fi
-    if ! command -v codex >/dev/null 2>&1; then
-        echo "    installing codex CLI (npm install -g @openai/codex)"
-        npm install -g @openai/codex
-    else
-        echo "    codex CLI already installed"
-    fi
-fi
 
-echo "3/6 installing binary to /opt/relay/bin/relay-runner"
-# NOT /usr/local/bin: the service runs as $RUN_USER, not root (see
-# relay-runner.service). /usr/local/bin is root-owned/root-write-only, so an
-# upgrade there always needs root. /opt/relay/bin is owned by $RUN_USER
-# instead - a fixed path (no home-dir specifier uncertainty in the systemd
-# unit) that the run user can actually write to.
-mkdir -p /opt/relay/bin
-install -m 0755 "$BINARY" /opt/relay/bin/relay-runner
-chown -R "$RUN_USER":"$RUN_USER" /opt/relay
-if [ -f /usr/local/bin/relay-runner ]; then
-    echo "    removing stale binary at old location /usr/local/bin/relay-runner"
-    rm -f /usr/local/bin/relay-runner
-fi
+    echo "5/8 settings ($ENV_FILE)"
+    write_env
+    RELAY_HOME_DIR="$(sed -n 's/^RELAY_HOME=//p' "$ENV_FILE" | tail -n1 | tr -d '"')"
+    [ -n "$RELAY_HOME_DIR" ] || RELAY_HOME_DIR="$RUN_HOME/.relay"
+    LISTEN="$(sed -n 's/^RELAY_LISTEN_ADDR=//p' "$ENV_FILE" | tail -n1 | tr -d '"')"
+    HUB="$(sed -n 's/^RELAY_HUB=//p' "$ENV_FILE" | tail -n1 | tr -d '"')"
 
-echo "4/6 setting up /etc/relay/"
-mkdir -p /etc/relay
-if [ ! -f /etc/relay/runner.env ]; then
-    cp "$SCRIPT_DIR/runner.env.example" /etc/relay/runner.env
-    if [ -n "$TS_IP" ]; then
-        sed -i "s/^#RELAY_LISTEN_ADDR=.*/RELAY_LISTEN_ADDR=$TS_IP:7777/" /etc/relay/runner.env
-        echo "    wrote /etc/relay/runner.env, RELAY_LISTEN_ADDR set to $TS_IP:7777"
-    else
-        echo "    wrote /etc/relay/runner.env from the example - RELAY_LISTEN_ADDR not set"
-        echo "    (Tailscale wasn't logged in yet) - edit it in by hand once you run 'tailscale up'"
-    fi
-elif [ -n "$TS_IP" ] && grep -q "^#RELAY_LISTEN_ADDR=" /etc/relay/runner.env; then
-    # File exists from an earlier run (e.g. before Tailscale was logged in)
-    # and still has the commented-out placeholder - fill it in now that we
-    # have a real IP, instead of leaving the runner stuck on loopback forever.
-    sed -i "s/^#RELAY_LISTEN_ADDR=.*/RELAY_LISTEN_ADDR=$TS_IP:7777/" /etc/relay/runner.env
-    echo "    /etc/relay/runner.env existed but had no RELAY_LISTEN_ADDR set - filled in $TS_IP:7777"
-else
-    echo "    /etc/relay/runner.env already exists, leaving it alone"
-fi
+    echo "6/8 installing systemd unit $UNIT_FILE"
+    write_unit
+    systemctl daemon-reload
 
-echo "5/6 installing systemd unit"
-cp "$SCRIPT_DIR/relay-runner.service" "/etc/systemd/system/relay-runner@.service"
-systemctl daemon-reload
+    echo "7/8 enabling + restarting relay-runner@$RUN_USER"
+    # Always restart, not just enable --now: on a running service enable --now
+    # is a no-op and the old binaries would keep running.
+    systemctl enable "relay-runner@$RUN_USER"
+    systemctl restart "relay-runner@$RUN_USER"
 
-echo "6/6 enabling + restarting relay-runner@$RUN_USER"
-# Always restart, not just enable --now: on an already-running service,
-# enable --now is a no-op that does NOT pick up a binary that step 3 just
-# updated - it keeps executing the OLD binary from its already-open (and by
-# now possibly deleted-on-disk, e.g. old /usr/local/bin/relay-runner)
-# inode. A rerun of this script must always end up actually running what it
-# just installed - found this the hard way when a binary swap never took
-# effect because of exactly this.
-systemctl enable "relay-runner@$RUN_USER"
-systemctl restart "relay-runner@$RUN_USER"
+    KEY=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -f "$RELAY_HOME_DIR/key.txt" ] && KEY="$(cat "$RELAY_HOME_DIR/key.txt")" && break
+        sleep 1
+    done
 
-RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
-KEY_FILE="$RUN_HOME/.relay/key.txt"
-KEY=""
-for i in 1 2 3 4 5; do
-    [ -f "$KEY_FILE" ] && KEY="$(cat "$KEY_FILE")" && break
-    sleep 1
-done
-
-echo
-echo "================================================================"
-echo " RELAY INSTALL COMPLETE"
-echo "================================================================"
-if [ -n "$KEY" ]; then
-    echo " Runner key  : $KEY"
-else
-    echo " Runner key  : not found yet at $KEY_FILE - check:"
-    echo "               journalctl -u relay-runner@$RUN_USER | grep 'RELAY KEY'"
-fi
-if [ -n "$TS_IP" ]; then
-    echo " Runner addr : $TS_IP:7777"
-else
-    echo " Runner addr : NOT SET - Tailscale wasn't logged in during install."
-    echo "               Run 'tailscale up', then set RELAY_LISTEN_ADDR in"
-    echo "               /etc/relay/runner.env and: systemctl restart relay-runner@$RUN_USER"
-fi
-echo "================================================================"
-echo
-if [ -n "$KEY" ] && [ -n "$TS_IP" ]; then
-    echo "Scan this in the Relay app (Add Runner -> Scan QR) instead of typing the key:"
     echo
-    RELAY_HOME="$RUN_HOME/.relay" RELAY_LISTEN_ADDR="$TS_IP:7777" /opt/relay/bin/relay-runner -qr
-else
-    echo "Add to phone app manually: known-runners list, using the key + addr above."
-    echo "(QR skipped - need both a generated key and a Tailscale IP to encode)"
-fi
-echo
-# Phone-first HabitTracker pairing (shared/HUB.md "QR pairing"). The running
-# service picks up hub.json by itself, so no restart after this.
-if [ -f "$RUN_HOME/.relay/hub.json" ]; then
-    echo "HabitTracker: already paired ($RUN_HOME/.relay/hub.json) - skipping."
-else
-    echo "Pair with HabitTracker (use this machine from the web / phone app, no Tailscale needed)."
-    echo "Ctrl-C skips it; pair later with: sudo -u $RUN_USER /opt/relay/bin/relay-runner pair"
+    echo "================================================================"
+    echo " RELAY INSTALL COMPLETE"
+    echo "================================================================"
+    if [ -n "$KEY" ]; then
+        echo " Runner key  : $KEY"
+    else
+        echo " Runner key  : not created yet - journalctl -u relay-runner@$RUN_USER | grep 'RELAY KEY'"
+    fi
+    echo " Runner addr : ${LISTEN:-127.0.0.1:7777 (local only - reach it through the hub)}"
+    echo " status      : systemctl status relay-runner@$RUN_USER"
+    echo " logs        : journalctl -u relay-runner@$RUN_USER -f"
+    echo "================================================================"
     echo
-    trap ':' INT
-    runuser -u "$RUN_USER" -- env RELAY_HOME="$RUN_HOME/.relay" /opt/relay/bin/relay-runner pair \
-        || echo "    pairing skipped - run later: sudo -u $RUN_USER /opt/relay/bin/relay-runner pair"
-    trap - INT
-fi
-echo
-echo "status: systemctl status relay-runner@$RUN_USER"
-echo "logs:   journalctl -u relay-runner@$RUN_USER -f"
+    case "$LISTEN" in
+        ""|127.*|localhost*) ;;
+        *)
+            if [ -n "$KEY" ]; then
+                echo "Android app (direct over Tailscale): Add Runner -> Scan QR:"
+                echo
+                as_user env RELAY_HOME="$RELAY_HOME_DIR" RELAY_LISTEN_ADDR="$LISTEN" "$BIN_DIR/relay-runner" -qr || true
+                echo
+            fi
+            ;;
+    esac
+
+    echo "8/8 pairing with HabitTracker"
+    # shared/HUB.md "QR pairing". The running service picks up hub.json by
+    # itself (no restart). Last step on purpose: Ctrl-C here loses nothing.
+    if [ -f "$RELAY_HOME_DIR/hub.json" ]; then
+        echo "    already paired ($RELAY_HOME_DIR/hub.json) - skipping"
+    else
+        echo "    Ctrl-C skips; pair later with: sudo -u $RUN_USER $BIN_DIR/relay-runner pair"
+        echo
+        trap ':' INT
+        as_user env RELAY_HOME="$RELAY_HOME_DIR" ${HUB:+RELAY_HUB="$HUB"} "$BIN_DIR/relay-runner" pair \
+            || echo "    pairing skipped - run later: sudo -u $RUN_USER $BIN_DIR/relay-runner pair"
+        trap - INT
+    fi
+}
+
+main "$@"

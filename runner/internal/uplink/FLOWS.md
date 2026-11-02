@@ -9,7 +9,7 @@ this runner through the hub without Tailscale or inbound ports: the runner dials
 Hub for both flows: `--hub`, else `$RELAY_HUB`, else `uplink.DefaultHub` (`https://habittrackerdima.me`). To change the default: `uplink.DefaultHub` (+ relay.js `DEFAULT_HUB` in HabitTracker).
 
 ### QR (recommended, phone first)
-`runnerd pair [--name laptop]` (installed binary: `/opt/relay/bin/relay-runner pair`; install.sh runs it at the end unless hub.json exists)
+`runnerd pair [--name laptop]` (installed binary: `/opt/relay/bin/relay-runner pair`; install.sh / install.ps1 run it as their last step unless hub.json exists)
 → `runPair()` → `pairByQR()` → `uplink.StartClaim()` → `POST <hub>/relay/pair/start {"name"}` → `Claim{ID, PollSecret, ExpiresIn}`
 → `qrterminal.GenerateHalfBlock(Claim.URL(hub))` = `<hub>/relay/claim/<id>` + the link as text
 → `uplink.WaitForApproval()` every `pollEvery` (2s) `POST <hub>/relay/pair/poll {"claimId","pollSecret"}`
@@ -73,7 +73,9 @@ To change caps/timeouts: `MaxBody`, `readLimit`, `requestTimeout` in uplink.go.
 | QR poll interval | `pollEvery` (cmd/runnerd/pair.go) |
 | Default hub | `uplink.DefaultHub`, env `RELAY_HUB` |
 | Pick up first pairing without restart | `uplink.WaitForConfig()` + goroutine in `cmd/runnerd/main.go` (5s) |
-| Installer pairing step | `runner/install/install.sh` (end, skipped if hub.json exists) |
+| Installer pairing step (Linux) | `runner/install/install.sh` `main()` step 8 (last; runs as the service user via `runuser`, `RELAY_HOME`/`RELAY_HUB` from runner.env; skipped if hub.json exists) |
+| Installer pairing step (Windows) | `runner/install/install.ps1` step 7 (last; current elevated user, `RELAY_HOME`/`RELAY_HUB` from relay.env; skipped if hub.json exists) |
+| Pair-only command for installed machines | Linux `sudo -u <user> /opt/relay/bin/relay-runner pair`; Windows `& "$env:LOCALAPPDATA\Relay\bin\relay-runner.exe" pair` (see runner/FLOWS.md "Install") |
 | https-only rule (localhost exception) | `uplink.CheckHubURL()` (config.go) |
 | hub.json location / format / mode | `uplink.FileName`, `Load()`, `Save()` (config.go), dir = `RELAY_HOME` |
 | Uplink URL derivation | `uplinkURL()` (config.go) |

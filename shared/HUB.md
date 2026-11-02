@@ -13,7 +13,7 @@ browser ──HTTPS(session + 2FA)──▶ HabitTracker ◀──WSS (device to
 
 ## QR pairing (recommended, phone first)
 1. Machine: `runnerd pair [--hub https://<host>] [--name laptop]` (hub default: `$RELAY_HUB`, else `https://habittrackerdima.me`;
-   the Linux installer runs it at the end)
+   the Linux and Windows installers run it at the end)
    → `POST /relay/pair/start` `{"name":"laptop"}` (no session, no CSRF)
    → `200 {"claimId":"<20 chars A-Z2-9>","pollSecret":"<43-char base64url>","expiresInSeconds":600}`; `429` too many pending.
 2. Runner prints a QR of `https://<host>/relay/claim/<claimId>` (and the link as text).

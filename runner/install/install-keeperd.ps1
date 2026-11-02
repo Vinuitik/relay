@@ -3,6 +3,10 @@
 #
 #   powershell -ExecutionPolicy Bypass -File install-keeperd.ps1
 #
+# install.ps1 (the one-command installer) downloads this file from the same
+# release and runs it as a script block - so it must keep working without
+# $PSScriptRoot and with no arguments.
+#
 # Expects keeperd.exe (and optionally relay-runner.exe) already in
 # %LOCALAPPDATA%\Relay\bin - keeperd downloads the runner itself if missing -
 # and settings in %LOCALAPPDATA%\Relay\relay.env. After this, nothing on

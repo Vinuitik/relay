@@ -17,7 +17,7 @@ suspend-state detection, and the polkit/masked-target/hibernation traps.
 
 main() → config.Load() → generates ~/.relay/key.txt + projects.json if absent, prints key once
 → **`-qr` flag check**: if present, `printPairingQR` and exit, skipping everything below (see
-"Install bootstrap") → api.NewServer(project.Registry, session.Manager) →
+"Install") → api.NewServer(project.Registry, session.Manager) →
 http.ListenAndServe(config.ListenAddr) → goroutine: `idle.NewMonitor(...).Run()` if
 `RELAY_IDLE_SUSPEND_ENABLED=true` (see "Idle-suspend")
 
@@ -587,33 +587,51 @@ wherever the runner actually runs and set `RELAY_FCM_CREDENTIALS` to its path to
 sending. This has not yet been exercised against a real deployed runner + real session finish +
 real phone.
 
-## Install bootstrap (install.sh)
+## Install (one command per OS, hub first)
 
-Files: install.sh
+Files: install/install.sh, install/install.ps1, install/install-keeperd.ps1, install/relay-runner.service,
+.github/workflows/runner-release.yml (publishes all three scripts as release assets, in SHA256SUMS)
 
-`install.sh` → checks `tailscale` → if missing, installs via official
-`curl https://tailscale.com/install.sh | sh` (always latest, not pinned - see
-Technology notes) → if not logged in, runs `tailscale up` itself and blocks,
-printing the login URL to the same terminal you're running install.sh from
-→ checks `claude`/`codex` CLIs (bootstrapping Node/npm via apt first if
-needed) → npm-installs any missing (`@anthropic-ai/claude-code`,
-`@openai/codex`) → installs the `relay-runner` binary + systemd unit,
-auto-filling `RELAY_LISTEN_ADDR` in `/etc/relay/runner.env` from the
-Tailscale IP → prints a boxed summary with the real runner key + address
-read straight from `key.txt`, then (if both a key and a Tailscale IP exist)
-runs `relay-runner -qr` to print a terminal QR code encoding
-`relay://host:port?key=...` — scan it in the app instead of typing 64 hex
-chars by hand.
+**Linux (systemd):** `curl -fsSL https://github.com/Vinuitik/relay/releases/latest/download/install.sh | sudo sh`
+(other user: `... | sudo RELAY_USER=bob sh`)
+→ `main()` (whole script is one function called on the last line: a cut-off download runs nothing)
+→ run user = `RELAY_USER` else `$SUDO_USER`; root / empty → refuse with the rerun command; no systemd → refuse
+→ `detect_arch()` (`uname -m` → amd64 / arm64 / arm) → `resolve_tag()` (HEAD `releases/latest` → redirect → tag)
+→ `fetch()` `keeperd-linux-<arch>` + `relay-runner-linux-<arch>` + `SHA256SUMS` from `releases/download/<tag>/`
+→ `sha256sum -c` per file, mismatch → abort before touching the system
+→ Tailscale **optional, never installed**: `tailscale ip -4` answers → `TS_IP`, else hub only
+→ `install_clis()` (apt nodejs/npm if missing, then `claude` / `codex` via npm if missing)
+→ `install_bin()` copy to `/opt/relay/bin/.<name>.new` + `mv` (atomic, safe over a running binary) → `chown -R <user> /opt/relay`
+→ `write_env()` `/etc/relay/runner.env` only if missing; fills `#RELAY_LISTEN_ADDR` with `<TS_IP>:7777` when Tailscale is up
+→ `write_unit()` (unit text embedded - piped mode has no file next to it) → `systemctl enable` + `restart relay-runner@<user>`
+→ wait ≤10s for `key.txt` → summary box → Android QR (`relay-runner -qr`, as the user) **only if** `RELAY_LISTEN_ADDR` is non-loopback
+→ `hub.json` in the user's `RELAY_HOME` exists? skip : `relay-runner pair` as the user (`runuser`, `trap ':' INT` so Ctrl-C ends only the pair).
+Pair is the last step, so Ctrl-C loses nothing. Re-run = upgrade (keeps runner.env, re-pairs nothing).
+Local mode still works: `sudo ./install.sh /path/to/relay-runner user` - keeperd from `$KEEPERD_BIN`, else
+`keeperd[-linux-<arch>]` next to the binary, else downloaded.
+To change: release source - env `RELAY_UPDATE_REPO`; default env file - `write_env()`; unit - `write_unit()` **and** `relay-runner.service`.
 
-**Login is NOT automated, by necessity, not oversight.** `tailscale up`
-still needs a human to open a URL in a browser somewhere - no amount of
-sudo can click a login link. install.sh gets you as close as possible: it
-runs the command and surfaces the URL inline rather than making you run a
-separate step. `claude auth login` / `codex login` are NOT run by
-install.sh. Claude's login (first or expired) is done from the phone instead -
-see "Sign-in relay" below. Codex login from the phone: `[NOT IMPLEMENTED]`.
+**Windows:** elevated PowerShell, as the user who will run it:
+`irm https://github.com/Vinuitik/relay/releases/latest/download/install.ps1 | iex`
+→ whole script in one `& { }` block (iex has no `$PSScriptRoot`/`param()`; `exit` would close the window)
+→ not admin → print the rerun command, return
+→ API `releases/latest` → tag → download `keeperd-windows-amd64.exe`, `relay-runner-windows-amd64.exe`,
+`install-keeperd.ps1`, `SHA256SUMS` to `%TEMP%` → `Get-FileHash` check
+→ Tailscale optional (PATH or `%ProgramFiles%\Tailscale\tailscale.exe`, `ip -4`)
+→ npm present? install missing `claude` / `codex` (no Node install on Windows)
+→ stop "Relay keeper"/"Relay input watcher" + kill keeperd/relay-runner → copy to `%LOCALAPPDATA%\Relay\bin\{keeperd,relay-runner}.exe`
+(still locked → rename to `.old-<unix>`, keeperd's `clearOld` deletes it later)
+→ `relay.env` if missing; append `RELAY_LISTEN_ADDR=<ts>:7777` if Tailscale up and unset
+→ non-loopback listen → firewall rule "Relay runner (7777)" (see "Windows Firewall" below)
+→ `install-keeperd.ps1` run as a script block (single source of the two scheduled tasks; script block = not blocked by execution policy)
+→ wait ≤15s for `key.txt` → summary → Android QR if non-loopback → `relay-runner pair` unless `hub.json` exists (Ctrl-C skips).
 
-To change what gets auto-installed: `runner/install/install.sh` steps 1-2.
+**Already installed, pair only:** Linux `sudo -u <user> /opt/relay/bin/relay-runner pair`;
+Windows `& "$env:LOCALAPPDATA\Relay\bin\relay-runner.exe" pair`. See `internal/uplink/FLOWS.md`.
+
+**Login is NOT automated.** `claude auth login` / `codex login` are not run by the installers; Claude's login is
+done from the phone - see "Sign-in relay" below. Codex login from the phone: `[NOT IMPLEMENTED]`. Tailscale login:
+up to you (`tailscale up`), then re-run the installer to switch the listen address.
 
 ## Sign-in relay (any CLI login, from the phone)
 
@@ -722,11 +740,11 @@ GitHub Release marked latest.
 
 **Linux (server):** `relay-runner@<user>` systemd unit, `ExecStart=/opt/relay/bin/keeperd`,
 `Restart=always`, settings in `/etc/relay/runner.env`. One-time switch from the old direct-runner
-unit: `sudo install/install-keeperd.sh <user>`. `/opt/relay` must be owned by the user so keeperd
+unit: `sudo install/install-keeperd.sh <user>` (or just re-run `install.sh`, see "Install"). `/opt/relay` must be owned by the user so keeperd
 can replace binaries without root. Logs: `journalctl -u relay-runner@<user> -f`.
 
 **Windows (laptop):** install dir `%LOCALAPPDATA%\Relay` (bin/, acp/, relay.env, keeper.log).
-One-time: `install/install-keeperd.ps1` in an elevated PowerShell → registers
+One-time: `install.ps1` (see "Install"), which runs `install/install-keeperd.ps1` → registers
 - "Relay keeper": **at startup, no logon needed** (S4U - runs as the user without a stored
   password; Claude's login is a plain file so it works; no desktop access), no time limit,
   restart on failure;
@@ -788,10 +806,9 @@ script can do for you without admin rights):**
 Remove-NetFirewallRule -DisplayName "relay-runner-windows-amd64.exe"
 New-NetFirewallRule -DisplayName "Relay runner (7777)" -Direction Inbound -Protocol TCP -LocalPort 7777 -Action Allow -Profile Any
 ```
-`[NOT IMPLEMENTED]`: running this automatically from `install.sh`'s Windows-equivalent setup
-step (there isn't one yet - `install.sh` targets Linux/systemd only, see "Install bootstrap"
-above; the laptop path today is entirely manual: build, run, Startup shortcut, and now this
-firewall rule, each a separate one-off step documented here rather than scripted).
+`install.ps1` adds the Allow rule itself when the runner listens on a non-loopback (Tailscale)
+address. It does NOT remove auto-generated Block rules (Block wins over Allow) - if the phone still
+can't connect, run the `Remove-NetFirewallRule` line above. Hub-only installs (127.0.0.1) need no rule.
 
 ## Dev note: Docker + Git Bash on Windows
 
@@ -976,12 +993,28 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
   ticker forever once enabled. Fine given how cheap `session.Manager.IdleStatus()` is (just
   iterating in-memory session state), but worth knowing if `internal/session` ever grows
   expensive per-call state.
-- **Tailscale is installed via their own official script, deliberately not pinned to a
-  version.** Tailscale controls both the client and the coordination server, and
-  guarantees backward compat for older clients — pinning would only make our install.sh
-  stale, not safer. If Tailscale ever ships a breaking client change this assumption needs
-  revisiting, but as of 2026-09-14 "always latest" is the right default for a single-user
-  deployment like this one.
+- **Piped install trusts GitHub, not a signature.** `curl | sudo sh` / `irm | iex` run whatever
+  `github.com/Vinuitik/relay` serves over TLS. The binaries are checked against `SHA256SUMS` from the
+  **same release** - that catches a corrupted/truncated download, not a compromised repo or release
+  (an attacker who can publish a release publishes matching sums). No GPG/cosign signing.
+  The tag is pinned first (`resolve_tag()` / API `tag_name`) so a release published mid-install
+  can't mix binaries and sums from two releases.
+- **If the repo goes private, both one-liners and fresh installs break** (`releases/latest/download`
+  404s without auth; the scripts have no token support). Installed machines keep running and need
+  `RELAY_GITHUB_TOKEN` for keeperd updates (see "keeperd").
+- **Tailscale is optional and never installed by the scripts** (was: installed + `tailscale up`
+  blocking for a login). Hub pairing replaces it as the default path. With Tailscale up, the runner
+  binds the Tailscale IP: then it is NOT reachable on 127.0.0.1 from the same machine, and the hub
+  still works (the uplink is in-process, no socket).
+- **Windows `install.ps1` is untested on real hardware** (only parsed with pwsh 7 and its
+  download/verify block run on Linux pwsh). Unverified: PowerShell 5.1 behaviour, execution of
+  `install-keeperd.ps1` as a script block, the firewall rule, Ctrl-C during `pair` inside `iex`.
+- **Windows installs for whoever is elevated**: if a standard user elevates with a different admin
+  account, `%LOCALAPPDATA%`, the tasks and `hub.json` all belong to that admin account.
+- **Linux `arm` builds use Go's default GOARM (7)**: ARMv6 boards (Pi Zero/1) are detected as `arm` but
+  the binary won't run there.
+- **Pair needs a release that has `pair`**: an older `relay-runner` ignores the argument and tries to
+  start a second runner (fails on the busy port). Only an issue until the first release after `033bbc9`.
 - **Rerunning install.sh always ends in `systemctl restart`, never just `enable --now`.**
   Caught during testing: on an already-active service, `enable --now` is a no-op that does
   NOT pick up a binary step 3 just overwrote - the process keeps executing its old,
@@ -992,10 +1025,11 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 - **The binary lives at `/opt/relay/bin/relay-runner`, owned by the run user, not
   `/usr/local/bin`.** The service runs as a non-root user (`User=%i`), so keeping the
   binary under a user-owned directory means an upgrade never needs root. install.sh
-  removes any stale binary left at the old `/usr/local/bin` location.
+  removes any stale binary left at the old `/usr/local/bin` location. Hardcoded in the embedded
+  unit (`ExecStart`) and keeperd's `defaultDir()` - change both or neither.
 - **The runner has one external dependency: `github.com/mdp/qrterminal/v3`**, added
-  specifically for `-qr` (terminal QR code rendering for pairing - see "Install
-  bootstrap"). Everything else stayed stdlib-only by design (see below); this was a
+  specifically for `-qr` (terminal QR code rendering for pairing - see "Install").
+  Everything else stayed stdlib-only by design (see below); this was a
   deliberate, small exception because hand-rolling QR encoding (Reed-Solomon error
   correction etc.) isn't something to redo reliably. Pure Go, no cgo - doesn't affect
   the single-static-binary cross-compile property.
@@ -1073,7 +1107,12 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Release build targets / version stamping | `.github/workflows/runner-release.yml` |
 | Update-status file (keeperd → runner → phone) | `internal/updatestatus` (`Record`, `Read`), `cmd/keeperd/main.go` (update loop), env `RELAY_UPDATE_STATUS` |
 | Windows boot task + input watcher | `install/install-keeperd.ps1`, `keeperd -watch-input` (`cmd/keeperd/main.go`) |
-| Linux unit | `install/relay-runner.service`, `install/install-keeperd.sh` |
+| Linux unit | `install.sh` `write_unit()` (embedded) + reference `install/relay-runner.service`, `install/install-keeperd.sh` |
+| One-command installers / steps | `install/install.sh` (`main()`), `install/install.ps1` |
+| Release source for installers | env `RELAY_UPDATE_REPO` (default `Vinuitik/relay`); assets added in `runner-release.yml` Build step |
+| Arch mapping (Linux) | `install.sh` `detect_arch()` |
+| Default runner.env / relay.env written on install | `install.sh` `write_env()`, `install.ps1` step 5 |
+| Windows firewall rule on install | `install.ps1` step 5 ("Relay runner (7777)") |
 | Needs-input push | `cmd/runnerd/main.go` (`sessions.OnNeedsInput`), `notify.NotifySessionNeedsInput` |
 | Auth header check | `internal/api/api.go` middleware |
 | Docker compose invocation (up/down/ps args) | `internal/compose/compose.go` (`UpWith`, `DownWith`, `StatusWith`) |
@@ -1098,7 +1137,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Idle-suspend enable flag | env `RELAY_IDLE_SUSPEND_ENABLED` → `internal/idle/idle.go` (`LoadConfig`) — disabled unless exactly `"true"` |
 | Idle timeout / check interval | env `RELAY_IDLE_TIMEOUT`, `RELAY_IDLE_CHECK_INTERVAL` → `internal/idle/idle.go` (`LoadConfig`, `DefaultTimeout`, `DefaultCheckInterval`) |
 | Pairing QR content/rendering | `cmd/runnerd/main.go` (`printPairingQR`, flag `-qr`) |
-| Tailscale / Node / CLI bootstrap | `runner/install/install.sh` steps 1-2 |
+| Tailscale detection / Node / CLI bootstrap | `install.sh` step 2 + `install_clis()`, `install.ps1` steps 2-3 |
 | Best-effort "runner suspending" push | `cmd/runnerd/main.go` (`Monitor.BeforeShutdown` wiring), `internal/notify/fcm.go` (`NotifyRunnerSuspending`) |
 | Manual suspend endpoint / busy refusal / enable gate | `internal/api/api.go` (`handleSuspend`, `anyBusy`, `Server.Suspend`), `cmd/runnerd/main.go` (`srv.Suspend` wiring) |
 | Idle/busy decision source | `internal/session/session.go` (`Manager.IdleStatus`) — read-only, derived from existing session state |
@@ -1130,7 +1169,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | CLI binary locations | env `RELAY_CLAUDE_CLI` / `RELAY_GH_CLI` / `RELAY_GCLOUD_CLI` → `providers.go` (`Provider.findCLI`) |
 | Restart idle agents after claude login | `internal/session/acp_session.go` (`RestartIdleAgents`), wired in `cmd/runnerd/main.go` (claude `OnSignedIn`) |
 | Fake CLIs in tests | `auth.Runner` / `auth.Proc` interfaces (`internal/auth/auth_test.go`, `providers_test.go`) |
-| Laptop auto-start at boot | `install/install-keeperd.ps1` ("Relay keeper" task, see "keeperd"); `start-relay-runner.ps1` is legacy |
+| Laptop auto-start at boot | `install/install-keeperd.ps1` ("Relay keeper" task, see "keeperd"; run by `install.ps1`); `start-relay-runner.ps1` is legacy |
 | Peers (add/remove, keys) | `PUT/DELETE /v1/peers/{name}`, `internal/handoff/store.go` (`PeerStore`, `$RELAY_HOME/peers.json`) |
 | Handoff release / pull / takeover logic | `internal/handoff/handoff.go` (`Release`, `Pull`, `Takeover`, `Install`) |
 | Handoff error → HTTP status/code | `internal/api/handoff.go` (`writeHandoffError`) |
