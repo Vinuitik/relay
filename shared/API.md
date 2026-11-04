@@ -295,6 +295,61 @@ tools** (pure text). At most 2 jobs run at once, the rest wait `queued`. Max 200
 (the 2000th says the limit was hit). Jobs live in the runner's memory: kept 1 h after finishing,
 **all lost on runner restart** (GET then returns `404`). See runner/FLOWS.md "Jobs".
 
+### Collector / Sensors (KPI collectors on this machine, for the hub)
+
+```
+CollectorInstall {                       // POST /v1/collectors
+  id: string,                            // [A-Za-z0-9_-]{1,64}; same id = new version
+  kpiName: string,
+  manifest: Manifest,
+  files: { "collector.py": string,       // required
+           "fixtures/<case>/expected.json": string,     // ExpectedJson
+           "fixtures/<case>/inputs/<path>": string }    // becomes the case's --inputs dir
+}                                        // ≤ 500 files, ≤ 20 MB total
+Manifest {
+  schedule: "hourly" | "daily HH:MM",    // hourly needs window "1h", daily needs "1d"
+  window: "1h" | "1d",
+  sources: ({type:"activitywatch", buckets:string[]}          // bucket TYPES: "window","web","afk"
+          | {type:"file", glob:string, why:string})[],        // glob: absolute or "~/...", no "**"
+  unit: string, aggregation: "sum" | "last" | "max"           // 1-10 sources
+}
+ExpectedJson { value: number, tolerance?: number, from?: ISO, to?: ISO }
+                                         // no from/to → window 2000-01-01..2100-01-01
+CollectorInfo { id, kpiName, version: number, contractHash: string, approved: bool,
+                state: "pending" | "active" | "failed", lastRunAt: ISO | null, lastError: string }
+TestResult { passed: bool, sandbox: string,
+             cases: [{name, passed, expected: number, got: number | null, error?: string}] }
+RunOutput { value: number, unit: string, evidence: [{label: string, value: any}], sandbox: string }
+Reading { from: ISO, to: ISO, value: number, unit: string, recordedAt: ISO }
+SensorsState {
+  activitywatch: { installed: bool, running: bool, buckets: string[], error?: string },
+  sandbox: { available: bool, kind: "bwrap" | "appcontainer" | "none", error?: string },
+  operation: "" | "installing"
+}
+```
+
+- **contractHash** = lowercase hex sha256 of the canonical JSON of the manifest's
+  `{sources, schedule, window}` exactly as sent: keys sorted at every level, no whitespace, no
+  HTML escaping (`<>&` literal), numbers verbatim. Example input bytes:
+  `{"schedule":"daily 00:10","sources":[{"buckets":["window"],"type":"activitywatch"}],"window":"1d"}`.
+  A new version keeps its approval (and `active`) only if the hash is unchanged.
+- **Collector call**: `python collector.py --inputs <dir> --from <RFC3339> --to <RFC3339>`, inside
+  the sandbox (no network, inputs read-only, only a scratch `/tmp` writable, 128 MB, 60 s; the
+  inputs dir is `/in` on Linux, a host path on Windows). Stdout: `{value, unit, evidence}` (or that
+  JSON as the last line); `value` must be a finite number; evidence is cut to 20 rows, 200 chars.
+- **Inputs**: activitywatch → `<inputs>/aw/<type>.json` = events in [from, to) of the first bucket
+  (sorted ids) starting `aw-watcher-<type>`; no such bucket → source error. file → glob matches
+  copied to `<inputs>/files/<sourceIndex>/<path below the glob's fixed prefix>`, ≤ 200 MB per run;
+  secret paths are refused (`.ssh`, `.gnupg`, `.aws`, keyrings, `secrets/`, `.env*`, `*.pem`,
+  `*.key`, `id_rsa*`…, browser `Cookies`, `Login Data`, `Web Data`, `Local State`, Firefox
+  `key4.db`/`logins.json`/`cookies.sqlite`), also via symlinks.
+- **Schedule**: active + approved collectors only; hourly = local clock hours, daily = the previous
+  local day, run at HH:MM. Missing windows ending in the last 7 days are backfilled oldest first.
+  Source error (ActivityWatch down) → `lastError`, retried after 5 min, state unchanged. Collector
+  error → state `failed`, no more runs until a new version + `activate`. Sandbox unavailable →
+  nothing runs (never unsandboxed).
+- A running collector makes the runner busy (`POST /v1/suspend` → 409, idle-suspend waits).
+
 ## Endpoints
 
 | Method | Path | Body | Response | Notes |
@@ -346,6 +401,16 @@ tools** (pure text). At most 2 jobs run at once, the rest wait `queued`. Max 200
 | POST | `/v1/jobs` | `JobRequest` | `202 {jobId}` | queues a one-shot headless claude job (see `Job`). `400` bad kind / empty prompt / map or plan without `projectId`; `404` unknown project; `503` claude CLI not found (`RELAY_CLAUDE_CLI` / PATH) or jobs not enabled. |
 | GET | `/v1/jobs/{id}?after=<seq>` | - | `200 Job` | progress + result; `events` only with `seq > after` (default 0 = all). Poll with `after=nextSeq`. `400` bad `after`; `404` unknown or expired job. |
 | DELETE | `/v1/jobs/{id}` | - | `200 Job` | cancels: a queued job is dropped, a running one's process is killed; state `cancelled`. A finished job is returned unchanged. `404` unknown. |
+| GET | `/v1/collectors` | - | `200 CollectorInfo[]` | sorted by id. `503` collectors not enabled. |
+| POST | `/v1/collectors` | `CollectorInstall` | `200 {id, version, contractHash, approved}` | installs a new version (see `Collector`). `400` bad id/manifest/files/secret glob. |
+| POST | `/v1/collectors/{id}/test` | - | `200 TestResult` | runs every fixture case in the sandbox; no approval needed (no real data read). `passed` false with 0 cases. `404`; `503` sandbox unavailable. |
+| POST | `/v1/collectors/{id}/approve` | `{contractHash}` | `200 {}` | approves the current version's contract. `409` hash differs from the current version's. |
+| POST | `/v1/collectors/{id}/run` | `{from, to}` (ISO) | `200 RunOutput` | dry run on real snapshots, synchronous (≤ 60 s), not stored. `400` bad/reversed window or > 31 days; `403` not approved; `422 {error}` collector failed (exit, bad output, timeout); `503` sandbox or source unavailable. |
+| POST | `/v1/collectors/{id}/activate` | - | `200 {}` | starts scheduling (also re-activates a `failed` one). `403` not approved. |
+| GET | `/v1/collectors/{id}/readings?since=<ISO>` | - | `200 Reading[]` | readings **recorded** after `since` (all if omitted), oldest first; backfilled old windows therefore still show up. Dedupe on `from`. `400` bad since. |
+| DELETE | `/v1/collectors/{id}` | - | `204` | deletes all versions, approval and unpulled readings. `404`. |
+| GET | `/v1/sensors` | - | `200 SensorsState` | ActivityWatch (live query of localhost:5600) + sandbox availability. |
+| POST | `/v1/sensors/install` | `{name:"activitywatch"}` | `202 {}` | installs ActivityWatch in the background; poll `GET /v1/sensors` until `operation` is "" (failure → `activitywatch.error`). `400` unknown name; `409` already installing; `501` OS not supported (macOS, non-x86_64 Linux). |
 | GET | `/v1/auth` | - | `200 AuthStatus[]` | every provider's login state, in a fixed order (statuses run in parallel, ≤10s each). Missing CLI → `cliFound:false`, not an error. |
 | GET | `/v1/auth/{provider}` | - | `200 AuthStatus` | one provider's login state. `404` unknown provider, `503` if its CLI isn't found (`RELAY_<CLI>_CLI` / PATH). |
 | POST | `/v1/auth/{provider}/start` | - | `200 AuthResult` | starts the CLI login (can take up to ~20s): paste-code providers → `{state:"awaiting_code", url}`; device flow → `{state:"awaiting_approval", url, userCode}`, then poll `GET /v1/auth/{provider}` until `signed_in`/`failed` (github: runs `gh auth setup-git` after login). A login already waiting (< 10 min old) is reused. If the CLI never prints a URL: `200 {state:"failed", message}`. The pending login is killed after 10 min. `404` / `503` as above. |

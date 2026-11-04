@@ -541,6 +541,64 @@ cancel → process SIGKILLed (`exec.CommandContext`, `WaitDelay` 5s).
 Busy: queued/running jobs make `anyBusy` true (runner info `busy`, `POST /v1/suspend` → 409) and
 feed idle-suspend via `busyStatus{sessions, srv.Jobs}` (`Manager.IdleStatus`).
 
+## Collectors (sandboxed KPI collectors for the hub)
+
+Files: internal/collectors/{manifest.go, store.go, sources.go, engine.go, scheduler.go, sensors.go},
+internal/collectors/sandbox/{sandbox.go, sandbox_linux.go, sandbox_other.go} (+ sandbox_windows.go,
+see its own section), internal/api/collectors.go, cmd/runnerd/main.go (`srv.Collectors`,
+`srv.Sensors`, `busyStatus`), scripts/test-collectors.sh. Design: habitTracker
+docs/designs/kpi-sensors.md "Iteration 1". Contract: shared/API.md "Collector / Sensors".
+
+Install → approve → run:
+POST /v1/collectors → `handleInstallCollector` → `Engine.Install` → `store.install`
+(`ParseManifest` + `ContractHash`, `checkFiles`) → `$RELAY_HOME/collectors/<id>/versions/<n>/`
++ `collector.json` (version+1; approval kept only if the hash is unchanged; last 5 versions kept).
+To change the contract fields / canonical form: `ContractHash`, `canonicalJSON` (hub must match).
+POST .../test → `Engine.Test` → per `fixtures/<case>`: copy inputs to a fresh temp dir →
+`Engine.sandboxed` → compare with `expected.json` (`testCase`, tolerance 1e-6 relative).
+POST .../approve → `Engine.Approve` (409 unless hash == current `contractHash`).
+POST .../run → `Engine.Run` (403 unless approved) → `runWindow`: `Sandbox.Available` first (never
+read data we can't sandbox) → `snapshot` (activitywatch: `awSnapshot` GET /api/0/buckets/ +
+/events?start&end&limit=-1 → `in/aw/<type>.json`; file: `fileSnapshot` → `in/files/<i>/...`,
+`denied` per matched + resolved path, `MaxFileBytes`) → `sandboxed` → `sandbox.Run(Spec)` with
+`--inputs <inputsArg> --from --to` → `parseOutput`.
+To change limits: `RunTimeout`, `RunMemMB`, `maxConcurrent`, `MaxFileBytes`, `maxEvidence` consts.
+To change the secret deny-list: `deniedDirs`, `deniedFiles` in sources.go.
+
+Linux sandbox (`sandbox_linux.go`): `available` → `probe` (bwrap on PATH + trial `bwrap ... true`;
+systemd-run trial decides limits; failure re-probed after 1 min) → `run`:
+`systemd-run --user --scope -p MemoryMax=128M -p MemorySwapMax=0 -p CPUQuota=25% -p RuntimeMaxSec`
+→ `bwrap --unshare-all --die-with-parent --new-session --clearenv` + ro `/usr` (+ `/lib*`,`/bin`
+symlinks), ro `/etc/ld.so.cache`+`/etc/localtime` only, `--proc --dev`, tmpfs `/home`, ro
+ScriptDir→`/script`, ro InputsDir→`/in`, rw ScratchDir→`/tmp`, `--remount-ro /` →
+`python /script/collector.py <Args>`. No systemd user manager → `rlimitWrap` (prlimit
+`--as/--cpu/--nofile`, else `sh -c ulimit`). Timeout: ctx → SIGKILL of the process group.
+To change mounts: `mountArgs`; limits: `scopeArgs` / `rlimitWrap`; python outside /usr: `pythonMount`.
+Other OSes (`sandbox_other.go`, macOS): kind "none", always `ErrUnavailable`.
+
+Schedule: `Engine.Start` (runnerd, sets `RELAY_COLLECTOR_PYTHON` from `FindPython` if unset) →
+every `TickEvery` (1 min) `Tick` → active + approved collectors → `runDue` → `dueWindows`
+(hourly local hours / daily previous local day at HH:MM; windows ending within `Backfill` = 7 d;
+oldest first; skip windows already in readings.jsonl) → `runWindow` → ok: `appendReading`;
+`ErrSource`: `lastError`, `retry` 5 min; sandbox unavailable: `lastError`, nothing runs;
+collector error: state `failed` (`setResult`).
+GET .../readings?since → `store.readings` (filter on `recordedAt`).
+Python: `FindPython` = `$RELAY_COLLECTOR_PYTHON` → (Windows) `<RELAY_HOME>/python/python.exe` or
+`<runner dir>/python/python.exe` [embedded python NOT SHIPPED YET, TODO hook] → python3/python on
+PATH (Microsoft Store `WindowsApps` aliases skipped).
+
+Busy: `Engine.begin/end` around each sandboxed run → `Active` (anyBusy: runner info / suspend 409)
+and `IdleStatus` (idle-suspend via `busyStatus{sessions, srv.Jobs, srv.Collectors}`).
+
+Sensors: GET /v1/sensors → `Sensors.State` (AW buckets via `awBuckets`, `awBinary`, sandbox
+`Available`). POST /v1/sensors/install → `StartInstall` (one at a time, async, 15 min) →
+`InstallActivityWatch`: Linux x86_64: download `awLinuxZip` (`AWVersion`) → `unzip` into
+`$RELAY_HOME/sensors/activitywatch/` → `~/.config/autostart/relay-activitywatch.desktop` → start
+`aw-qt` detached (only with DISPLAY/WAYLAND_DISPLAY; else "starts at next login" in `error`).
+Windows: `winget install -e --id ActivityWatch.ActivityWatch --silent`, else `awWinSetup`
+`/VERYSILENT /CURRENTUSER` → HKCU `Run` value → start aw-qt.exe. macOS / other → 501.
+To bump ActivityWatch: `AWVersion` in sensors.go.
+
 ## Git (the phone's Git tab)
 
 Files: internal/git/git.go, internal/api/git.go
@@ -859,6 +917,26 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 ## Technology notes
 
+- **Collector sandbox (Linux) needs unprivileged user namespaces.** Ubuntu 24+ restricts them
+  with AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`); the stock `bwrap` profile
+  allows bwrap (verified on this PC). Docker's default seccomp/AppArmor + masked /proc block it
+  (scripts/test-collectors.sh relaxes them for tests). Without a working bwrap NOTHING runs:
+  `/test`, `/run` → 503, schedule records `lastError`.
+- **Collector limits**: with a systemd user manager they are cgroup limits (MemoryMax +
+  MemorySwapMax=0 - without the swap cap the scope just swaps past 128 MB; CPUQuota=25%). Without
+  one (runner not in a login session, containers) the fallback is rlimits: a virtual-address-space
+  cap (looser, counts mappings not RSS) and CPU seconds, no CPU % cap.
+- **Collector state is files in `$RELAY_HOME/collectors`**: approvals, versions and unpulled
+  readings. Wiping it = re-approve everything and lose unpulled readings (fail-safe). The
+  scheduler backoff (`retry`) is in memory; a restart retries ActivityWatch at once.
+- **ActivityWatch's API is unauthenticated on localhost:5600** (hardcoded `DefaultAWBase`); any
+  local process can read it. Its window watcher needs the desktop session, which is why the Linux
+  install uses an XDG autostart entry, not a systemd user unit. On Wayland, window titles may be
+  missing (upstream limitation). The release zip is fetched over HTTPS from GitHub with no
+  checksum (upstream publishes none).
+- **Readings are pulled, never pushed**: if the hub doesn't pull, readings.jsonl grows forever
+  (no pruning yet, one line per window ≈ 100 B; hourly ≈ 1 MB/year).
+
 - **Git runs as the runner's user with that user's config and credentials.** Commits are authored
   with that user's `user.name`/`user.email` (unset → git refuses, message shown on the phone).
   Push auth = whatever git is configured with (on this PC: gh for github.com, GCM for the rest).
@@ -1147,6 +1225,16 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 
 | Thing | Where |
 |---|---|
+| Collectors: endpoints / error → status | `internal/api/collectors.go` (`writeCollectorError`, `collectorsOn`) |
+| Collectors: manifest rules, contract hash | `internal/collectors/manifest.go` (`validate`, `ContractHash`) |
+| Collectors: storage layout, versions kept, bundle limits | `internal/collectors/store.go` (`keepVersions`, `maxFiles`, `maxBundle`) |
+| Collectors: inputs (ActivityWatch, files), secret deny-list, 200 MB cap | `internal/collectors/sources.go` (`deniedDirs`, `deniedFiles`, `MaxFileBytes`, `DefaultAWBase`) |
+| Collectors: timeout / memory / concurrency / output parsing | `internal/collectors/engine.go` (`RunTimeout`, `RunMemMB`, `maxConcurrent`, `parseOutput`) |
+| Collectors: python interpreter | `FindPython` in engine.go, env `RELAY_COLLECTOR_PYTHON` |
+| Collectors: schedule windows, backfill, retry | `internal/collectors/scheduler.go` (`dueWindows`, `Backfill`, `TickEvery`, `sourceRetry`) |
+| Collector sandbox (Linux): mounts, limits, fallback | `internal/collectors/sandbox/sandbox_linux.go` (`mountArgs`, `scopeArgs`, `rlimitWrap`, `probe`) |
+| Sensors: ActivityWatch version / install / autostart | `internal/collectors/sensors.go` (`AWVersion`, `installLinux`, `installWindows`, `writeAutostart`) |
+| Collector tests incl. real sandbox in Docker | `scripts/test-collectors.sh` |
 | Hub jobs: endpoints / queue / limits | `internal/api/jobs.go`, `internal/jobs/jobs.go` consts (`MaxConcurrent`, `Retention`, `MaxEvents`, `MaxResult`) |
 | Hub jobs: claude flags, tool set, confinement, secret deny-list | `jobs.Args` (`readOnlyTools`, `deniedTools`, `secretDeny`) in `internal/jobs/run.go`; binary: env `RELAY_CLAUDE_CLI` / PATH (`auth.Provider.FindCLI`) |
 | Hub jobs: step wording | `translator.step` / `translator.line` in `internal/jobs/run.go` |
