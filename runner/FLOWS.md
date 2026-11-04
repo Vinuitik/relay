@@ -1262,3 +1262,37 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | "VS Code is waiting" push (delay, debounce) | `api.maybePushWaiting`, `Server.NotifyDelay`, `vscodeperm.NewDebouncer` (`main.go`) |
 | Generic FCM data push | `notify.Notifier.NotifyMessage` (`fcm.go`), `main.push` |
 | Subagent list / messages / "running" window | `internal/session/subagents.go` (`subagentRunningWindow`), `internal/api/subagents.go` |
+
+## Collector sandbox (Windows)
+Files: internal/collectors/sandbox/sandbox.go (shared interface), sandbox_windows.go, sandbox_windows_test.go
+
+`sandbox.Run(ctx, Spec)` → `available()` (cached probe) → `containerSID()` (profile `relay.collector`, 0 capabilities = no network) → `grantShared(PythonDir, ScriptDir)` RX → `grant(InputsDir)` RX, `grant(ScratchDir)` full → `launch()` → `revoke(InputsDir, ScratchDir)`
+- `launch()` → `newJob()` (KILL_ON_JOB_CLOSE, PROCESS_MEMORY=MemoryMB, ACTIVE_PROCESS=1, UI limits incl. clipboard, 50% CPU hard cap best-effort) → `CreateProcess` (STARTUPINFOEX: SECURITY_CAPABILITIES + HANDLE_LIST [+ LPAC opt-out], CREATE_SUSPENDED) → `AssignProcessToJobObject` → `ResumeThread` → wait exit / `Spec.Timeout` / ctx → `TerminateJobObject`.
+- Command: `<Spec.Python> <ScriptDir>\collector.py <Spec.Args...>`, cwd = ScratchDir, env only PATH, PYTHONHOME, PYTHONDONTWRITEBYTECODE, PYTHONIOENCODING, PYTHONNOUSERSITE, SystemRoot, TEMP/TMP=ScratchDir.
+- **No path remapping**: unlike bwrap's `/in`, the engine must pass host paths in `Spec.Args` (`--inputs C:\...\in`). To change: the engine's arg builder, not the sandbox.
+- Timeout → error wrapping `context.DeadlineExceeded`; ctx cancel → `ctx.Err()`; non-zero exit is not an error (`Result.ExitCode`). Stdout/stderr capped at 4 MiB each (`maxOutput`).
+- `available()`: Windows 8+ → python from env `RELAY_COLLECTOR_PYTHON` (else `python.exe` on PATH) → trial `python -c "print(1)"` as **LPAC first**, plain AppContainer if LPAC fails → mode cached in `useLPAC`. Success cached forever, failure re-probed after 1 min (`probeRetryAfter`). Errors wrap `ErrUnavailable`.
+- Tests run only on Windows with `RELAY_COLLECTOR_PYTHON` set: value print, no network (1.1.1.1:443), no read of `%USERPROFILE%\.ssh`, no write to home/%TEMP%, timeout kill.
+
+### Technology Notes
+- **Microsoft Store Python** (`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`) is an app-execution alias into a packaged app under `C:\Program Files\WindowsApps`, which the user cannot re-ACL and which cannot be launched as a child inside our AppContainer. Any path containing `\WindowsApps\` is refused up front with `ErrUnavailable` ("use the embedded python zip"). Recommendation: ship the python.org **embeddable zip** unpacked under the runner's data dir — user-owned (so ACLs can be set), no registry use (`._pth` file), no installer.
+- **python.org installs in `C:\Program Files`** need admin to change the ACL → `grant` fails with access denied. Per-user installs (`%LOCALAPPDATA%\Programs\Python`) work.
+- **LPAC vs AppContainer**: LPAC drops the implicit "ALL APPLICATION PACKAGES" grants (much of the registry, many system dirs), so it is stricter; if Python cannot start under it on a given build, the probe silently falls back to plain AppContainer. Both have no network (no `internetClient` capability). Which one is active is not yet exposed in `/v1/sensors` (`kind` is always "appcontainer").
+- **ACL grants walk the tree**: `SetNamedSecurityInfo` propagates to every file. The Python dir (thousands of files) is granted once per runner process (`sharedGrants`) and never revoked; ScriptDir likewise (shared by concurrent test/run). Inputs/Scratch are revoked after each run, so they must be per-run dirs. A crash mid-run leaves an ACE for the container SID on those dirs (harmless: only our sandbox has that SID; deleted with the dir).
+- **Traversal**: the container gets no ACE on parent dirs; it relies on SeChangeNotifyPrivilege (bypass traverse checking), which AppContainer tokens keep.
+- **Defender / AV**: each run starts a fresh python.exe in a low-trust token; real-time scanning can add 0.5-2 s per start and may flag a new unsigned interpreter dir. Excluding the embedded python dir from scanning is possible but weakens AV; don't do it by default. Controlled Folder Access can block writes to ScratchDir if it sits under Documents — keep it under the runner's data dir.
+- **Job Object**: memory is per-process committed memory (not working set); exceeding it fails allocations (Python `MemoryError`) rather than an OOM kill. `ActiveProcessLimit=1` means collectors cannot spawn subprocesses. CPU cap fails silently inside a parent job that forbids it.
+- **Profile cleanup**: `CreateAppContainerProfile` creates `%LOCALAPPDATA%\Packages\relay.collector\` and a registry entry under HKCU. Uninstall should call `DeleteAppContainerProfile("relay.collector")` (userenv.dll) [NOT IMPLEMENTED]; stale ACEs for the SID stay on the Python dir until it is deleted.
+- **Not verified on real Windows yet**: only `GOOS=windows go build/vet` has been run. First run must execute the tests above.
+
+### Change Index (Windows sandbox)
+| Change | Where |
+|---|---|
+| Profile name | `profileName` in sandbox_windows.go |
+| Probe interpreter | env `RELAY_COLLECTOR_PYTHON` (`PythonEnv`, `probePython`) |
+| LPAC on/off decision | `probe()` → `useLPAC` |
+| Granted rights | `fileReadExec`, `fileAllAccess`, `run()` |
+| Memory / process / CPU / UI limits | `newJob()`, `defaultMemoryMB`, `cpuRatePercent` |
+| Default timeout, output cap | `defaultTimeout`, `maxOutput` |
+| Child environment | `envBlock()` |
+| Failure re-probe interval | `probeRetryAfter` |
