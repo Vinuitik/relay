@@ -17,6 +17,7 @@ import (
 
 	"relay/runner/internal/activity"
 	"relay/runner/internal/auth"
+	"relay/runner/internal/collectors"
 	"relay/runner/internal/handoff"
 	"relay/runner/internal/jobs"
 	"relay/runner/internal/notify"
@@ -98,6 +99,12 @@ type Server struct {
 	// jobs.go and internal/jobs). nil → 503. Running/queued jobs count as
 	// busy for anyBusy.
 	Jobs *jobs.Manager
+	// Collectors runs sandboxed KPI collectors (/v1/collectors*), Sensors
+	// reports/installs their data sources (/v1/sensors*); see
+	// collectors.go and internal/collectors. Either nil → 503. A running
+	// collector counts as busy for anyBusy.
+	Collectors *collectors.Engine
+	Sensors    *collectors.Sensors
 
 	// opsMu guards containerOps and gitOps: per-project background compose
 	// operations (see containers.go). runSync makes them run inline, for
@@ -181,6 +188,16 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/jobs", s.auth(s.jobsOn(s.handleCreateJob)))
 	mux.HandleFunc("GET /v1/jobs/{id}", s.auth(s.jobsOn(s.handleGetJob)))
 	mux.HandleFunc("DELETE /v1/jobs/{id}", s.auth(s.jobsOn(s.handleCancelJob)))
+	mux.HandleFunc("GET /v1/collectors", s.auth(s.collectorsOn(s.handleListCollectors)))
+	mux.HandleFunc("POST /v1/collectors", s.auth(s.collectorsOn(s.handleInstallCollector)))
+	mux.HandleFunc("POST /v1/collectors/{id}/test", s.auth(s.collectorsOn(s.handleTestCollector)))
+	mux.HandleFunc("POST /v1/collectors/{id}/approve", s.auth(s.collectorsOn(s.handleApproveCollector)))
+	mux.HandleFunc("POST /v1/collectors/{id}/run", s.auth(s.collectorsOn(s.handleRunCollector)))
+	mux.HandleFunc("POST /v1/collectors/{id}/activate", s.auth(s.collectorsOn(s.handleActivateCollector)))
+	mux.HandleFunc("GET /v1/collectors/{id}/readings", s.auth(s.collectorsOn(s.handleCollectorReadings)))
+	mux.HandleFunc("DELETE /v1/collectors/{id}", s.auth(s.collectorsOn(s.handleDeleteCollector)))
+	mux.HandleFunc("GET /v1/sensors", s.auth(s.collectorsOn(s.handleSensors)))
+	mux.HandleFunc("POST /v1/sensors/install", s.auth(s.collectorsOn(s.handleInstallSensor)))
 	mux.HandleFunc("GET /v1/auth", s.auth(s.handleAuthList))
 	mux.HandleFunc("GET /v1/auth/{provider}", s.auth(s.handleAuthStatus))
 	mux.HandleFunc("POST /v1/auth/{provider}/start", s.auth(s.handleAuthStart))
@@ -227,6 +244,9 @@ type runnerInfo struct {
 // process still alive) must never block a suspend.
 func (s *Server) anyBusy() bool {
 	if s.Jobs != nil && s.Jobs.Active() > 0 {
+		return true
+	}
+	if s.Collectors != nil && s.Collectors.Active() > 0 {
 		return true
 	}
 	for _, p := range s.Projects.List() {

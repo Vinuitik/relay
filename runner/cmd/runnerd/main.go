@@ -22,6 +22,7 @@ import (
 	"relay/runner/internal/activity"
 	"relay/runner/internal/api"
 	"relay/runner/internal/auth"
+	"relay/runner/internal/collectors"
 	"relay/runner/internal/compose"
 	"relay/runner/internal/config"
 	"relay/runner/internal/git"
@@ -268,6 +269,12 @@ func main() {
 	// One-shot headless claude jobs for the hub (/v1/jobs*): read-only,
 	// confined to the project folder. See internal/jobs.
 	srv.Jobs = jobs.New(projects.Dir, auth.Claude().FindCLI)
+	// KPI collectors (/v1/collectors*, /v1/sensors*): sandboxed scripts over
+	// local snapshots, stored under $RELAY_HOME/collectors, scheduled every
+	// minute. Never run unsandboxed. See internal/collectors.
+	srv.Collectors = collectors.NewEngine(cfg.RelayHome)
+	srv.Sensors = collectors.NewSensors(srv.Collectors)
+	srv.Collectors.Start(context.Background())
 	for _, m := range srv.Auth {
 		if m.Provider.ID == "claude" {
 			m.OnSignedIn = func() {
@@ -292,7 +299,7 @@ func main() {
 		if capab.Reached == idle.SleepHibernate {
 			log.Printf("idle: WARNING - hibernation makes this a full power-off; wake needs WoL and a ~60s boot")
 		}
-		mon := idle.NewMonitor(busyStatus{sessions, srv.Jobs}, idle.DefaultShutdowner, idleCfg)
+		mon := idle.NewMonitor(busyStatus{sessions, srv.Jobs, srv.Collectors}, idle.DefaultShutdowner, idleCfg)
 		mon.BeforeShutdown = beforeShutdown
 		// Sources (b) and (c) of the idle decision - see internal/idle's
 		// package doc. LocalInput is activity.LocalIdleTime directly:
@@ -432,15 +439,19 @@ func runVSCodeHook(event string) {
 	}
 }
 
-// busyStatus folds running/queued jobs into idle-suspend's busy check:
-// busy if either is, else idle since the later of the two.
-type busyStatus struct{ a, b idle.SessionStatus }
+// busyStatus folds running/queued jobs and running collectors into
+// idle-suspend's busy check: busy if any is, else idle since the latest.
+type busyStatus []idle.SessionStatus
 
 func (s busyStatus) IdleStatus() (bool, time.Time) {
-	ab, at := s.a.IdleStatus()
-	bb, bt := s.b.IdleStatus()
-	if bt.After(at) {
-		at = bt
+	var busy bool
+	var at time.Time
+	for _, st := range s {
+		b, t := st.IdleStatus()
+		busy = busy || b
+		if t.After(at) {
+			at = t
+		}
 	}
-	return ab || bb, at
+	return busy, at
 }
