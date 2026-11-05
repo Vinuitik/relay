@@ -86,6 +86,7 @@ FileEntry {
 FileContent {
   path: string         // echoes the requested project-relative path
   content: string      // raw file text (UTF-8/ASCII assumed)
+  hash: string         // sha256 hex of the file bytes; send back as PUT baseHash
 }
 
 BrowseResult {
@@ -385,7 +386,7 @@ SensorsState {
 | DELETE | `/v1/schedule/bookings/{id}` | - | `204` | deletes the whole series. `404` unknown. |
 | PUT | `/v1/schedule/bookings/{id}/occurrences/{date}` | `Day` | `200 Booking` | **this day only**: sets an override. `404` unknown booking or `date` isn't an occurrence; `400` / `409` as above. |
 | DELETE | `/v1/schedule/bookings/{id}/occurrences/{date}` | - | `200 Booking` | **this day only**: cancels it (for a one-off, same as deleting the booking → `204`). `404` as above. |
-| GET | `/v1/projects/{projectId}/files?path=<relative>` | - | `200 FileEntry[]` | lists a directory within the project. `path` omitted/empty = project root. `400` if `path` escapes the project directory (`../`) or isn't a directory. Read-only — see ARCHITECTURE.md "Runner responsibilities". |
+| GET | `/v1/projects/{projectId}/files?path=<relative>` | - | `200 FileEntry[]` | lists a directory within the project. `path` omitted/empty = project root. `400` if `path` escapes the project directory (`../`) or isn't a directory. Writes: only `PUT .../files/content` below. |
 | GET | `/v1/projects/{projectId}/git` | - | `200 GitStatus` | working tree + last network op. Not a repo → `200 {isRepo:false}`. `503` git not installed. |
 | GET | `/v1/projects/{projectId}/git/diff?path=&staged=` | - | `200 GitDiff` | `staged=true`: index vs HEAD; else worktree vs index (whole file for an untracked one). `400` absolute/escaping path. |
 | GET | `/v1/projects/{projectId}/git/log?limit=` | - | `200 GitCommit[]` | HEAD's last `limit` commits (default 30, max 100); `[]` before the first commit. |
@@ -397,7 +398,8 @@ SensorsState {
 | POST | `/v1/projects/{projectId}/git/push` | - | `202 GitStatus` | background; no upstream → `push -u <remote> HEAD`. Poll GET until `operation` is "". |
 | POST | `/v1/projects/{projectId}/git/pull` | - | `202 GitStatus` | background `pull --ff-only` (never merges; diverged → `lastError`). |
 | POST | `/v1/projects/{projectId}/git/fetch` | - | `202 GitStatus` | background `fetch --prune`. |
-| GET | `/v1/projects/{projectId}/files/content?path=<relative>` | - | `200 FileContent` | returns one file's text content. `400` if `path` is missing/escapes the project dir/is a directory, `404` if it doesn't exist, `413` if over 1MiB, `415` if it looks binary (a null byte in the first 512 bytes). |
+| GET | `/v1/projects/{projectId}/files/content?path=<relative>` | - | `200 FileContent` | returns one file's text content and `hash` (sha256 hex of its bytes, for `PUT`). `400` if `path` is missing/escapes the project dir/is a directory, `404` if it doesn't exist, `413` if over 1MiB, `415` if it looks binary (a null byte in the first 512 bytes). |
+| PUT | `/v1/projects/{projectId}/files/content` | `{path, content, baseHash}` | `200 FileContent` | overwrites one **existing** text file (no create/delete/rename), atomically, keeping its permissions. `baseHash` = the `hash` GET returned; `409` if the file changed since. `400` bad/escaping path, not a regular file, missing fields; `404` missing; `413` old or new content over 1MiB; `415` binary (old file or new content). The only file write in the API (decided 2026-11-05; ARCHITECTURE.md "File viewing"). |
 | POST | `/v1/jobs` | `JobRequest` | `202 {jobId}` | queues a one-shot headless claude job (see `Job`). `400` bad kind / empty prompt / map or plan without `projectId`; `404` unknown project; `503` claude CLI not found (`RELAY_CLAUDE_CLI` / PATH) or jobs not enabled. |
 | GET | `/v1/jobs/{id}?after=<seq>` | - | `200 Job` | progress + result; `events` only with `seq > after` (default 0 = all). Poll with `after=nextSeq`. `400` bad `after`; `404` unknown or expired job. |
 | DELETE | `/v1/jobs/{id}` | - | `200 Job` | cancels: a queued job is dropped, a running one's process is killed; state `cancelled`. A finished job is returned unchanged. `404` unknown. |

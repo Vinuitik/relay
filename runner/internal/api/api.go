@@ -4,12 +4,15 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,8 +27,8 @@ import (
 	"relay/runner/internal/project"
 	"relay/runner/internal/schedule"
 	"relay/runner/internal/session"
-	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/tokens"
+	"relay/runner/internal/updatestatus"
 	"relay/runner/internal/usage"
 	"relay/runner/internal/vscodeperm"
 )
@@ -40,11 +43,12 @@ var Build = "dev"
 
 // Server holds the dependencies needed to serve the v1 API.
 type Server struct {
-	Key      string
-	Projects *project.Registry
-	Sessions *session.Manager
-	Compose  ComposeFuncs
-	Devices  *notify.Registry
+	fileWriteMu sync.Mutex // serializes PUT files/content (hash check + rename)
+	Key         string
+	Projects    *project.Registry
+	Sessions    *session.Manager
+	Compose     ComposeFuncs
+	Devices     *notify.Registry
 	// Handoff moves chats between runners (/v1/peers, /v1/handoff/*, see
 	// internal/handoff). nil â†’ those endpoints return 503.
 	Handoff *handoff.Service
@@ -176,6 +180,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/projects/{projectId}/git/fetch", s.auth(s.handleGitFetch))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files", s.auth(s.handleListFiles))
 	mux.HandleFunc("GET /v1/projects/{projectId}/files/content", s.auth(s.handleFileContent))
+	mux.HandleFunc("PUT /v1/projects/{projectId}/files/content", s.auth(s.handleWriteFile))
 	mux.HandleFunc("GET /v1/peers", s.auth(s.handleListPeers))
 	mux.HandleFunc("PUT /v1/peers/{name}", s.auth(s.handleSetPeer))
 	mux.HandleFunc("DELETE /v1/peers/{name}", s.auth(s.handleDeletePeer))
@@ -672,6 +677,12 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 type fileContent struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	Hash    string `json:"hash"` // sha256 hex of the bytes; PUT sends it back as baseHash
+}
+
+func contentHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // handleFileContent returns a text file's contents, per shared/API.md. Read
@@ -711,7 +722,94 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnsupportedMediaType, "binary file, not viewable")
 		return
 	}
-	writeJSON(w, http.StatusOK, fileContent{Path: relPath, Content: string(data)})
+	writeJSON(w, http.StatusOK, fileContent{Path: relPath, Content: string(data), Hash: contentHash(data)})
+}
+
+type fileWrite struct {
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	BaseHash string `json:"baseHash"`
+}
+
+// handleWriteFile overwrites one existing text file, per shared/API.md. Same
+// scope and limits as handleFileContent (project dir, <=1MiB, text only) and
+// never creates, deletes or renames. Optimistic lock: baseHash must match the
+// file's current hash (what GET returned), else 409 - someone (Claude, VS Code)
+// changed it since it was opened. Atomic: temp file in the same dir + rename,
+// keeping the original permissions.
+func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
+	var req fileWrite
+	r.Body = http.MaxBytesReader(w, r.Body, 2*maxViewableFileSize) // JSON escaping can ~double the text
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Path == "" || req.BaseHash == "" {
+		writeError(w, http.StatusBadRequest, "path and baseHash are required")
+		return
+	}
+	full, err := s.Projects.ResolvePath(r.PathValue("projectId"), req.Path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	info, err := os.Lstat(full)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "path not found")
+		return
+	}
+	if !info.Mode().IsRegular() {
+		writeError(w, http.StatusBadRequest, "not a regular file")
+		return
+	}
+	newData := []byte(req.Content)
+	if info.Size() > maxViewableFileSize || len(newData) > maxViewableFileSize {
+		writeError(w, http.StatusRequestEntityTooLarge, "file too large to edit (>1MiB)")
+		return
+	}
+	if isBinary(newData) {
+		writeError(w, http.StatusUnsupportedMediaType, "content looks binary")
+		return
+	}
+	s.fileWriteMu.Lock()
+	defer s.fileWriteMu.Unlock()
+	cur, err := os.ReadFile(full)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if isBinary(cur) {
+		writeError(w, http.StatusUnsupportedMediaType, "binary file, not editable")
+		return
+	}
+	if contentHash(cur) != req.BaseHash {
+		writeError(w, http.StatusConflict, "file changed since you opened it")
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(full), "."+filepath.Base(full)+".relay-*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer os.Remove(tmp.Name()) // no-op after a successful rename
+	if _, err := tmp.Write(newData); err != nil {
+		tmp.Close()
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := os.Chmod(tmp.Name(), info.Mode().Perm()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := os.Rename(tmp.Name(), full); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, fileContent{Path: req.Path, Content: req.Content, Hash: contentHash(newData)})
 }
 
 func isBinary(data []byte) bool {

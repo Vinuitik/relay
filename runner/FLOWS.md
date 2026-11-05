@@ -485,10 +485,10 @@ To change what's excluded from a browse listing (e.g. dotfiles): `project.go`'s 
 To change root listing: `roots_unix.go` / `roots_windows.go`.
 To change the start folder: `documentsDir()` in `project.go`, `knownDocumentsDir()` in `roots_*.go`.
 
-## File viewing (read-only, scoped to a project dir)
+## File viewing and editing (scoped to a project dir)
 
 Files: internal/project/project.go (`ResolvePath`), internal/api/api.go (`handleListFiles`,
-`handleFileContent`)
+`handleFileContent`, `handleWriteFile`)
 
 GET /v1/projects/{id}/files?path=<rel> → `Registry.ResolvePath(id, path)` (rejects absolute
 paths and any `../` escape via `filepath.Rel` + prefix check) → `os.ReadDir` → `FileEntry[]`
@@ -496,10 +496,13 @@ paths and any `../` escape via `filepath.Rel` + prefix check) → `os.ReadDir` �
 
 GET /v1/projects/{id}/files/content?path=<rel> → same `ResolvePath` scoping → refuses a
 directory, anything over `maxViewableFileSize` (1MiB), and anything that looks binary (a null
-byte in the first 512 bytes, `isBinary`) → `FileContent{path, content}`.
+byte in the first 512 bytes, `isBinary`) → `FileContent{path, content, hash}` (`contentHash` = sha256 hex).
 
-Read-only by design, per ARCHITECTURE.md "Runner responsibilities" - no write/delete/rename
-(the only way the phone changes files is git, see "Git")endpoint exists or is planned for v1.
+PUT /v1/projects/{id}/files/content {path, content, baseHash} → `handleWriteFile` → `ResolvePath` →
+`Lstat` (regular file only: no dirs, symlinks, create) → size/binary checks on old + new →
+`fileWriteMu` → re-read, `contentHash != baseHash` → 409 (changed since opened, e.g. by Claude) →
+temp file next to it + chmod to the old mode + `os.Rename` (atomic) → `FileContent` with the new hash.
+No create/delete/rename (ARCHITECTURE.md "Runner responsibilities").
 
 To change the size cap: `internal/api/api.go` (`maxViewableFileSize`).
 To change path-escape rules: `internal/project/project.go` (`Registry.ResolvePath`).
@@ -1310,7 +1313,7 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Local keyboard/mouse input detection (Windows) | `internal/activity/local_windows.go` (`LocalIdleTime`, Win32 `GetLastInputInfo`) |
 | Local input detection unsupported on Linux | `internal/activity/local_unix.go` (`ErrUnsupported`) |
 | Idle decision combining sources (a)/(b)/(c) + resumeFloor | `internal/idle/idle.go` (`Monitor.tick`) |
-| File listing / content endpoints | `internal/api/api.go` (`handleListFiles`, `handleFileContent`) |
+| File listing / content / edit endpoints | `internal/api/api.go` (`handleListFiles`, `handleFileContent`, `handleWriteFile`) |
 | Project-path escape guard | `internal/project/project.go` (`Registry.ResolvePath`) |
 | Viewable file size cap | `internal/api/api.go` (`maxViewableFileSize`) |
 | Register existing folder as a project | `internal/project/project.go` (`RegisterExisting`), `internal/api/api.go` (`handleCreateProject`) |

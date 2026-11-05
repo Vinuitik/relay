@@ -54,8 +54,9 @@ wanting to keep a laptop on all day to bridge the gap.
     not inferred from CPU/session presence) — this is what the idle-suspend script checks
     before ever suspending
   - file reading scoped to that project's directory only, never the whole filesystem
-  - git (status/diff/stage/commit/branches/push/pull) on the project's repo - the one way the
-    phone changes project files (decided 2026-10-04; there is still no general file write)
+  - file editing: overwrite one existing text file (<=1MiB) in the project, with an optimistic
+    hash lock (decided 2026-11-05, for trivial fixes by hand); no create/delete/rename
+  - git (status/diff/stage/commit/branches/push/pull) on the project's repo
   - sign-in relay: runs CLI logins (claude, gh, gcloud) and hands the browser step to the phone
   - create-new-project endpoint (scaffolds a dir, registers it)
 - **Wake path:** Android app sends WoL magic packet over the tailnet to the target machine's
