@@ -35,6 +35,8 @@ type AgentChat struct {
 	UpdatedAt      string `json:"updatedAt"`
 	// SessionID is the Relay session already showing this chat, "" if none.
 	SessionID string `json:"sessionId,omitempty"`
+	// ContextTokens: see Session.ContextTokens.
+	ContextTokens int `json:"contextTokens,omitempty"`
 }
 
 // maxListPages bounds session/list paging (claude-agent-acp pages hold 1000).
@@ -93,6 +95,7 @@ func (m *Manager) ListAgentChats(projectID, provider string) ([]AgentChat, error
 			Title:          in.Title,
 			UpdatedAt:      in.UpdatedAt,
 			SessionID:      linked[in.SessionID],
+			ContextTokens:  contextTokensFor(in.SessionID),
 		})
 	}
 	return chats, nil

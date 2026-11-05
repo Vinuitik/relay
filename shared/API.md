@@ -46,6 +46,7 @@ Session {
     title: string, toolKind: string,
     options: {optionId, name, kind}[]   // kind: allow_once | allow_always | reject_once | reject_always
   }
+  contextTokens?: number  // tokens the next message re-sends (last reply's input + cache write + cache read, from Claude's transcript); absent = unknown. Cost per message grows with it.
 }
 
 Message {
@@ -362,7 +363,7 @@ SensorsState {
 | GET | `/v1/browse?path=<absolute>` | - | `200 BrowseResult` | lists subdirectories of `path` — **unscoped**, unlike the project file-viewing endpoints, since its purpose is finding a directory to register via `POST /v1/projects {path}` before any project-level scoping exists. `path` omitted/empty lists filesystem roots; `path=~` lists the user's Documents folder (falls back to home) - where the picker opens. `400` if `path` isn't absolute or isn't a directory. |
 | GET | `/v1/projects/{projectId}/sessions` | - | `200 Session[]` | includes finished sessions not yet purged by weekly cleanup |
 | POST | `/v1/projects/{projectId}/sessions` | `{provider: string, agentSessionId?: string}` | `201 Session` | spawns the configured CLI command for `provider`, scoped to the project dir. With `agentSessionId` (one from `agent-chats`): opens that saved agent conversation instead, its history replayed into `messages` (a few seconds); `200` with the existing session if one already shows it. `400` if the provider isn't ACP. |
-| GET | `/v1/projects/{projectId}/agent-chats?provider=claude` | - | `200 {chats: AgentChat[]}` | the agent's own saved conversations for the project folder, newest first - including ones started in VS Code / the CLI on the runner's machine. `AgentChat = {agentSessionId, title, updatedAt, sessionId?}`; `sessionId` = the live Relay session already showing it. Spawns the agent to list (~1-2s). `provider` default `claude`; `400` non-ACP provider. |
+| GET | `/v1/projects/{projectId}/agent-chats?provider=claude` | - | `200 {chats: AgentChat[]}` | the agent's own saved conversations for the project folder, newest first - including ones started in VS Code / the CLI on the runner's machine. `AgentChat = {agentSessionId, title, updatedAt, sessionId?, contextTokens?}` (see Session); `sessionId` = the live Relay session already showing it. Spawns the agent to list (~1-2s). `provider` default `claude`; `400` non-ACP provider. |
 | GET | `/v1/sessions?state=<s1,s2>` | - | `200 Session[]` | sessions across **all** projects (the app's "Needs you" strip). `state` optional, comma list (e.g. `waiting,busy`); omitted = every state. Sorted: `waiting` first, then `busy`, then the rest; within each, `lastActiveAt` (else `createdAt`) newest first. |
 | GET | `/v1/sessions/{sessionId}` | - | `200 Session` | full transcript so far. If the chat was continued elsewhere (VS Code) since, the transcript is first reloaded from the agent's own copy - that one call then takes a few seconds. |
 | POST | `/v1/sessions/{sessionId}/message` | `{text: string}` | `202 {}` | appends a user message and starts a turn; the reply streams into `messages` (poll `GET`). `409` while the previous turn is still running. |

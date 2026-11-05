@@ -177,6 +177,18 @@ that moved to the other machine is blocked on its next prompt (stale-tab guard),
 can be answered from the phone ("VS Code permission prompts on the phone"), and chats can move between
 machines ("Moving chats between machines"). [NOT IMPLEMENTED: fork banner for same-machine concurrent typing.]
 
+### Context size (cost visibility)
+
+Files: internal/session/context.go (`contextTokensFor`, `lastContextTokens`), session.go (`record.snapshot`), shared.go (`ListAgentChats`)
+Every Session snapshot and AgentChat → `contextTokensFor(agent session id)` → `findTranscript` (cached path) → `os.Stat`;
+same size+mtime → cached value, else read the last 512 KiB → last `"type":"assistant"` line's usage
+input + cache_creation + cache_read → `contextTokens`. 0/absent = unknown (no transcript, or a huge tool result hides the line).
+The web Chats tab colours it and warns before resuming a big chat (habitTracker relay-chats.js).
+To change the tail size: `contextTailBytes`.
+
+Subagent model: runnerd `main()` sets `CLAUDE_CODE_SUBAGENT_MODEL=sonnet` if unset, inherited by every agent it spawns
+(Opus subagents drained the 5h plan window, 2026-11-05). Override: set it in relay.env / `/etc/relay/runner.env`.
+
 ### Moving chats between machines (laptop <-> server handoff)
 
 Files: internal/handoff/handoff.go (`Release`, `Status`, `Copy`, `Install`, `Pull`, `Takeover`,

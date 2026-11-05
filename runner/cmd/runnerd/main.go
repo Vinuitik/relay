@@ -53,6 +53,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	// Subagents Claude starts from Relay chats run on Sonnet unless the env says otherwise:
+	// an Opus subagent re-reads its own context every call and drained the 5h plan window
+	// (2026-11-05). Inherited by every agent the runner spawns. Override in relay.env / runner.env.
+	if _, set := os.LookupEnv("CLAUDE_CODE_SUBAGENT_MODEL"); !set {
+		os.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "sonnet")
+	}
 
 	// -qr: print the pairing QR code (address + key) to the terminal and
 	// exit, instead of starting the server. Lets a headless/CLI-only

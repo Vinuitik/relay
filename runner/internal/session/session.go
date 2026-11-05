@@ -115,6 +115,9 @@ type Session struct {
 	// agent message, each flattened to one line and truncated. "" if none.
 	Title   string `json:"title"`
 	Preview string `json:"preview"`
+	// ContextTokens is what the next message re-sends to the model (see
+	// context.go); 0 = unknown or not an ACP chat.
+	ContextTokens int `json:"contextTokens,omitempty"`
 }
 
 // ProviderCommand is the command run for a given provider name.
@@ -581,8 +584,11 @@ func (r *record) appendMessage(msg Message) {
 
 func (r *record) snapshot() Session {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	return cloneSession(r.data)
+	out := cloneSession(r.data)
+	sid := r.acpSession // set once at start
+	r.mu.Unlock()
+	out.ContextTokens = contextTokensFor(sid)
+	return out
 }
 
 func cloneSession(s Session) Session {
