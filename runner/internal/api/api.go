@@ -21,6 +21,7 @@ import (
 	"relay/runner/internal/activity"
 	"relay/runner/internal/auth"
 	"relay/runner/internal/collectors"
+	"relay/runner/internal/credentials"
 	"relay/runner/internal/handoff"
 	"relay/runner/internal/jobs"
 	"relay/runner/internal/notify"
@@ -109,6 +110,10 @@ type Server struct {
 	// collector counts as busy for anyBusy.
 	Collectors *collectors.Engine
 	Sensors    *collectors.Sensors
+	// Credentials holds KPI API credentials for collectors' "http" sources
+	// (/v1/credentials*, see credentials.go and internal/credentials).
+	// nil → 503. Values are never returned or logged.
+	Credentials *credentials.Store
 
 	// opsMu guards containerOps and gitOps: per-project background compose
 	// operations (see containers.go). runSync makes them run inline, for
@@ -203,6 +208,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /v1/collectors/{id}", s.auth(s.collectorsOn(s.handleDeleteCollector)))
 	mux.HandleFunc("GET /v1/sensors", s.auth(s.collectorsOn(s.handleSensors)))
 	mux.HandleFunc("POST /v1/sensors/install", s.auth(s.collectorsOn(s.handleInstallSensor)))
+	mux.HandleFunc("GET /v1/credentials", s.auth(s.credentialsOn(s.handleListCredentials)))
+	mux.HandleFunc("PUT /v1/credentials/{name}", s.auth(s.credentialsOn(s.handlePutCredential)))
+	mux.HandleFunc("DELETE /v1/credentials/{name}", s.auth(s.credentialsOn(s.handleDeleteCredential)))
 	mux.HandleFunc("GET /v1/auth", s.auth(s.handleAuthList))
 	mux.HandleFunc("GET /v1/auth/{provider}", s.auth(s.handleAuthStatus))
 	mux.HandleFunc("POST /v1/auth/{provider}/start", s.auth(s.handleAuthStart))
