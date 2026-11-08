@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"relay/runner/internal/collectors/sandbox"
+	"relay/runner/internal/credentials"
 )
 
 // ErrCollector means the collector itself misbehaved (non-zero exit, bad
@@ -65,6 +66,10 @@ type Engine struct {
 	HTTP    *http.Client
 	Now     func() time.Time
 	Loc     *time.Location // scheduling time zone; nil = time.Local
+	// Credentials backs "http" sources (nil → those sources fail with
+	// ErrSource). HTTPTransport overrides safeTransport (tests only).
+	Credentials   *credentials.Store
+	HTTPTransport http.RoundTripper
 
 	mu    sync.Mutex // store
 	st    store
@@ -139,6 +144,11 @@ func (e *Engine) Install(req InstallRequest) (Info, error) {
 	defer e.mu.Unlock()
 	if err := os.MkdirAll(e.st.dir, 0o700); err != nil {
 		return Info{}, err
+	}
+	if mf, _, err := ParseManifest(req.Manifest); err == nil {
+		if err := e.checkHTTPCredentials(mf); err != nil {
+			return Info{}, err
+		}
 	}
 	m, err := e.st.install(req)
 	return m.info(), err

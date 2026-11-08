@@ -70,7 +70,8 @@ func denied(p string) string {
 
 // snapshot builds the inputs dir for one run: /in/aw/<type>.json per
 // activitywatch bucket type, /in/files/<sourceIndex>/<path below the glob's
-// fixed prefix> per file source.
+// fixed prefix> per file source, /in/http/<sourceIndex>.json|.txt per http
+// source (httpsource.go).
 func (e *Engine) snapshot(ctx context.Context, m Manifest, from, to time.Time, in string) error {
 	var fileBytes int64
 	for i, s := range m.Sources {
@@ -85,6 +86,10 @@ func (e *Engine) snapshot(ctx context.Context, m Manifest, from, to time.Time, i
 				return err
 			}
 			fileBytes += n
+		case "http":
+			if err := e.httpSnapshot(ctx, i, s, from, to, filepath.Join(in, "http")); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

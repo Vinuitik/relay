@@ -29,12 +29,18 @@ func badf(format string, a ...any) error {
 
 // Source is one declared input. type "activitywatch": Buckets are bucket
 // types ("window", "web", "afk"). type "file": Glob (absolute or "~/...",
-// filepath.Match syntax, no "**") and Why (shown to the user).
+// filepath.Match syntax, no "**") and Why (shown to the user). type
+// "http": Credential (name in the runner's credential store), URL (https,
+// host == the credential's host, optional {from}/{to} placeholders, see
+// httpsource.go), Method ("" or "GET") and Why.
 type Source struct {
-	Type    string   `json:"type"`
-	Buckets []string `json:"buckets,omitempty"`
-	Glob    string   `json:"glob,omitempty"`
-	Why     string   `json:"why,omitempty"`
+	Type       string   `json:"type"`
+	Buckets    []string `json:"buckets,omitempty"`
+	Glob       string   `json:"glob,omitempty"`
+	Credential string   `json:"credential,omitempty"`
+	URL        string   `json:"url,omitempty"`
+	Method     string   `json:"method,omitempty"`
+	Why        string   `json:"why,omitempty"`
 }
 
 // Manifest is a collector's manifest.json. Only Schedule, Window and
@@ -125,6 +131,10 @@ func (m *Manifest) validate() error {
 			}
 			if strings.TrimSpace(s.Why) == "" {
 				return badf("source %d: file source needs why", i)
+			}
+		case "http":
+			if err := checkHTTPSource(s); err != nil {
+				return badf("source %d: %v", i, err)
 			}
 		default:
 			return badf("source %d: unknown type %q", i, s.Type)

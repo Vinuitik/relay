@@ -25,6 +25,7 @@ import (
 	"relay/runner/internal/collectors"
 	"relay/runner/internal/compose"
 	"relay/runner/internal/config"
+	"relay/runner/internal/credentials"
 	"relay/runner/internal/git"
 	"relay/runner/internal/handoff"
 	"relay/runner/internal/idle"
@@ -279,6 +280,10 @@ func main() {
 	// local snapshots, stored under $RELAY_HOME/collectors, scheduled every
 	// minute. Never run unsandboxed. See internal/collectors.
 	srv.Collectors = collectors.NewEngine(cfg.RelayHome)
+	// KPI credentials (/v1/credentials*) for collectors' "http" sources:
+	// $RELAY_HOME/credentials.json (0600). The engine reads the same store.
+	srv.Credentials = credentials.Open(cfg.RelayHome)
+	srv.Collectors.Credentials = srv.Credentials
 	srv.Sensors = collectors.NewSensors(srv.Collectors)
 	srv.Collectors.Start(context.Background())
 	for _, m := range srv.Auth {
