@@ -1,8 +1,6 @@
 #!/bin/sh
 set -e
-# No user session here (we run as root). Enable the user unit for ALL users;
-# each user's manager starts it at their next login.
-if [ "$1" = configure ] && command -v systemctl >/dev/null 2>&1; then
-    systemctl --global enable relay-runner.service >/dev/null 2>&1 || true
-fi
+# Nothing to enable here: the user unit is enabled per user by relay-connect
+# (menu entry / first-login autostart), so other accounts on this machine
+# never get a runner they did not ask for.
 exit 0

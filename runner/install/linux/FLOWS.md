@@ -14,8 +14,8 @@ Local: `build-deb.sh 0.1.0 amd64 <dir with keeperd-linux-amd64 relay-runner-linu
 To change: workflow job `linux-deb`, `build-deb.sh`.
 
 ## Install (root, package only)
-dpkg → files: `/opt/relay/bin/{keeperd,relay-runner}`, `/opt/relay/libexec/{relay-seed,relay-connect}`, `/usr/lib/systemd/user/relay-runner.service`, `/usr/share/applications/relay-connect.desktop`, `/etc/xdg/autostart/relay-connect.desktop`, `/usr/bin/relay-runner` symlink → `postinst`: `systemctl --global enable relay-runner.service` (works with no user session; every user's manager starts it at next login).
-Remove: `prerm` → `systemctl --global disable`; user data stays.
+dpkg → files: `/opt/relay/bin/{keeperd,relay-runner}`, `/opt/relay/libexec/{relay-seed,relay-connect}`, `/usr/lib/systemd/user/relay-runner.service`, `/usr/share/applications/relay-connect.desktop`, `/etc/xdg/autostart/relay-connect.desktop`, `/usr/bin/relay-runner` symlink → `postinst`: nothing (the user unit is enabled per user by `relay-connect`, so other accounts never get a runner).
+Remove: `prerm` → `systemctl --global disable` (cleans up installs from before per-user enable); user data stays. Per-user enable symlinks in `~/.config/systemd/user` are left behind (harmless, unit file is gone).
 
 ## First run (as the user, in their session)
 `relay-connect [--if-unpaired]` → exits if `--if-unpaired` and `~/.relay/hub.json` exists → `relay-seed` → `loginctl enable-linger` (best effort: runs at boot) → `systemctl --user enable` + `restart relay-runner` → `relay-runner pair --open` (same call as Windows' finish page) → log `~/.local/state/relay/connect.log`, `notify-send` on failure.

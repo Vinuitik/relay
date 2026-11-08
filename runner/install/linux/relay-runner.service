@@ -1,5 +1,5 @@
 # systemd USER unit, shipped in the .deb at /usr/lib/systemd/user/.
-# Enabled for every user by postinst (`systemctl --global enable`); starts at
+# Enabled per user by /opt/relay/libexec/relay-connect (never globally); starts at
 # that user's next login, or immediately via /opt/relay/libexec/relay-connect.
 [Unit]
 Description=Relay runner (via keeperd)

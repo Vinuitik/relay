@@ -30,7 +30,7 @@ fi
 
 if [ -f "$HOME_DIR/hub.json" ]; then
     say "This computer is already connected."
-    xdg-open https://habittrackerdima.me/relay >/dev/null 2>&1 || true
+    xdg-open "${RELAY_HUB_URL:-https://habittrackerdima.me}/relay" >/dev/null 2>&1 || true
     exit 0
 fi
 
