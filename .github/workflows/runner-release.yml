@@ -19,6 +19,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.build.outputs.tag }}
     defaults:
       run:
         working-directory: runner
@@ -33,9 +35,11 @@ jobs:
         run: go test ./...
 
       - name: Build
+        id: build
         run: |
           TAG="runner-${GITHUB_SHA::7}"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           mkdir -p dist
           # tag stamped into both binaries: the runner reports it in
           # /v1/runner/info, keeperd compares it against the latest release.
@@ -63,3 +67,42 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NOTES: ${{ github.event.head_commit.message }}
         run: gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --notes "$NOTES" --latest
+
+  # Windows GUI installer: wraps install.ps1 in an Inno Setup wizard so a
+  # non-technical user downloads one .exe (unsigned -> SmartScreen warning).
+  # Served at releases/latest/download/Relay-Setup.exe.
+  windows-installer:
+    needs: release
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist | Out-Null
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --dir dist `
+            --pattern keeperd-windows-amd64.exe `
+            --pattern relay-runner-windows-amd64.exe `
+            --pattern install-keeperd.ps1
+          Copy-Item runner/install/install.ps1 dist/
+          Get-ChildItem dist
+
+      - name: Build Relay-Setup.exe
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc "/DAppVersion=$env:TAG" "/DSrcDir=$PWD\dist" "/O$PWD" runner/install/installer/relay-setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          $h = (Get-FileHash Relay-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  Relay-Setup.exe" | Out-File -Encoding ascii Relay-Setup.exe.sha256
+
+      - name: Upload to release
+        shell: pwsh
+        run: gh release upload $env:TAG Relay-Setup.exe Relay-Setup.exe.sha256 --repo $env:GITHUB_REPOSITORY --clobber
