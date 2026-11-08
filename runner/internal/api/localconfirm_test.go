@@ -107,3 +107,34 @@ func TestLocalConfirmAllowDeny(t *testing.T) {
 	}
 	_ = declined
 }
+
+func TestLocalURLAndListener(t *testing.T) {
+	for in, want := range map[string]string{"100.64.1.2:7777": "http://127.0.0.1:7777/local/confirm", "127.0.0.1:7777": "http://127.0.0.1:7777/local/confirm", "0.0.0.0:9": "http://127.0.0.1:9/local/confirm", ":9": "http://127.0.0.1:9/local/confirm"} {
+		if got := LocalConfirmURL(in); got != want {
+			t.Errorf("url(%s) = %s", in, got)
+		}
+	}
+	for in, want := range map[string]string{"100.64.1.2:7777": "127.0.0.1:7777", "127.0.0.1:7777": "", "[::1]:7777": "", "0.0.0.0:7777": "", "[::]:7777": "", ":7777": ""} {
+		if got := LocalListenAddr(in); got != want {
+			t.Errorf("listen(%s) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLocalRoutesOnlyLocal(t *testing.T) {
+	_, _, _, _ = confirmServer(t)
+	s, _, _, _ := confirmServer(t)
+	h := s.LocalRoutes()
+	for _, p := range []string{"/v1/health", "/v1/packages", "/v1/runner/info"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, localReq("GET", p, "", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s = %d, want 404", p, rec.Code)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, localReq("GET", "/local/confirm", "", nil))
+	if rec.Code != 200 {
+		t.Errorf("/local/confirm = %d", rec.Code)
+	}
+}

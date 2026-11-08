@@ -362,6 +362,15 @@ func main() {
 		}()
 	}
 
+	// A specific non-loopback bind (Tailscale IP) never listens on loopback:
+	// serve /local/* (and nothing else) on 127.0.0.1:<port> too.
+	if la := api.LocalListenAddr(cfg.ListenAddr); la != "" {
+		go func() {
+			if err := http.ListenAndServe(la, srv.LocalRoutes()); err != nil {
+				log.Printf("local confirm listener on %s: %v", la, err)
+			}
+		}()
+	}
 	log.Printf("runner listening on %s (projects root: %s)", cfg.ListenAddr, cfg.ProjectsRoot)
 	if err := http.ListenAndServe(cfg.ListenAddr, handler); err != nil {
 		log.Fatalf("serve: %v", err)

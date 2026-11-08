@@ -106,13 +106,7 @@ func (s *Server) handleLocalConfirmDecide(w http.ResponseWriter, r *http.Request
 // NotifyPendingInstall shows a desktop notification that an install waits
 // for confirmation. Best effort: any failure is ignored.
 func NotifyPendingInstall(p collectors.Pending, listenAddr string) {
-	url := "http://" + listenAddr + "/local/confirm"
-	if host, port, err := net.SplitHostPort(listenAddr); err == nil {
-		if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
-			host = "localhost"
-		}
-		url = "http://" + net.JoinHostPort(host, port) + "/local/confirm"
-	}
+	url := LocalConfirmURL(listenAddr)
 	msg := "A KPI collector wants to install software. Review it at " + url
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -135,4 +129,37 @@ func NotifyPendingInstall(p collectors.Pending, listenAddr string) {
 			t.Stop()
 		}()
 	}
+}
+
+// LocalConfirmURL is where the person at this computer opens the confirm
+// page: always 127.0.0.1 (the local listener), never the Tailscale address.
+func LocalConfirmURL(listenAddr string) string {
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		port = "7777"
+	}
+	return "http://" + net.JoinHostPort("127.0.0.1", port) + "/local/confirm"
+}
+
+// LocalListenAddr: the extra 127.0.0.1:<port> listener needed when
+// listenAddr binds one specific non-loopback IP ("" = none needed:
+// wildcard, empty host or loopback already reach 127.0.0.1).
+func LocalListenAddr(listenAddr string) string {
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() {
+		return ""
+	}
+	return net.JoinHostPort("127.0.0.1", port)
+}
+
+// LocalRoutes serves ONLY /local/* (for the loopback-only listener).
+func (s *Server) LocalRoutes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /local/confirm", s.localOnly(s.handleLocalConfirmPage))
+	mux.HandleFunc("POST /local/confirm/{token}", s.localOnly(s.handleLocalConfirmDecide))
+	return mux
 }
