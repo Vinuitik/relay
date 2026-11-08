@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Relay — connect this computer
+Comment=First-login prompt to link this computer to HabitTracker
+Exec=/opt/relay/libexec/relay-connect --if-unpaired
+Icon=network-workgroup
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

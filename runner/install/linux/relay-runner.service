@@ -1,0 +1,21 @@
+# systemd USER unit, shipped in the .deb at /usr/lib/systemd/user/.
+# Enabled for every user by postinst (`systemctl --global enable`); starts at
+# that user's next login, or immediately via /opt/relay/libexec/relay-connect.
+[Unit]
+Description=Relay runner (via keeperd)
+
+[Service]
+Type=simple
+# keeperd self-updates its binaries, so it runs from a copy in the user's home
+# (writable) seeded from the package's /opt/relay/bin (root-owned) - see relay-seed.
+Environment=RELAY_KEEPER_DIR=%h/.local/share/relay
+EnvironmentFile=-%h/.config/relay/runner.env
+ExecStartPre=/opt/relay/libexec/relay-seed
+ExecStart=%h/.local/share/relay/bin/keeperd
+# Not on-failure: keeperd exits 3 on purpose after replacing itself.
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Relay — connect this computer
+Comment=Start Relay and link this computer to HabitTracker
+Exec=/opt/relay/libexec/relay-connect
+Icon=network-workgroup
+Terminal=false
+Categories=Network;

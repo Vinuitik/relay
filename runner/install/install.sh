@@ -1,4 +1,5 @@
 #!/bin/sh
+# Advanced/headless path. Desktop users: the .deb (runner/install/linux/, see FLOWS.md) needs no terminal.
 # Installs (or upgrades) the Relay runner on a Linux machine with systemd.
 #
 # One command, from your normal user account (that user will run the runner):
