@@ -248,3 +248,12 @@ func TestUplinkURL(t *testing.T) {
 		}
 	}
 }
+
+func TestDispatchMarksUplinkContext(t *testing.T) {
+	var marked bool
+	c := &Client{Key: "k", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { marked = FromUplink(r.Context()) })}
+	c.dispatch(context.Background(), Frame{Type: "req", ID: "1", Path: "/v1/health"})
+	if !marked {
+		t.Fatal("dispatched request not marked as uplink")
+	}
+}

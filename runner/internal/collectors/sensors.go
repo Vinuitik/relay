@@ -58,6 +58,7 @@ type Sensors struct {
 	mu        sync.Mutex
 	operation string
 	lastErr   string
+	idle      chan struct{} // closed when operation clears
 }
 
 func NewSensors(e *Engine) *Sensors {
@@ -93,24 +94,55 @@ func (s *Sensors) StartInstall(name string) error {
 	if err := installSupported(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.operation != "" {
-		return ErrBusy
+	release, err := s.acquire(context.Background(), false)
+	if err != nil {
+		return err
 	}
-	s.operation, s.lastErr = "installing", ""
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
-		err := s.Install(ctx, s.Dir)
-		s.mu.Lock()
-		s.operation = ""
-		if err != nil {
-			s.lastErr = err.Error()
-		}
-		s.mu.Unlock()
+		release(s.Install(ctx, s.Dir))
 	}()
 	return nil
+}
+
+// acquire takes the one install lock (operation == "installing"). wait=false
+// → ErrBusy when held (StartInstall); wait=true blocks until free or ctx is
+// done (the relay package manager). release records err as the last error.
+func (s *Sensors) acquire(ctx context.Context, wait bool) (release func(err error), err error) {
+	for {
+		s.mu.Lock()
+		if s.operation == "" {
+			s.operation, s.lastErr = "installing", ""
+			s.mu.Unlock()
+			return func(err error) {
+				s.mu.Lock()
+				s.operation = ""
+				if err != nil {
+					s.lastErr = err.Error()
+				}
+				if s.idle != nil {
+					close(s.idle)
+					s.idle = nil
+				}
+				s.mu.Unlock()
+			}, nil
+		}
+		if !wait {
+			s.mu.Unlock()
+			return nil, ErrBusy
+		}
+		if s.idle == nil {
+			s.idle = make(chan struct{})
+		}
+		ch := s.idle
+		s.mu.Unlock()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 }
 
 func installSupported() error {

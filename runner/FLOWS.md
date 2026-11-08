@@ -620,16 +620,29 @@ cmd/runnerd/main.go (`srv.Packages`). Design: habitTracker docs/designs/kpi-mult
 Manifest `requires` [{manager,id,why}] (max 5) → `checkRequires` (per-manager id regex `requireIDRe`, `relayIDs`);
 hashed by `ContractHash` only when non-empty.
 POST /v1/collectors/{id}/approve → `Engine.Approve` (hash) → `Engine.Requires` → `Packages.Require` →
-`ConfirmInstall` hook (nil = allow; agent ⑥ local-confirm gate goes here) → per package `runInstall`:
-`Manager.Present` true → ledger row `installedByRelay=false` (never uninstalled); else `Manager.Install` →
-row `installedByRelay=true` → `packages.json` (0600, tmp+rename). 202 `{state:"installing"}` while running.
+unmet requires (not installed/installing in the ledger) → `ConfirmInstall` (bool hook, nil = allow) →
+`Packages.Confirm` queue (`Confirms.Request`, random 32-hex token) → 202 `{state:"awaiting_confirm"}` (`ErrAwaitingConfirm`).
+Person on THIS computer opens GET /local/confirm (notify-send / powershell toast points there) → POST /local/confirm/{token}
+`{decision}` → `Confirms.Decide`: allow → `Packages.install` → per package `runInstall`: `Manager.Present` true → row
+`installedByRelay=false` (never uninstalled); else `Manager.Install` → row `installedByRelay=true` → `packages.json`
+(0600, tmp+rename), requiresState installing → ready. Deny → `Packages.OnDeclined` → `Engine.Fail`: collector state `failed`,
+lastError "Install was declined on this computer". Nothing unmet → installs/records at once (200 / 202 installing).
+Pending entries are in memory: a runner restart drops them (approve again).
 DELETE /v1/collectors/{id} → `Packages.Release` (drops from `usedBy`, never uninstalls).
 GET /v1/packages → `Packages.List`; POST /v1/packages/uninstall → `Packages.Uninstall`
 (404 unknown, 400 not ours, 409 `ErrInUse`, else 202 async). GET /v1/collectors adds `requiresState`
 (`RequiresState`). GET /v1/runner/info adds os, arch, managers (`AvailableManagers`: relay + PATH lookup).
-Managers: only `relayManager` (wraps `Sensors.Install`; Uninstall removes `sensors/activitywatch` + autostart, Linux only,
-does not stop a running aw-qt). To add winget/brew/flatpak/pip: implement `Manager`, register in `NewPackages`.
-[NOT IMPLEMENTED] winget/brew/flatpak/pip managers, local confirm page.
+Managers (registered in `NewPackages` for those `AvailableManagers()` finds on PATH): `relayManager` (wraps `Sensors.Install`;
+Install/Uninstall take the same lock as `Sensors.StartInstall`: `Sensors.acquire`, wait vs ErrBusy; Uninstall first kills
+aw-qt/aw-server/watchers (`stopAW`: pkill -x / taskkill), then Linux: dir + autostart; Windows: winget uninstall or Inno
+`unins000.exe`, HKCU Run value, sensors dir) and `cmdManager` (winget/brew/flatpak/pip; argv built in `cmdManager.argv`,
+run via the `execRun` seam: no shell, `mgrTimeout` 10 min, stderr → one sentence). brew/flatpak/pip pass `--` before the id.
+flatpak adds the user flathub remote first; pip uses the venv `$RELAY_HOME/venv`, created on demand (`python3 -m venv`).
+Loopback listener: when `RELAY_LISTEN_ADDR` is a specific non-loopback IP (Tailscale), runnerd also listens on `127.0.0.1:<same port>` serving only `/local/*` (`Server.LocalRoutes()`); the notification always points at `api.LocalConfirmURL` (127.0.0.1). To change: `api.LocalListenAddr()`.
+`/local/confirm*` guard: `Server.localOnly`/`isLocalRequest` refuses (403) uplink-marked requests (`uplink.WithUplink`, set in
+`Client.dispatch`), non-loopback RemoteAddr or Host, and any X-Forwarded-For/Forwarded/X-Real-Ip header; POST needs JSON content type.
+No X-Relay-Key there: being on the machine is the auth. To change a manager's commands: `cmdManager.argv`;
+timeout: `mgrTimeout`; notification text: `api.NotifyPendingInstall`; confirm page: `confirmPage`.
 
 Technology notes: ledger is one JSON file read once and cached in memory (single runner process); only
 `installed` rows persist, installing/failed are lost on restart. Wiping `$RELAY_HOME` forgets what Relay
@@ -1315,6 +1328,8 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Collector sandbox (Linux): mounts, limits, fallback | `internal/collectors/sandbox/sandbox_linux.go` (`mountArgs`, `scopeArgs`, `rlimitWrap`, `probe`) |
 | Sensors: ActivityWatch version / install / autostart | `internal/collectors/sensors.go` (`AWVersion`, `installLinux`, `installWindows`, `writeAutostart`) |
 | Package ledger: file, states, uninstall rules, confirm hook | `internal/collectors/packages.go` (`Packages`, `ConfirmInstall`, `Uninstall`, `relayManager`) |
+| Package managers: argv, timeout, venv | `internal/collectors/packages.go` (`cmdManager.argv`, `mgrTimeout`, `execRun`) |
+| Local confirm: queue, page, loopback/uplink guard, notification | `internal/collectors/confirm.go` (`Confirms`), `internal/api/localconfirm.go` (`isLocalRequest`, `confirmPage`, `NotifyPendingInstall`) |
 | Manifest `requires`: id regexes, max, relay allowlist | `internal/collectors/manifest.go` (`requireIDRe`, `relayIDs`, `maxRequires`) |
 | Collector tests incl. real sandbox in Docker | `scripts/test-collectors.sh` |
 | KPI credentials: endpoints / storage / host + auth rules | `internal/api/credentials.go`, `internal/credentials/credentials.go` (`ValidHost`, `deniedHostSuffixes`, `deniedHeaders`, `FileName`) |

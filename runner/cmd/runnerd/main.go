@@ -286,6 +286,10 @@ func main() {
 	srv.Collectors.Credentials = srv.Credentials
 	srv.Sensors = collectors.NewSensors(srv.Collectors)
 	srv.Packages = collectors.NewPackages(cfg.RelayHome, srv.Sensors)
+	// Installs wait for a yes on this computer (/local/confirm, never via the hub).
+	srv.Packages.Confirm = collectors.NewConfirms()
+	srv.Packages.Confirm.OnPending = func(p collectors.Pending) { api.NotifyPendingInstall(p, cfg.ListenAddr) }
+	srv.Packages.OnDeclined = func(id string) { srv.Collectors.Fail(id, "Install was declined on this computer") }
 	srv.Collectors.Start(context.Background())
 	for _, m := range srv.Auth {
 		if m.Provider.ID == "claude" {
@@ -358,6 +362,15 @@ func main() {
 		}()
 	}
 
+	// A specific non-loopback bind (Tailscale IP) never listens on loopback:
+	// serve /local/* (and nothing else) on 127.0.0.1:<port> too.
+	if la := api.LocalListenAddr(cfg.ListenAddr); la != "" {
+		go func() {
+			if err := http.ListenAndServe(la, srv.LocalRoutes()); err != nil {
+				log.Printf("local confirm listener on %s: %v", la, err)
+			}
+		}()
+	}
 	log.Printf("runner listening on %s (projects root: %s)", cfg.ListenAddr, cfg.ProjectsRoot)
 	if err := http.ListenAndServe(cfg.ListenAddr, handler); err != nil {
 		log.Fatalf("serve: %v", err)

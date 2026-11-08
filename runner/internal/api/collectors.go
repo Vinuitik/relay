@@ -108,7 +108,10 @@ func (s *Server) handleApproveCollector(w http.ResponseWriter, r *http.Request) 
 	if s.Packages != nil {
 		reqs, _ := s.Collectors.Requires(r.PathValue("id"))
 		pending, err := s.Packages.Require(r.PathValue("id"), reqs)
-		if errors.Is(err, collectors.ErrNotConfirmed) {
+		if errors.Is(err, collectors.ErrAwaitingConfirm) {
+			writeJSON(w, http.StatusAccepted, map[string]any{"state": collectors.PkgAwaitingConfirm})
+			return
+		} else if errors.Is(err, collectors.ErrNotConfirmed) {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
 		} else if err != nil {
