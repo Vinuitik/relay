@@ -614,6 +614,28 @@ Windows: `winget install -e --id ActivityWatch.ActivityWatch --silent`, else `aw
 `/VERYSILENT /CURRENTUSER` → HKCU `Run` value → start aw-qt.exe. macOS / other → 501.
 To bump ActivityWatch: `AWVersion` in sensors.go.
 
+### Package ledger + manifest `requires`
+Files: internal/collectors/{packages.go, manifest.go}, internal/api/{packages.go, collectors.go},
+cmd/runnerd/main.go (`srv.Packages`). Design: habitTracker docs/designs/kpi-multidevice.md "Runner: requires + package ledger".
+Manifest `requires` [{manager,id,why}] (max 5) → `checkRequires` (per-manager id regex `requireIDRe`, `relayIDs`);
+hashed by `ContractHash` only when non-empty.
+POST /v1/collectors/{id}/approve → `Engine.Approve` (hash) → `Engine.Requires` → `Packages.Require` →
+`ConfirmInstall` hook (nil = allow; agent ⑥ local-confirm gate goes here) → per package `runInstall`:
+`Manager.Present` true → ledger row `installedByRelay=false` (never uninstalled); else `Manager.Install` →
+row `installedByRelay=true` → `packages.json` (0600, tmp+rename). 202 `{state:"installing"}` while running.
+DELETE /v1/collectors/{id} → `Packages.Release` (drops from `usedBy`, never uninstalls).
+GET /v1/packages → `Packages.List`; POST /v1/packages/uninstall → `Packages.Uninstall`
+(404 unknown, 400 not ours, 409 `ErrInUse`, else 202 async). GET /v1/collectors adds `requiresState`
+(`RequiresState`). GET /v1/runner/info adds os, arch, managers (`AvailableManagers`: relay + PATH lookup).
+Managers: only `relayManager` (wraps `Sensors.Install`; Uninstall removes `sensors/activitywatch` + autostart, Linux only,
+does not stop a running aw-qt). To add winget/brew/flatpak/pip: implement `Manager`, register in `NewPackages`.
+[NOT IMPLEMENTED] winget/brew/flatpak/pip managers, local confirm page.
+
+Technology notes: ledger is one JSON file read once and cached in memory (single runner process); only
+`installed` rows persist, installing/failed are lost on restart. Wiping `$RELAY_HOME` forgets what Relay
+installed → those packages are treated as preexisting (safe: never uninstalled). Failed rows have no retry
+loop: the next approve retries.
+
 ### Credentials + http sources (runner-held KPI API credentials)
 Files: internal/credentials/credentials.go, internal/api/credentials.go, internal/collectors/httpsource.go,
 cmd/runnerd/main.go (`srv.Credentials`, `srv.Collectors.Credentials`). Design: habitTracker
@@ -1292,6 +1314,8 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Collectors: schedule windows, backfill, retry | `internal/collectors/scheduler.go` (`dueWindows`, `Backfill`, `TickEvery`, `sourceRetry`) |
 | Collector sandbox (Linux): mounts, limits, fallback | `internal/collectors/sandbox/sandbox_linux.go` (`mountArgs`, `scopeArgs`, `rlimitWrap`, `probe`) |
 | Sensors: ActivityWatch version / install / autostart | `internal/collectors/sensors.go` (`AWVersion`, `installLinux`, `installWindows`, `writeAutostart`) |
+| Package ledger: file, states, uninstall rules, confirm hook | `internal/collectors/packages.go` (`Packages`, `ConfirmInstall`, `Uninstall`, `relayManager`) |
+| Manifest `requires`: id regexes, max, relay allowlist | `internal/collectors/manifest.go` (`requireIDRe`, `relayIDs`, `maxRequires`) |
 | Collector tests incl. real sandbox in Docker | `scripts/test-collectors.sh` |
 | KPI credentials: endpoints / storage / host + auth rules | `internal/api/credentials.go`, `internal/credentials/credentials.go` (`ValidHost`, `deniedHostSuffixes`, `deniedHeaders`, `FileName`) |
 | Collectors: http source (timeout, size cap, redirects, dial guard, placeholders) | `internal/collectors/httpsource.go` (`HTTPTimeout`, `MaxHTTPBytes`, `maxHTTPRedirects`, `publicAddr`, `expandURL`) |

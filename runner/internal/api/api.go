@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,6 +111,8 @@ type Server struct {
 	// collector counts as busy for anyBusy.
 	Collectors *collectors.Engine
 	Sensors    *collectors.Sensors
+	// Packages is the package ledger (/v1/packages*, packages.go); nil → 503.
+	Packages *collectors.Packages
 	// Credentials holds KPI API credentials for collectors' "http" sources
 	// (/v1/credentials*, see credentials.go and internal/credentials).
 	// nil → 503. Values are never returned or logged.
@@ -206,6 +209,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/collectors/{id}/activate", s.auth(s.collectorsOn(s.handleActivateCollector)))
 	mux.HandleFunc("GET /v1/collectors/{id}/readings", s.auth(s.collectorsOn(s.handleCollectorReadings)))
 	mux.HandleFunc("DELETE /v1/collectors/{id}", s.auth(s.collectorsOn(s.handleDeleteCollector)))
+	mux.HandleFunc("GET /v1/packages", s.auth(s.packagesOn(s.handleListPackages)))
+	mux.HandleFunc("POST /v1/packages/uninstall", s.auth(s.packagesOn(s.handleUninstallPackage)))
 	mux.HandleFunc("GET /v1/sensors", s.auth(s.collectorsOn(s.handleSensors)))
 	mux.HandleFunc("POST /v1/sensors/install", s.auth(s.collectorsOn(s.handleInstallSensor)))
 	mux.HandleFunc("GET /v1/credentials", s.auth(s.credentialsOn(s.handleListCredentials)))
@@ -241,6 +246,11 @@ type runnerInfo struct {
 	Busy     bool   `json:"busy"`
 	Version  string `json:"version"`
 	Build    string `json:"build"`
+	// OS/Arch are runtime.GOOS/GOARCH; Managers the package managers
+	// collectors may require ("relay" always, others if on PATH).
+	OS       string   `json:"os"`
+	Arch     string   `json:"arch"`
+	Managers []string `json:"managers"`
 	// IdleSince is when the runner last stopped being busy (RFC3339),
 	// empty while busy - keeperd only restarts for an update after a
 	// quiet period.
@@ -279,7 +289,8 @@ func (s *Server) handleRunnerInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	busy, idleSince := s.Sessions.IdleStatus()
-	info := runnerInfo{Hostname: hostname, Busy: busy, Version: Version, Build: Build}
+	info := runnerInfo{Hostname: hostname, Busy: busy, Version: Version, Build: Build,
+		OS: runtime.GOOS, Arch: runtime.GOARCH, Managers: collectors.AvailableManagers()}
 	if !busy {
 		info.IdleSince = idleSince.UTC().Format(time.RFC3339)
 	}

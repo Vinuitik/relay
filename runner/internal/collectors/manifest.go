@@ -46,11 +46,14 @@ type Source struct {
 // Manifest is a collector's manifest.json. Only Schedule, Window and
 // Sources form the contract (ContractHash); Unit/Aggregation are metadata.
 type Manifest struct {
-	Schedule    string   `json:"schedule"` // "hourly" | "daily HH:MM"
-	Window      string   `json:"window"`   // "1h" | "1d"
-	Sources     []Source `json:"sources"`
-	Unit        string   `json:"unit"`
-	Aggregation string   `json:"aggregation"` // "sum" | "last" | "max"
+	Schedule string   `json:"schedule"` // "hourly" | "daily HH:MM"
+	Window   string   `json:"window"`   // "1h" | "1d"
+	Sources  []Source `json:"sources"`
+	// Requires: packages to install before the collector can run (max
+	// maxRequires). Part of the contract (ContractHash) only when non-empty.
+	Requires    []Require `json:"requires,omitempty"`
+	Unit        string    `json:"unit"`
+	Aggregation string    `json:"aggregation"` // "sum" | "last" | "max"
 
 	// parsed from Schedule
 	hourly         bool
@@ -58,6 +61,55 @@ type Manifest struct {
 }
 
 const maxSources = 10
+const maxRequires = 5
+
+// Require is one package a collector needs. Why is shown to the user at
+// the local confirm.
+type Require struct {
+	Manager string `json:"manager"`
+	ID      string `json:"id"`
+	Why     string `json:"why"`
+}
+
+// requireIDRe: allowed package id per manager. No URLs, spaces or flags.
+// "relay" has a fixed allowlist instead (relayIDs).
+var requireIDRe = map[string]*regexp.Regexp{
+	"winget":  regexp.MustCompile(`^[A-Za-z0-9.+-]{1,128}$`),
+	"brew":    regexp.MustCompile(`^[a-z0-9@+._-]{1,64}(/[a-z0-9._-]+){0,2}$`),
+	"flatpak": regexp.MustCompile(`^[A-Za-z0-9_.-]{3,128}$`),
+	"pip":     regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}(==[A-Za-z0-9.*+!-]{1,32})?$`),
+}
+
+// relayIDs are the packages the built-in "relay" manager can install.
+var relayIDs = map[string]bool{"activitywatch": true}
+
+func checkRequires(rs []Require) error {
+	if len(rs) > maxRequires {
+		return badf("manifest: at most %d requires", maxRequires)
+	}
+	seen := map[string]bool{}
+	for i, r := range rs {
+		if r.Manager == "relay" {
+			if !relayIDs[r.ID] {
+				return badf(`requires %d: relay manager only has "activitywatch", got %q`, i, r.ID)
+			}
+		} else if re, ok := requireIDRe[r.Manager]; !ok {
+			return badf("requires %d: unknown manager %q", i, r.Manager)
+		} else if !re.MatchString(r.ID) || strings.HasPrefix(r.ID, "-") {
+			// the doc's regexes allow a leading "-" (an option); refuse it
+			return badf("requires %d: bad %s package id %q", i, r.Manager, r.ID)
+		}
+		if strings.TrimSpace(r.Why) == "" {
+			return badf("requires %d: why is required", i)
+		}
+		k := r.Manager + "/" + r.ID
+		if seen[k] {
+			return badf("requires %d: duplicate %s", i, k)
+		}
+		seen[k] = true
+	}
+	return nil
+}
 
 var (
 	bucketRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -112,6 +164,9 @@ func (m *Manifest) validate() error {
 	if len(m.Sources) == 0 || len(m.Sources) > maxSources {
 		return badf("manifest: 1-%d sources required", maxSources)
 	}
+	if err := checkRequires(m.Requires); err != nil {
+		return err
+	}
 	for i, s := range m.Sources {
 		switch s.Type {
 		case "activitywatch":
@@ -163,7 +218,8 @@ func checkGlob(g string) error {
 }
 
 // ContractHash is lowercase hex sha256 of the canonical JSON of the
-// manifest's {sources, schedule, window}, exactly as sent: object keys
+// manifest's {sources, schedule, window} plus requires when it is a
+// non-empty array (absent/null/[] is not hashed, so older hashes stay valid), exactly as sent: object keys
 // sorted at every level, no whitespace, no HTML escaping (<>& literal),
 // numbers verbatim. The hub must compute the same bytes.
 func ContractHash(raw json.RawMessage) (string, error) {
@@ -178,6 +234,9 @@ func ContractHash(raw json.RawMessage) (string, error) {
 		if v, ok := all[k]; ok {
 			contract[k] = v
 		}
+	}
+	if v, ok := all["requires"].([]any); ok && len(v) > 0 {
+		contract["requires"] = v
 	}
 	b, err := canonicalJSON(contract)
 	if err != nil {

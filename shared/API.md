@@ -61,6 +61,9 @@ Message {
 RunnerInfo {
   hostname: string     // tailnet hostname
   busy: boolean         // true if any session across any project is busy
+  os: string            // runtime.GOOS ("linux"|"windows"|"darwin")
+  arch: string          // runtime.GOARCH
+  managers: string[]    // package managers collectors may require: "relay" always, others only if on PATH (winget, brew, flatpak, pip)
   version: string
   update?: {            // keeperd's last self-update check; absent if not managed by keeperd
     keeperVersion: string
@@ -423,16 +426,18 @@ SensorsState {
 | GET | `/v1/collectors` | - | `200 CollectorInfo[]` | sorted by id. `503` collectors not enabled. |
 | POST | `/v1/collectors` | `CollectorInstall` | `200 {id, version, contractHash, approved}` | installs a new version (see `Collector`). `400` bad id/manifest/files/secret glob. |
 | POST | `/v1/collectors/{id}/test` | - | `200 TestResult` | runs every fixture case in the sandbox; no approval needed (no real data read). `passed` false with 0 cases. `404`; `503` sandbox unavailable. |
-| POST | `/v1/collectors/{id}/approve` | `{contractHash}` | `200 {}` | approves the current version's contract. `409` hash differs from the current version's. |
+| POST | `/v1/collectors/{id}/approve` | `{contractHash}` | `200 {}` or `202 {state:"installing"}` | approves the current version's contract; manifest `requires` not yet installed are installed (ledger, `/v1/packages`) - `202` while that runs, `403` install denied. `GET /v1/collectors` rows carry `requiresState` `none\|awaiting_confirm\|installing\|ready\|failed`. `409` hash differs from the current version's. |
 | POST | `/v1/collectors/{id}/run` | `{from, to}` (ISO) | `200 RunOutput` | dry run on real snapshots, synchronous (≤ 60 s), not stored. `400` bad/reversed window or > 31 days; `403` not approved; `422 {error}` collector failed (exit, bad output, timeout); `503` sandbox or source unavailable. |
 | POST | `/v1/collectors/{id}/activate` | - | `200 {}` | starts scheduling (also re-activates a `failed` one). `403` not approved. |
 | GET | `/v1/collectors/{id}/readings?since=<ISO>` | - | `200 Reading[]` | readings **recorded** after `since` (all if omitted), oldest first; backfilled old windows therefore still show up. Dedupe on `from`. `400` bad since. |
-| DELETE | `/v1/collectors/{id}` | - | `204` | deletes all versions, approval and unpulled readings. `404`. |
+| DELETE | `/v1/collectors/{id}` | - | `204` | deletes all versions, approval and unpulled readings; removes it from every package's `usedBy` (never uninstalls). `404`. |
 | GET | `/v1/credentials` | - | `200 CredentialInfo[]` | `{name, host, auth, updatedAt}` sorted by name; never values. `503` not enabled. See HUB.md "KPI credentials". |
 | PUT | `/v1/credentials/{name}` | `{host, auth, secret, headerName?, queryParam?}` | `200 CredentialInfo` | create/replace. `auth` `bearer` \| `header` (needs `headerName`) \| `query` (needs `queryParam`, or `secret` as `{param: value}`). `400` bad name/host/auth/secret (message never echoes the secret). Body never logged. |
 | DELETE | `/v1/credentials/{name}` | - | `204` | `404` unknown. Collectors using it then fail with a source error. |
 | GET | `/v1/sensors` | - | `200 SensorsState` | ActivityWatch (live query of localhost:5600) + sandbox availability. |
 | POST | `/v1/sensors/install` | `{name:"activitywatch"}` | `202 {}` | installs ActivityWatch in the background; poll `GET /v1/sensors` until `operation` is "" (failure → `activitywatch.error`). `400` unknown name; `409` already installing; `501` OS not supported (macOS, non-x86_64 Linux). |
+| GET | `/v1/packages` | - | `200 PackageInfo[]` | package ledger: `{manager,id,installedAt,installedByRelay,usedBy[],state:"installed\|installing\|failed\|awaiting_confirm",error}`. `503` not enabled. |
+| POST | `/v1/packages/uninstall` | `{manager,id}` | `202 {}` | removes a package Relay installed (async). `400` not installed by Relay (never uninstalled); `404` unknown; `409` `usedBy` non-empty. |
 | GET | `/v1/auth` | - | `200 AuthStatus[]` | every provider's login state, in a fixed order (statuses run in parallel, ≤10s each). Missing CLI → `cliFound:false`, not an error. |
 | GET | `/v1/auth/{provider}` | - | `200 AuthStatus` | one provider's login state. `404` unknown provider, `503` if its CLI isn't found (`RELAY_<CLI>_CLI` / PATH). |
 | POST | `/v1/auth/{provider}/start` | - | `200 AuthResult` | starts the CLI login (can take up to ~20s): paste-code providers → `{state:"awaiting_code", url}`; device flow → `{state:"awaiting_approval", url, userCode}`, then poll `GET /v1/auth/{provider}` until `signed_in`/`failed` (github: runs `gh auth setup-git` after login). A login already waiting (< 10 min old) is reused. If the CLI never prints a URL: `200 {state:"failed", message}`. The pending login is killed after 10 min. `404` / `503` as above. |
