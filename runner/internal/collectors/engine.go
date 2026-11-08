@@ -169,6 +169,20 @@ func (e *Engine) Approve(id, hash string) error {
 	return e.st.save(m)
 }
 
+// Fail marks a collector failed with msg (a declined local install);
+// Activate clears it.
+func (e *Engine) Fail(id, msg string) {
+	e.init()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m, err := e.st.load(id)
+	if err != nil {
+		return
+	}
+	m.State, m.LastError = StateFailed, msg
+	_ = e.st.save(m)
+}
+
 // Activate starts scheduling an approved collector (also re-activates a
 // failed one).
 func (e *Engine) Activate(id string) error {

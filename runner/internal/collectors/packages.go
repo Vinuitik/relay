@@ -1,14 +1,17 @@
 package collectors
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,6 +27,9 @@ var (
 	ErrInUse = errors.New("package is used by collectors")
 	// ErrNotConfirmed: the user denied the install → 403.
 	ErrNotConfirmed = errors.New("install not confirmed")
+	// ErrAwaitingConfirm: Require queued the install for the local confirm
+	// page; nothing is installed yet → approve answers 202 awaiting_confirm.
+	ErrAwaitingConfirm = errors.New("install awaiting local confirmation")
 )
 
 // Manager installs packages through one package manager.
@@ -72,8 +78,14 @@ type Packages struct {
 	// before a collector approve installs anything; false → ErrNotConfirmed.
 	// nil = allow (no gate yet).
 	ConfirmInstall func(collectorID string, reqs []Require) bool
-	Now            func() time.Time
-	Sync           bool // run installs/uninstalls inline (tests)
+	// Confirm is the local confirm queue (confirm.go): unmet requires wait
+	// there for the person at this computer. nil = no queue (install at once).
+	Confirm *Confirms
+	// OnDeclined is called when the local confirm was denied (the engine
+	// marks the collector failed).
+	OnDeclined func(collectorID string)
+	Now        func() time.Time
+	Sync       bool // run installs/uninstalls inline (tests)
 
 	mu     sync.Mutex
 	loaded bool
@@ -82,7 +94,13 @@ type Packages struct {
 
 // NewPackages wires the built-in "relay" manager to sensors.
 func NewPackages(home string, s *Sensors) *Packages {
-	return &Packages{Dir: home, Now: time.Now, Managers: map[string]Manager{"relay": relayManager{s}}}
+	p := &Packages{Dir: home, Now: time.Now, Managers: map[string]Manager{"relay": relayManager{s}}}
+	for _, name := range AvailableManagers() {
+		if m := newCmdManager(name, home); m != nil {
+			p.Managers[name] = m
+		}
+	}
+	return p
 }
 
 func (p *Packages) path() string { return filepath.Join(p.Dir, "packages.json") }
@@ -183,9 +201,43 @@ func (p *Packages) Require(collectorID string, reqs []Require) (pending bool, er
 			return false, ErrUnsupported
 		}
 	}
-	if p.ConfirmInstall != nil && !p.ConfirmInstall(collectorID, reqs) {
-		return false, ErrNotConfirmed
+	if unmet := p.unmet(reqs); len(unmet) > 0 {
+		if p.ConfirmInstall != nil && !p.ConfirmInstall(collectorID, unmet) {
+			return false, ErrNotConfirmed
+		}
+		if p.Confirm != nil {
+			p.Confirm.Request(collectorID, unmet, func(allow bool) {
+				if !allow {
+					if p.OnDeclined != nil {
+						p.OnDeclined(collectorID)
+					}
+					return
+				}
+				_, _ = p.install(collectorID, reqs)
+			})
+			return true, ErrAwaitingConfirm
+		}
 	}
+	return p.install(collectorID, reqs)
+}
+
+// unmet: the reqs that are neither installed nor installing in the ledger.
+func (p *Packages) unmet(reqs []Require) []Require {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.load()
+	var out []Require
+	for _, r := range reqs {
+		if k := p.find(r.Manager, r.ID); k == nil || k.state == PkgFailed {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// install records collectorID as a user of every req and installs what is
+// missing (the part of Require after the confirm gate).
+func (p *Packages) install(collectorID string, reqs []Require) (pending bool, err error) {
 	for _, r := range reqs {
 		p.mu.Lock()
 		p.load()
@@ -374,7 +426,9 @@ func AvailableManagers() []string {
 	return out
 }
 
-// relayManager: the built-in installers (only "activitywatch").
+// relayManager: the built-in installers (only "activitywatch"). Install and
+// Uninstall take the same lock as Sensors.StartInstall (Sensors.acquire), so
+// two AW installs never run at once.
 type relayManager struct{ s *Sensors }
 
 func (m relayManager) Present(ctx context.Context, id string) bool {
@@ -385,13 +439,38 @@ func (m relayManager) Install(ctx context.Context, id string) error {
 	if id != "activitywatch" {
 		return badf("relay has no package %q", id)
 	}
-	return m.s.Install(ctx, m.s.Dir)
+	release, err := m.s.acquire(ctx, true)
+	if err != nil {
+		return err
+	}
+	err = m.s.Install(ctx, m.s.Dir)
+	release(err)
+	return err
 }
 
-// Uninstall removes what installLinux put there (dir + autostart entry).
+// awProcs are the processes ActivityWatch leaves running.
+var awProcs = []string{"aw-qt", "aw-server", "aw-server-rust", "aw-watcher-window", "aw-watcher-afk"}
+
+// Uninstall stops the running ActivityWatch processes, then removes what
+// the install put there: Linux dir + autostart entry; Windows the winget
+// package or the Inno uninstaller, the HKCU Run value and our sensors dir.
 func (m relayManager) Uninstall(ctx context.Context, id string) error {
 	if id != "activitywatch" {
 		return badf("relay has no package %q", id)
+	}
+	release, err := m.s.acquire(ctx, true)
+	if err != nil {
+		return err
+	}
+	err = m.uninstall(ctx)
+	release(err)
+	return err
+}
+
+func (m relayManager) uninstall(ctx context.Context) error {
+	stopAW(ctx)
+	if runtime.GOOS == "windows" {
+		return uninstallWindows(ctx, m.s.Dir)
 	}
 	if runtime.GOOS != "linux" {
 		return ErrUnsupported
@@ -403,4 +482,188 @@ func (m relayManager) Uninstall(ctx context.Context, id string) error {
 		_ = os.Remove(filepath.Join(cfg, "autostart", "relay-activitywatch.desktop"))
 	}
 	return nil
+}
+
+// stopAW kills the AW processes by exact name (best effort: none running is fine).
+func stopAW(ctx context.Context) {
+	for _, n := range awProcs {
+		if runtime.GOOS == "windows" {
+			_, _ = execRun(ctx, "taskkill", "/F", "/T", "/IM", n+".exe")
+		} else {
+			_, _ = execRun(ctx, "pkill", "-x", n)
+		}
+	}
+}
+
+func uninstallWindows(ctx context.Context, dir string) error {
+	var first error
+	if _, err := exec.LookPath("winget"); err == nil {
+		_, first = execRun(ctx, "winget", "uninstall", "--id", "ActivityWatch.ActivityWatch", "--exact", "--silent", "--disable-interactivity")
+	} else {
+		first = err
+	}
+	if first != nil {
+		if u := awUninstaller(); u != "" {
+			if _, err := execRun(ctx, u, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"); err == nil {
+				first = nil
+			}
+		}
+	}
+	_, _ = execRun(ctx, "reg", "delete", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "ActivityWatch", "/f")
+	_ = os.RemoveAll(filepath.Join(dir, "activitywatch"))
+	return first
+}
+
+// awUninstaller: the Inno Setup uninstaller of a per-user setup.exe install.
+func awUninstaller() string {
+	base := os.Getenv("LOCALAPPDATA")
+	if base == "" {
+		return ""
+	}
+	u := filepath.Join(base, "Programs", "ActivityWatch", "unins000.exe")
+	if _, err := os.Stat(u); err != nil {
+		return ""
+	}
+	return u
+}
+
+// ---- command-line package managers (winget, brew, flatpak, pip) ----
+
+// mgrTimeout bounds every package-manager command.
+var mgrTimeout = 10 * time.Minute
+
+// execRun runs name with separate args (never a shell) and returns stdout.
+// A failure becomes a one-sentence error from stderr. Tests replace it.
+var execRun = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return stdout.Bytes(), fmt.Errorf("%s timed out or was cancelled", name)
+		}
+		return stdout.Bytes(), errors.New(oneSentence(name, stderr.Bytes(), err))
+	}
+	return stdout.Bytes(), nil
+}
+
+// oneSentence: "<tool> failed: <last stderr line>" (<= 200 chars).
+func oneSentence(name string, stderr []byte, err error) string {
+	line := ""
+	for _, l := range strings.Split(strings.TrimSpace(string(stderr)), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			line = l
+		}
+	}
+	if line == "" {
+		line = err.Error()
+	}
+	if len(line) > 200 {
+		line = line[:200]
+	}
+	return name + " failed: " + strings.TrimRight(line, ".") + "."
+}
+
+// cmdManager drives one CLI package manager; argv builders are pure so
+// tests assert them exactly.
+type cmdManager struct {
+	name string
+	home string // $RELAY_HOME (pip venv)
+}
+
+func newCmdManager(name, home string) Manager {
+	switch name {
+	case "winget", "brew", "flatpak", "pip":
+		return cmdManager{name, home}
+	}
+	return nil
+}
+
+func (m cmdManager) venv() string { return filepath.Join(m.home, "venv") }
+
+func (m cmdManager) pipBin() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(m.venv(), "Scripts", "pip.exe")
+	}
+	return filepath.Join(m.venv(), "bin", "pip")
+}
+
+// pipName strips a version specifier / extras from a pip requirement.
+func pipName(id string) string {
+	if i := strings.IndexAny(id, "=<>!~[ ;"); i > 0 {
+		return id[:i]
+	}
+	return id
+}
+
+// argv returns the command for op ("present", "install", "uninstall").
+func (m cmdManager) argv(op, id string) (string, []string) {
+	switch m.name {
+	case "winget":
+		switch op {
+		case "present":
+			return "winget", []string{"list", "--id", id, "--exact"}
+		case "install":
+			return "winget", []string{"install", "--id", id, "--exact", "--scope", "user", "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"}
+		}
+		return "winget", []string{"uninstall", "--id", id, "--exact", "--silent", "--disable-interactivity"}
+	case "brew":
+		return "brew", []string{map[string]string{"present": "list", "install": "install", "uninstall": "uninstall"}[op], "--", id}
+	case "flatpak":
+		switch op {
+		case "present":
+			return "flatpak", []string{"info", "--user", "--", id}
+		case "install":
+			return "flatpak", []string{"install", "--user", "-y", "--noninteractive", "flathub", "--", id}
+		}
+		return "flatpak", []string{"uninstall", "--user", "-y", "--noninteractive", "--", id}
+	}
+	// pip
+	switch op {
+	case "present":
+		return m.pipBin(), []string{"show", "--", pipName(id)}
+	case "install":
+		return m.pipBin(), []string{"install", "--", id}
+	}
+	return m.pipBin(), []string{"uninstall", "-y", "--", pipName(id)}
+}
+
+func (m cmdManager) Present(ctx context.Context, id string) bool {
+	ctx, cancel := context.WithTimeout(ctx, mgrTimeout)
+	defer cancel()
+	name, args := m.argv("present", id)
+	_, err := execRun(ctx, name, args...)
+	return err == nil
+}
+
+func (m cmdManager) Install(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, mgrTimeout)
+	defer cancel()
+	switch m.name {
+	case "flatpak":
+		if _, err := execRun(ctx, "flatpak", "remote-add", "--user", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"); err != nil {
+			return err
+		}
+	case "pip":
+		if _, err := os.Stat(m.pipBin()); err != nil {
+			py := "python3"
+			if runtime.GOOS == "windows" {
+				py = "python"
+			}
+			if _, err := execRun(ctx, py, "-m", "venv", m.venv()); err != nil {
+				return err
+			}
+		}
+	}
+	name, args := m.argv("install", id)
+	_, err := execRun(ctx, name, args...)
+	return err
+}
+
+func (m cmdManager) Uninstall(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, mgrTimeout)
+	defer cancel()
+	name, args := m.argv("uninstall", id)
+	_, err := execRun(ctx, name, args...)
+	return err
 }

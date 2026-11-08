@@ -286,6 +286,10 @@ func main() {
 	srv.Collectors.Credentials = srv.Credentials
 	srv.Sensors = collectors.NewSensors(srv.Collectors)
 	srv.Packages = collectors.NewPackages(cfg.RelayHome, srv.Sensors)
+	// Installs wait for a yes on this computer (/local/confirm, never via the hub).
+	srv.Packages.Confirm = collectors.NewConfirms()
+	srv.Packages.Confirm.OnPending = func(p collectors.Pending) { api.NotifyPendingInstall(p, cfg.ListenAddr) }
+	srv.Packages.OnDeclined = func(id string) { srv.Collectors.Fail(id, "Install was declined on this computer") }
 	srv.Collectors.Start(context.Background())
 	for _, m := range srv.Auth {
 		if m.Provider.ID == "claude" {

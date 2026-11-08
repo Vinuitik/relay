@@ -211,6 +211,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /v1/collectors/{id}", s.auth(s.collectorsOn(s.handleDeleteCollector)))
 	mux.HandleFunc("GET /v1/packages", s.auth(s.packagesOn(s.handleListPackages)))
 	mux.HandleFunc("POST /v1/packages/uninstall", s.auth(s.packagesOn(s.handleUninstallPackage)))
+	mux.HandleFunc("GET /local/confirm", s.localOnly(s.handleLocalConfirmPage))
+	mux.HandleFunc("POST /local/confirm/{token}", s.localOnly(s.handleLocalConfirmDecide))
 	mux.HandleFunc("GET /v1/sensors", s.auth(s.collectorsOn(s.handleSensors)))
 	mux.HandleFunc("POST /v1/sensors/install", s.auth(s.collectorsOn(s.handleInstallSensor)))
 	mux.HandleFunc("GET /v1/credentials", s.auth(s.credentialsOn(s.handleListCredentials)))

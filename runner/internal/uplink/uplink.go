@@ -160,6 +160,17 @@ func (c *Client) runOnce(ctx context.Context) (connected bool, err error) {
 	}
 }
 
+type uplinkKey struct{}
+
+// WithUplink marks ctx as belonging to a request that arrived through the
+// hub uplink. Local-only routes (api /local/confirm) refuse such requests.
+func WithUplink(ctx context.Context) context.Context {
+	return context.WithValue(ctx, uplinkKey{}, true)
+}
+
+// FromUplink reports whether ctx was marked by WithUplink.
+func FromUplink(ctx context.Context) bool { v, _ := ctx.Value(uplinkKey{}).(bool); return v }
+
 // dispatch runs one req frame through the runner's handler.
 func (c *Client) dispatch(ctx context.Context, f Frame) Frame {
 	res := Frame{Type: "res", ID: f.ID}
@@ -181,7 +192,7 @@ func (c *Client) dispatch(ctx context.Context, f Frame) Frame {
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, "http://relay-uplink"+u.RequestURI(), strings.NewReader(f.Body))
+	req, err := http.NewRequestWithContext(WithUplink(ctx), method, "http://relay-uplink"+u.RequestURI(), strings.NewReader(f.Body))
 	if err != nil {
 		return fail(http.StatusBadRequest, "bad request")
 	}
