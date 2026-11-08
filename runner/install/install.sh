@@ -303,6 +303,9 @@ main() {
         echo "    Ctrl-C skips; pair later with: sudo -u $RUN_USER $BIN_DIR/relay-runner pair"
         echo
         trap ':' INT
+        # No --open here: this runs as root/sudo, and opening a browser from
+        # there (or as the target user without their session bus) is unreliable.
+        # GUI installers run `relay-runner pair --open` themselves, as the user.
         as_user env RELAY_HOME="$RELAY_HOME_DIR" ${HUB:+RELAY_HUB="$HUB"} "$BIN_DIR/relay-runner" pair \
             || echo "    pairing skipped - run later: sudo -u $RUN_USER $BIN_DIR/relay-runner pair"
         trap - INT

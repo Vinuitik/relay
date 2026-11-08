@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +57,9 @@ func TestRunPair(t *testing.T) {
 }
 
 func TestRunPairByQR(t *testing.T) {
+	var opened []string
+	defer func(f func(string) error) { openURL = f }(openURL)
+	openURL = func(u string) error { opened = append(opened, u); return nil }
 	pollEvery = 10 * time.Millisecond
 	polls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -88,8 +92,45 @@ func TestRunPairByQR(t *testing.T) {
 	if !strings.Contains(out.String(), srv.URL+"/relay/claim/CLAIMID") || !strings.Contains(out.String(), "paired as desk") {
 		t.Errorf("output %q", out.String())
 	}
+	if len(opened) != 0 || !strings.Contains(out.String(), "Connected to "+srv.URL+" as desk") {
+		t.Errorf("opened %v without --open, output %q", opened, out.String())
+	}
 	cfg, err := uplink.Load(dir)
 	if err != nil || cfg == nil || cfg.DeviceID != "d2" || cfg.Token != "tok2" {
 		t.Fatalf("hub.json = %+v, %v", cfg, err)
+	}
+}
+
+func TestRunPairOpen(t *testing.T) {
+	pollEvery = 10 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/relay/pair/start":
+			w.Write([]byte(`{"claimId":"C1","pollSecret":"s","expiresInSeconds":60}`))
+		case "/relay/pair/poll":
+			w.Write([]byte(`{"deviceId":"d","token":"t"}`))
+		}
+	}))
+	defer srv.Close()
+	defer func(f func(string) error) { openURL = f }(openURL)
+
+	var opened []string
+	openURL = func(u string) error { opened = append(opened, u); return nil }
+	var out bytes.Buffer
+	if err := runPair([]string{"--hub", srv.URL, "--name", "x", "--open"}, t.TempDir(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(opened) != 1 || opened[0] != srv.URL+"/relay/claim/C1" {
+		t.Errorf("opened %v", opened)
+	}
+
+	// Failure to open is a warning, not an error.
+	openURL = func(string) error { return errors.New("boom") }
+	out.Reset()
+	if err := runPair([]string{"--hub", srv.URL, "--name", "x", "--open"}, t.TempDir(), &out); err != nil {
+		t.Fatalf("open failure must not fail pair: %v", err)
+	}
+	if !strings.Contains(out.String(), "warning: could not open") || !strings.Contains(out.String(), "Connected to") {
+		t.Errorf("output %q", out.String())
 	}
 }

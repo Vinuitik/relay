@@ -756,10 +756,21 @@ To change: release source - env `RELAY_UPDATE_REPO`; default env file - `write_e
 → `relay.env` if missing; append `RELAY_LISTEN_ADDR=<ts>:7777` if Tailscale up and unset
 → non-loopback listen → firewall rule "Relay runner (7777)" (see "Windows Firewall" below)
 → `install-keeperd.ps1` run as a script block (single source of the two scheduled tasks; script block = not blocked by execution policy)
-→ wait ≤15s for `key.txt` → summary → Android QR if non-loopback → `relay-runner pair` unless `hub.json` exists (Ctrl-C skips).
+→ add `%LOCALAPPDATA%\Relay\bin` to the USER Path (`[Environment]::SetEnvironmentVariable(...,'User')`, idempotent, case-insensitive; new terminals only)
+→ wait ≤15s for `key.txt` → summary → Android QR if non-loopback → `relay-runner pair` unless `hub.json` exists (Ctrl-C skips)
+or `RELAY_INSTALL_NOPAIR=1` (prints "pairing skipped (installer handles it)").
+**GUI installer contract (Inno Setup wizard):** `RELAY_INSTALL_FROM=<dir>` (holds `keeperd-windows-amd64.exe`, `relay-runner-windows-amd64.exe`,
+`install-keeperd.ps1`) → step 1 skips GitHub lookup/download/SHA256, uses those files, never deletes `<dir>` (only the `%TEMP%` dir it made)
+→ `install.ps1` with `RELAY_INSTALL_NOPAIR=1` → wizard runs `relay-runner.exe pair --open`.
+A throw inside the `& { }` block (try/finally, no catch) → `powershell -File` exits non-zero; via `iex` it only prints.
+To change: `install.ps1` (`$localDir`, `RELAY_INSTALL_NOPAIR` branch in step 7, PATH block before `finally`).
 
 **Already installed, pair only:** Linux `sudo -u <user> /opt/relay/bin/relay-runner pair`;
-Windows `& "$env:LOCALAPPDATA\Relay\bin\relay-runner.exe" pair`. See `internal/uplink/FLOWS.md`.
+Windows `relay-runner pair` (new terminal; fallback `& "$env:LOCALAPPDATA\Relay\bin\relay-runner.exe" pair`).
+`pair --open` (QR mode only, ignored with `--code`) → `runPair()` → `pairByQR()` → after `StartClaim`: `openURL(claim.URL(hub))`
+(Windows `rundll32 url.dll,FileProtocolHandler`, macOS `open`, Linux `xdg-open` only if `DISPLAY`/`WAYLAND_DISPLAY`) → failure = printed warning,
+QR/link still printed → on approval prints `Connected to <hub> as <name>`. `install.sh` does NOT pass `--open` (runs as root/sudo; no user session bus).
+To change: `openURL` in `cmd/runnerd/pair.go`. See `internal/uplink/FLOWS.md`.
 
 **Login is NOT automated.** `claude auth login` / `codex login` are not run by the installers; Claude's login is
 done from the phone - see "Sign-in relay" below. Codex login from the phone: `[NOT IMPLEMENTED]`. Tailscale login:
@@ -1346,6 +1357,9 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Session-finish → notify wiring | `cmd/runnerd/main.go` (`sessions.OnFinished`), `internal/session/session.go` (`notifyFinished`) |
 | Idle-suspend enable flag | env `RELAY_IDLE_SUSPEND_ENABLED` → `internal/idle/idle.go` (`LoadConfig`) — disabled unless exactly `"true"` |
 | Idle timeout / check interval | env `RELAY_IDLE_TIMEOUT`, `RELAY_IDLE_CHECK_INTERVAL` → `internal/idle/idle.go` (`LoadConfig`, `DefaultTimeout`, `DefaultCheckInterval`) |
+| `pair --open` flag / browser opener | `cmd/runnerd/pair.go` (`openURL`, `pairByQR`) |
+| Windows installer from local files / skip pairing | `install/install.ps1` env `RELAY_INSTALL_FROM`, `RELAY_INSTALL_NOPAIR` |
+| Windows user PATH entry for `relay-runner` | `install/install.ps1` (PATH block after step 6) |
 | Pairing QR content/rendering | `cmd/runnerd/main.go` (`printPairingQR`, flag `-qr`) |
 | Tailscale detection / Node / CLI bootstrap | `install.sh` step 2 + `install_clis()`, `install.ps1` steps 2-3 |
 | Best-effort "runner suspending" push | `cmd/runnerd/main.go` (`Monitor.BeforeShutdown` wiring), `internal/notify/fcm.go` (`NotifyRunnerSuspending`) |

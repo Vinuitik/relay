@@ -19,6 +19,15 @@
 #      scan it with your phone and tap Confirm in HabitTracker. Ctrl-C skips.
 # Re-running it is an upgrade.
 #
+# Env switches (used by the Windows GUI installer, which runs this hidden):
+#   RELAY_INSTALL_FROM=<dir>  use keeperd-windows-amd64.exe, relay-runner-windows-amd64.exe
+#                             and install-keeperd.ps1 from <dir>; no GitHub lookup,
+#                             download or SHA256 check. <dir> is never deleted.
+#   RELAY_INSTALL_NOPAIR=1    skip step 7 (the caller runs `relay-runner pair --open`)
+# Also adds %LOCALAPPDATA%\Relay\bin to the USER Path (new terminals see
+# `relay-runner`). On failure it throws: `powershell -File` exits non-zero; via
+# iex the error prints and the window stays open.
+#
 # Runs as one script block: piped through iex there is no $PSScriptRoot and
 # no param(), and `exit` would close the user's window - so it only `return`s
 # or throws.
@@ -44,7 +53,9 @@
     $runner = Join-Path $bin 'relay-runner.exe'
     $envFile = Join-Path $dir 'relay.env'
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ('relay-install-' + [guid]::NewGuid())
-    New-Item -ItemType Directory -Path $tmp | Out-Null
+    $localDir = $env:RELAY_INSTALL_FROM
+    $src = $tmp   # where the three files are read from
+    if ($localDir) { $src = $localDir } else { New-Item -ItemType Directory -Path $tmp | Out-Null }
 
     # relay.env value (last KEY=... line), or $null.
     function Get-EnvValue([string]$key) {
@@ -61,26 +72,33 @@
         if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
             Write-Host "    note: only windows-amd64 builds exist; this is $env:PROCESSOR_ARCHITECTURE (ARM64 runs them emulated)"
         }
-        # Pin the tag first so binaries and SHA256SUMS come from the same release.
-        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent' = 'relay-install' }
-        $tag = $rel.tag_name
-        if (-not $tag) { throw "no release found at https://github.com/$repo/releases" }
-        Write-Host "    release $tag"
-        $base = "https://github.com/$repo/releases/download/$tag"
         $names = @('keeperd-windows-amd64.exe', 'relay-runner-windows-amd64.exe', 'install-keeperd.ps1')
-        foreach ($n in @('SHA256SUMS') + $names) {
-            Invoke-WebRequest -Uri "$base/$n" -OutFile (Join-Path $tmp $n) -UseBasicParsing
-        }
-        $sums = Get-Content (Join-Path $tmp 'SHA256SUMS')
-        foreach ($n in $names) {
-            $want = $null
-            foreach ($l in $sums) {
-                if ($l -match ('^([0-9a-f]{64})\s+\*?' + [regex]::Escape($n) + '$')) { $want = $Matches[1] }
+        if ($localDir) {
+            Write-Host "    using local files from $localDir"
+            foreach ($n in $names) {
+                if (-not (Test-Path (Join-Path $localDir $n))) { throw "$n not found in $localDir" }
             }
-            if (-not $want) { throw "$n is not listed in SHA256SUMS of $tag" }
-            $got = (Get-FileHash -Path (Join-Path $tmp $n) -Algorithm SHA256).Hash.ToLower()
-            if ($got -ne $want) { throw "${n}: SHA256 mismatch - not installing" }
-            Write-Host "    $n verified"
+        } else {
+            # Pin the tag first so binaries and SHA256SUMS come from the same release.
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent' = 'relay-install' }
+            $tag = $rel.tag_name
+            if (-not $tag) { throw "no release found at https://github.com/$repo/releases" }
+            Write-Host "    release $tag"
+            $base = "https://github.com/$repo/releases/download/$tag"
+            foreach ($n in @('SHA256SUMS') + $names) {
+                Invoke-WebRequest -Uri "$base/$n" -OutFile (Join-Path $tmp $n) -UseBasicParsing
+            }
+            $sums = Get-Content (Join-Path $tmp 'SHA256SUMS')
+            foreach ($n in $names) {
+                $want = $null
+                foreach ($l in $sums) {
+                    if ($l -match ('^([0-9a-f]{64})\s+\*?' + [regex]::Escape($n) + '$')) { $want = $Matches[1] }
+                }
+                if (-not $want) { throw "$n is not listed in SHA256SUMS of $tag" }
+                $got = (Get-FileHash -Path (Join-Path $tmp $n) -Algorithm SHA256).Hash.ToLower()
+                if ($got -ne $want) { throw "${n}: SHA256 mismatch - not installing" }
+                Write-Host "    $n verified"
+            }
         }
 
         Write-Host "2/7 checking Tailscale (optional)"
@@ -123,14 +141,14 @@
         Start-Sleep -Seconds 2
         New-Item -ItemType Directory -Path $bin -Force | Out-Null
         foreach ($pair in @(@('keeperd-windows-amd64.exe', $keeper), @('relay-runner-windows-amd64.exe', $runner))) {
-            $src = Join-Path $tmp $pair[0]; $dest = $pair[1]
+            $from = Join-Path $src $pair[0]; $dest = $pair[1]
             try {
-                Copy-Item -Path $src -Destination $dest -Force
+                Copy-Item -Path $from -Destination $dest -Force
             } catch {
                 # Still locked by a process we couldn't stop: a running exe can be
                 # renamed, not overwritten. keeperd's clearOld deletes .old-* later.
                 Move-Item -Path $dest -Destination ("$dest.old-" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -Force
-                Copy-Item -Path $src -Destination $dest -Force
+                Copy-Item -Path $from -Destination $dest -Force
             }
         }
 
@@ -172,9 +190,19 @@
         Write-Host "6/7 registering scheduled tasks (install-keeperd.ps1)"
         # As a script block, not `& file.ps1`: execution policy (Restricted by
         # default) blocks .ps1 files but not code already in memory.
-        & ([scriptblock]::Create((Get-Content -Path (Join-Path $tmp 'install-keeperd.ps1') -Raw)))
+        & ([scriptblock]::Create((Get-Content -Path (Join-Path $src 'install-keeperd.ps1') -Raw)))
+
+        # User PATH so `relay-runner` works in new terminals (idempotent, case-insensitive).
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        $have = @(($userPath -split ';') | Where-Object { $_ -and $_.TrimEnd('\') -ieq $bin.TrimEnd('\') })
+        if ($have.Count -eq 0) {
+            $newPath = if ($userPath) { $userPath.TrimEnd(';') + ';' + $bin } else { $bin }
+            [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+            Write-Host "    added $bin to your user PATH (new terminals only)"
+        }
     } finally {
-        Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        # Only the temp dir we created - never RELAY_INSTALL_FROM.
+        if (-not $localDir) { Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
     $keyFile = Join-Path $relayHome 'key.txt'
@@ -212,8 +240,10 @@
         # hub.json by itself (no restart). Last step on purpose: Ctrl-C here
         # stops only this, everything else is already installed.
         $hubFile = Join-Path $relayHome 'hub.json'
-        $later = "    pair later with: & `"`$env:LOCALAPPDATA\Relay\bin\relay-runner.exe`" pair"
-        if (Test-Path $hubFile) {
+        $later = "    pair later with: relay-runner pair   (open a NEW terminal first; or: & `"`$env:LOCALAPPDATA\Relay\bin\relay-runner.exe`" pair)"
+        if ($env:RELAY_INSTALL_NOPAIR -eq '1') {
+            Write-Host '    pairing skipped (installer handles it)'
+        } elseif (Test-Path $hubFile) {
             Write-Host "    already paired ($hubFile) - skipping"
         } else {
             Write-Host '    Ctrl-C skips.'
