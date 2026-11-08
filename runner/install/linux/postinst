@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+# Nothing to enable here: the user unit is enabled per user by relay-connect
+# (menu entry / first-login autostart), so other accounts on this machine
+# never get a runner they did not ask for.
+exit 0

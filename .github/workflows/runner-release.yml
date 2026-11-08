@@ -106,3 +106,35 @@ jobs:
       - name: Upload to release
         shell: pwsh
         run: gh release upload $env:TAG Relay-Setup.exe Relay-Setup.exe.sha256 --repo $env:GITHUB_REPOSITORY --clobber
+
+  # Linux GUI-installable package: .deb with a per-user systemd unit and a
+  # "Relay - connect this computer" menu entry (runner/install/linux/FLOWS.md).
+  # Served at releases/latest/download/relay-runner_<ver>_<arch>.deb (ver changes
+  # per release; the release page lists it).
+  linux-deb:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release assets
+        run: |
+          mkdir dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern 'keeperd-linux-amd64' --pattern 'relay-runner-linux-amd64' \
+            --pattern 'keeperd-linux-arm64' --pattern 'relay-runner-linux-arm64'
+
+      - name: Build .deb (amd64, arm64)
+        run: |
+          # runner-abc1234 -> 0.YYYYMMDD.abc1234 (digit-first, increases over time)
+          VER="0.$(date -u +%Y%m%d).${TAG#runner-}"
+          for arch in amd64 arm64; do
+            runner/install/linux/build-deb.sh "$VER" "$arch" dist out
+          done
+          cd out && sha256sum *.deb > debs.sha256 && ls -l
+
+      - name: Upload to release
+        run: gh release upload "$TAG" out/*.deb out/debs.sha256 --repo "$GITHUB_REPOSITORY" --clobber

@@ -1,0 +1,38 @@
+#!/bin/sh
+# "Relay - connect this computer": starts the runner for this user, then opens
+# the HabitTracker claim page (relay-runner pair --open). Runs in the user's
+# own session, so the browser opens. Menu entry + first-login autostart.
+#   relay-connect [--if-unpaired]   (autostart passes --if-unpaired: no-op once paired)
+set -u
+HOME_DIR="${RELAY_HOME:-$HOME/.relay}"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/relay/connect.log"
+mkdir -p "$(dirname "$LOG")"
+
+say() {
+    command -v notify-send >/dev/null 2>&1 && notify-send -a Relay "Relay" "$1" || true
+}
+
+if [ "${1:-}" = "--if-unpaired" ] && [ -f "$HOME_DIR/hub.json" ]; then
+    exit 0
+fi
+
+{
+    /opt/relay/libexec/relay-seed || exit 1
+    # Run at boot, not only while logged in (needs no root for your own user on most distros).
+    loginctl enable-linger "$(id -un)" 2>/dev/null || true
+    systemctl --user daemon-reload
+    systemctl --user enable relay-runner.service
+    systemctl --user restart relay-runner.service
+} >"$LOG" 2>&1 || {
+    say "Relay could not start. Details: $LOG"
+    exit 1
+}
+
+if [ -f "$HOME_DIR/hub.json" ]; then
+    say "This computer is already connected."
+    xdg-open "${RELAY_HUB_URL:-https://habittrackerdima.me}/relay" >/dev/null 2>&1 || true
+    exit 0
+fi
+
+say "Opening HabitTracker in your browser - click Confirm."
+/opt/relay/bin/relay-runner pair --open >>"$LOG" 2>&1 || say "Connecting failed. Details: $LOG"

@@ -1,0 +1,16 @@
+#!/bin/sh
+# Copies keeperd + relay-runner from the package (/opt/relay/bin, root-owned)
+# into ~/.local/share/relay/bin where keeperd may replace them on auto-update.
+# Copies only if missing or the package copy is newer (after a package upgrade);
+# a keeperd-updated home copy is newer than the package, so it is kept.
+set -eu
+SRC=/opt/relay/bin
+DST="${RELAY_KEEPER_DIR:-$HOME/.local/share/relay}/bin"
+mkdir -p "$DST"
+for n in keeperd relay-runner; do
+    if [ ! -e "$DST/$n" ] || [ "$SRC/$n" -nt "$DST/$n" ]; then
+        cp "$SRC/$n" "$DST/.$n.new"
+        chmod 0755 "$DST/.$n.new"
+        mv -f "$DST/.$n.new" "$DST/$n"
+    fi
+done
