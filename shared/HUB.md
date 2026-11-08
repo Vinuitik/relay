@@ -65,3 +65,23 @@ Runner → hub:
 → forward frame, wait 30s → `504` on timeout → relay `status`, `contentType`, `body`.
 
 `GET /relay/api/devices` → `[{"id","name","online","lastSeenAt"}]` (current user's only).
+
+## KPI credentials (runner-held, for collectors' `http` sources)
+The browser saves a KPI API credential straight onto the runner through the proxy above; the hub never stores it.
+```
+PUT    /relay/api/devices/{id}/v1/credentials/{name}  {host, auth, secret, headerName?, queryParam?} → 200 CredentialInfo
+GET    /relay/api/devices/{id}/v1/credentials                                                       → 200 CredentialInfo[]
+DELETE /relay/api/devices/{id}/v1/credentials/{name}                                                → 204
+CredentialInfo {name, host, auth, updatedAt}     // never the value
+```
+- `name` `[a-z0-9_-]{1,32}`; `host` a bare public hostname (`api.github.com`): no scheme/port/path/userinfo/trailing dot,
+  no IP literals, no `localhost` / `.local` / `.internal` / `.lan` / `.home` / `.arpa`… (`400`).
+- `auth`: `bearer` (`Authorization: Bearer <secret>`) | `header` (`<headerName>: <secret>`; Host/Content-Length/
+  Connection-type headers refused) | `query` (`?<queryParam>=<secret>`, or `secret` as an object `{param: value}`
+  for key+token APIs like Trello: `{"key":"…","token":"…"}`). Secret 1-8 KiB, no CR/LF/NUL. Body max 64 KiB.
+- Errors: `400 {error}` (message never contains the secret), `404` unknown name on DELETE, `503` store not enabled.
+- **Hub rule: never log request or response bodies for `/v1/credentials*`** (the runner doesn't either).
+- Same name again = replace. Credentials are per runner (two runners = enter twice).
+- Using one: a collector manifest source `{type:"http", credential, url, why}` - see API.md "Collector / Sensors".
+  Collector errors for it come back as `503` (source unavailable) with an actionable message, e.g.
+  `http source 0 needs a credential named "github": add it on this runner (...)`, or `HTTP 401 - api.github.com rejected credential "github"`.

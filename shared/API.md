@@ -312,7 +312,9 @@ Manifest {
   schedule: "hourly" | "daily HH:MM",    // hourly needs window "1h", daily needs "1d"
   window: "1h" | "1d",
   sources: ({type:"activitywatch", buckets:string[]}          // bucket TYPES: "window","web","afk"
-          | {type:"file", glob:string, why:string})[],        // glob: absolute or "~/...", no "**"
+          | {type:"file", glob:string, why:string}         // glob: absolute or "~/...", no "**"
+          | {type:"http", credential:string, url:string,   // credential: name in /v1/credentials
+             why:string, method?:"GET"})[],                // url: https, host == credential host
   unit: string, aggregation: "sum" | "last" | "max"           // 1-10 sources
 }
 ExpectedJson { value: number, tolerance?: number, from?: ISO, to?: ISO }
@@ -345,6 +347,20 @@ SensorsState {
   secret paths are refused (`.ssh`, `.gnupg`, `.aws`, keyrings, `secrets/`, `.env*`, `*.pem`,
   `*.key`, `id_rsa*`…, browser `Cookies`, `Login Data`, `Web Data`, `Local State`, Firefox
   `key4.db`/`logins.json`/`cookies.sqlite`), also via symlinks.
+- **http source**: the runner (not the script) GETs `url` with the named credential applied
+  (`Authorization: Bearer`, custom header, or query params appended), 15 s timeout, body ≤ 1 MiB,
+  → `<inputs>/http/<sourceIndex>.json` (Content-Type `application/json` / `*+json`) else `.txt`.
+  `url` rules (install → `400`): `https://` only, no port / userinfo / fragment, host a public
+  hostname (no IP literal, localhost, `.local`, `.internal`…), placeholders `{from}` / `{to}` only
+  after the host, replaced by the window as RFC3339 UTC (`2026-11-07T00:00:00Z`, inserted
+  verbatim). At install, if the credential exists its host must equal the url host (`400`); a
+  missing credential is allowed. At every fetch (source error → `503` on run, `lastError` +
+  retry when scheduled): missing credential ("add a credential named X on this runner"), host
+  mismatch, redirect to another host / to http (blocked, same-host https redirects ≤ 5 followed),
+  `401/403` ("rejected credential X"), other non-2xx, body over 1 MiB, timeout. Connects only to
+  public IPs (loopback, RFC1918, CGNAT/Tailscale 100.64/10, link-local, ULA refused at dial; no
+  env proxy). `credential` and `url` are in the contract hash, so approval covers them. Error
+  messages never contain the secret.
 - **Schedule**: active + approved collectors only; hourly = local clock hours, daily = the previous
   local day, run at HH:MM. Missing windows ending in the last 7 days are backfilled oldest first.
   Source error (ActivityWatch down) → `lastError`, retried after 5 min, state unchanged. Collector
@@ -412,6 +428,9 @@ SensorsState {
 | POST | `/v1/collectors/{id}/activate` | - | `200 {}` | starts scheduling (also re-activates a `failed` one). `403` not approved. |
 | GET | `/v1/collectors/{id}/readings?since=<ISO>` | - | `200 Reading[]` | readings **recorded** after `since` (all if omitted), oldest first; backfilled old windows therefore still show up. Dedupe on `from`. `400` bad since. |
 | DELETE | `/v1/collectors/{id}` | - | `204` | deletes all versions, approval and unpulled readings. `404`. |
+| GET | `/v1/credentials` | - | `200 CredentialInfo[]` | `{name, host, auth, updatedAt}` sorted by name; never values. `503` not enabled. See HUB.md "KPI credentials". |
+| PUT | `/v1/credentials/{name}` | `{host, auth, secret, headerName?, queryParam?}` | `200 CredentialInfo` | create/replace. `auth` `bearer` \| `header` (needs `headerName`) \| `query` (needs `queryParam`, or `secret` as `{param: value}`). `400` bad name/host/auth/secret (message never echoes the secret). Body never logged. |
+| DELETE | `/v1/credentials/{name}` | - | `204` | `404` unknown. Collectors using it then fail with a source error. |
 | GET | `/v1/sensors` | - | `200 SensorsState` | ActivityWatch (live query of localhost:5600) + sandbox availability. |
 | POST | `/v1/sensors/install` | `{name:"activitywatch"}` | `202 {}` | installs ActivityWatch in the background; poll `GET /v1/sensors` until `operation` is "" (failure → `activitywatch.error`). `400` unknown name; `409` already installing; `501` OS not supported (macOS, non-x86_64 Linux). |
 | GET | `/v1/auth` | - | `200 AuthStatus[]` | every provider's login state, in a fixed order (statuses run in parallel, ≤10s each). Missing CLI → `cliFound:false`, not an error. |

@@ -614,6 +614,28 @@ Windows: `winget install -e --id ActivityWatch.ActivityWatch --silent`, else `aw
 `/VERYSILENT /CURRENTUSER` → HKCU `Run` value → start aw-qt.exe. macOS / other → 501.
 To bump ActivityWatch: `AWVersion` in sensors.go.
 
+### Credentials + http sources (runner-held KPI API credentials)
+Files: internal/credentials/credentials.go, internal/api/credentials.go, internal/collectors/httpsource.go,
+cmd/runnerd/main.go (`srv.Credentials`, `srv.Collectors.Credentials`). Design: habitTracker
+docs/designs/runner-only-kpis.md R1+R2. Contract: shared/HUB.md "KPI credentials", shared/API.md.
+
+PUT /v1/credentials/{name} → `handlePutCredential` (MaxBytesReader 64 KiB, generic decode error) →
+`Store.Put` → `build` (`ValidName`, `ValidHost`, auth kind, `checkValue`) → `write`: temp file in
+`$RELAY_HOME` (0600) → fsync → rename over `credentials.json`.
+GET /v1/credentials → `Store.List` → `Credential.Info` (name, host, auth, updatedAt only).
+DELETE → `Store.Delete`. Every call re-reads the file; writes serialized by `Store.mu`.
+To change host rules: `ValidHost`, `deniedHostSuffixes`; header deny-list: `deniedHeaders`; limits: `maxSecret`, `maxParams`, `MaxBody`.
+
+Install: `Engine.Install` → `ParseManifest` (`checkHTTPSource` → `parseHTTPURL`) →
+`checkHTTPCredentials` (existing credential's host must equal the url host).
+Run: `snapshot` → `httpSnapshot` → `Store.Get` (missing → ErrSource "add a credential named X") →
+host re-check → `expandURL` ({from}/{to} → RFC3339 UTC) → `Credential.Apply` → client
+(`safeTransport` dial guard `publicAddr`, no proxy, `HTTPTimeout` 15 s, `CheckRedirect` same host + https only, ≤ 5)
+→ status check (401/403 → "rejected credential") → body ≤ `MaxHTTPBytes` → `in/http/<i>.json|.txt` (`bodyExt`).
+`url.Error` is unwrapped so the full URL (query-auth secret) never reaches `lastError` or logs.
+To change limits: `HTTPTimeout`, `MaxHTTPBytes`, `maxHTTPRedirects`, `maxURLLen` in httpsource.go; placeholders: `expandURL`.
+OS keychain storage [NOT IMPLEMENTED]; encryption at rest [NOT IMPLEMENTED] (plain JSON, 0600).
+
 ## Git (the phone's Git tab)
 
 Files: internal/git/git.go, internal/api/git.go
@@ -944,6 +966,16 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 - **Collector state is files in `$RELAY_HOME/collectors`**: approvals, versions and unpulled
   readings. Wiping it = re-approve everything and lose unpulled readings (fail-safe). The
   scheduler backoff (`retry`) is in memory; a restart retries ActivityWatch at once.
+- **KPI credentials are plaintext JSON in `$RELAY_HOME/credentials.json`, 0600** (Windows: no
+  ACL change, protected only by living in the user profile dir). Anyone running as this OS user
+  (or root/admin) can read them; backups of `$RELAY_HOME` carry them. No keychain, no
+  encryption [NOT IMPLEMENTED]. Lost machine / reinstall = re-enter. Single-node file: two
+  runners never share it.
+- **http sources trust the credential's host only**: a collector can GET anything the token can
+  read on that one host (advise read-only tokens). Redirects off-host or to http are refused; a
+  public name resolving to a private/Tailscale/loopback IP is refused at dial (no DNS-rebinding
+  window, the check is on the connected address). IPv6 zones and env proxies are not used.
+  A response over 1 MiB or a slow API (> 15 s) is a source error, retried every 5 min.
 - **ActivityWatch's API is unauthenticated on localhost:5600** (hardcoded `DefaultAWBase`); any
   local process can read it. Its window watcher needs the desktop session, which is why the Linux
   install uses an XDG autostart entry, not a systemd user unit. On Wayland, window titles may be
@@ -1250,6 +1282,8 @@ now - 2026-09-13 and 2026-09-16, both empty, harmless, not related to any code p
 | Collector sandbox (Linux): mounts, limits, fallback | `internal/collectors/sandbox/sandbox_linux.go` (`mountArgs`, `scopeArgs`, `rlimitWrap`, `probe`) |
 | Sensors: ActivityWatch version / install / autostart | `internal/collectors/sensors.go` (`AWVersion`, `installLinux`, `installWindows`, `writeAutostart`) |
 | Collector tests incl. real sandbox in Docker | `scripts/test-collectors.sh` |
+| KPI credentials: endpoints / storage / host + auth rules | `internal/api/credentials.go`, `internal/credentials/credentials.go` (`ValidHost`, `deniedHostSuffixes`, `deniedHeaders`, `FileName`) |
+| Collectors: http source (timeout, size cap, redirects, dial guard, placeholders) | `internal/collectors/httpsource.go` (`HTTPTimeout`, `MaxHTTPBytes`, `maxHTTPRedirects`, `publicAddr`, `expandURL`) |
 | Hub jobs: endpoints / queue / limits | `internal/api/jobs.go`, `internal/jobs/jobs.go` consts (`MaxConcurrent`, `Retention`, `MaxEvents`, `MaxResult`) |
 | Hub jobs: claude flags, tool set, confinement, secret deny-list | `jobs.Args` (`readOnlyTools`, `deniedTools`, `secretDeny`) in `internal/jobs/run.go`; binary: env `RELAY_CLAUDE_CLI` / PATH (`auth.Provider.FindCLI`) |
 | Hub jobs: step wording | `translator.step` / `translator.line` in `internal/jobs/run.go` |
