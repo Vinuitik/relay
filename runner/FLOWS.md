@@ -638,6 +638,7 @@ aw-qt/aw-server/watchers (`stopAW`: pkill -x / taskkill), then Linux: dir + auto
 `unins000.exe`, HKCU Run value, sensors dir) and `cmdManager` (winget/brew/flatpak/pip; argv built in `cmdManager.argv`,
 run via the `execRun` seam: no shell, `mgrTimeout` 10 min, stderr → one sentence). brew/flatpak/pip pass `--` before the id.
 flatpak adds the user flathub remote first; pip uses the venv `$RELAY_HOME/venv`, created on demand (`python3 -m venv`).
+Loopback listener: when `RELAY_LISTEN_ADDR` is a specific non-loopback IP (Tailscale), runnerd also listens on `127.0.0.1:<same port>` serving only `/local/*` (`Server.LocalRoutes()`); the notification always points at `api.LocalConfirmURL` (127.0.0.1). To change: `api.LocalListenAddr()`.
 `/local/confirm*` guard: `Server.localOnly`/`isLocalRequest` refuses (403) uplink-marked requests (`uplink.WithUplink`, set in
 `Client.dispatch`), non-loopback RemoteAddr or Host, and any X-Forwarded-For/Forwarded/X-Real-Ip header; POST needs JSON content type.
 No X-Relay-Key there: being on the machine is the auth. To change a manager's commands: `cmdManager.argv`;
