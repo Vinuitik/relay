@@ -285,6 +285,7 @@ func main() {
 	srv.Credentials = credentials.Open(cfg.RelayHome)
 	srv.Collectors.Credentials = srv.Credentials
 	srv.Sensors = collectors.NewSensors(srv.Collectors)
+	srv.Packages = collectors.NewPackages(cfg.RelayHome, srv.Sensors)
 	srv.Collectors.Start(context.Background())
 	for _, m := range srv.Auth {
 		if m.Provider.ID == "claude" {

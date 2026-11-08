@@ -50,7 +50,21 @@ func (s *Server) handleListCollectors(w http.ResponseWriter, r *http.Request) {
 		writeCollectorError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	if s.Packages == nil {
+		writeJSON(w, http.StatusOK, list)
+		return
+	}
+	// Info + requiresState (from the manifest's requires and the ledger).
+	type withReq struct {
+		collectors.Info
+		RequiresState string `json:"requiresState"`
+	}
+	out := make([]withReq, 0, len(list))
+	for _, in := range list {
+		reqs, _ := s.Collectors.Requires(in.ID)
+		out = append(out, withReq{in, s.Packages.RequiresState(reqs)})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleInstallCollector(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +102,23 @@ func (s *Server) handleApproveCollector(w http.ResponseWriter, r *http.Request) 
 	if err := s.Collectors.Approve(r.PathValue("id"), req.ContractHash); err != nil {
 		writeCollectorError(w, err)
 		return
+	}
+	// Missing requires are installed now through the ledger (the local
+	// confirm gate is Packages.ConfirmInstall). 202 while installs run.
+	if s.Packages != nil {
+		reqs, _ := s.Collectors.Requires(r.PathValue("id"))
+		pending, err := s.Packages.Require(r.PathValue("id"), reqs)
+		if errors.Is(err, collectors.ErrNotConfirmed) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		} else if err != nil {
+			writeCollectorError(w, err)
+			return
+		}
+		if pending {
+			writeJSON(w, http.StatusAccepted, map[string]any{"state": collectors.PkgInstalling})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
@@ -139,6 +170,9 @@ func (s *Server) handleDeleteCollector(w http.ResponseWriter, r *http.Request) {
 	if err := s.Collectors.Delete(r.PathValue("id")); err != nil {
 		writeCollectorError(w, err)
 		return
+	}
+	if s.Packages != nil {
+		s.Packages.Release(r.PathValue("id")) // never uninstalls
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

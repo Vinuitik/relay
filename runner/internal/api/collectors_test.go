@@ -227,3 +227,37 @@ func (b blockingSandbox) Run(context.Context, sandbox.Spec) (sandbox.Result, err
 	<-b.release
 	return sandbox.Result{Stdout: []byte(`{"value": 1}`)}, nil
 }
+
+func TestPackagesAPI(t *testing.T) {
+	s := newTestServer(t)
+	h := s.Routes()
+	if rec := doRequest(t, h, "GET", "/v1/packages", testKey, nil); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled status = %d", rec.Code)
+	}
+	e := withCollectors(t, s, apiSandbox{})
+	s.Packages = collectors.NewPackages(e.DataDir, s.Sensors)
+	s.Packages.Sync = true
+	s.Sensors.Install = func(ctx context.Context, dir string) error { return nil }
+	if rec := doRequest(t, h, "POST", "/v1/packages/uninstall", testKey, map[string]string{"manager": "relay", "id": "activitywatch"}); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown status = %d", rec.Code)
+	}
+	// AW is "running" (fake server) → preexisting → installedByRelay=false → 400.
+	if _, err := s.Packages.Require("c1", []collectors.Require{{Manager: "relay", ID: "activitywatch", Why: "w"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := doRequest(t, h, "GET", "/v1/packages", testKey, nil)
+	var list []collectors.PackageInfo
+	decodeBody(t, rec, &list)
+	if len(list) != 1 || list[0].InstalledByRelay || list[0].State != "installed" || len(list[0].UsedBy) != 1 {
+		t.Fatalf("list = %+v", list)
+	}
+	body := map[string]string{"manager": "relay", "id": "activitywatch"}
+	if rec := doRequest(t, h, "POST", "/v1/packages/uninstall", testKey, body); rec.Code != http.StatusBadRequest {
+		t.Fatalf("preexisting status = %d, want 400", rec.Code)
+	}
+	var info runnerInfo
+	decodeBody(t, doRequest(t, h, "GET", "/v1/runner/info", testKey, nil), &info)
+	if info.OS == "" || info.Arch == "" || len(info.Managers) == 0 || info.Managers[0] != "relay" {
+		t.Errorf("info = %+v", info)
+	}
+}
